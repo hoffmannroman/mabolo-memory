@@ -1,0 +1,10 @@
+# The Markdown files are the only source. Everything else under .mabolo is
+# derived from them, or belongs to one machine, and can be deleted at any time.
+.mabolo/*
+
+# The exception: an eval case and the entries it queries have to move through
+# history together, or bisecting the memory later is impossible.
+!.mabolo/eval/
+!.mabolo/eval/**
+
+*.log

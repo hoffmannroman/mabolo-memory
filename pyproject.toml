@@ -1,0 +1,43 @@
+[project]
+name = "mabolo-memory"
+version = "0.1.0"
+description = "A memory for coding agents: Markdown and Git, with a person in front of every write"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Roman Hoffmann" }]
+keywords = ["memory", "mcp", "markdown", "okf", "agents"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Documentation",
+]
+
+# YAML is the frontmatter format the Open Knowledge Format is written in, so a
+# parser is unavoidable. Everything else stays in the standard library.
+dependencies = ["pyyaml>=6,<7"]
+
+[project.urls]
+Homepage = "https://github.com/hoffmannroman/mabolo-memory"
+Documentation = "https://github.com/hoffmannroman/mabolo-memory/blob/main/docs/format.md"
+
+[project.scripts]
+mabolo = "mabolo.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.17,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "mabolo"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

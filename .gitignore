@@ -1,0 +1,58 @@
+# Private working notes, and everything that is only for this machine.
+notes/
+
+# A vault never belongs in the code repository. These are anchored to the root,
+# so that the example vault under examples/ is not swallowed by them.
+/vault/
+/inbox/
+/.mabolo/
+/config.toml
+/mabolo-data/
+
+# Derived search index
+*.db
+*.sqlite3
+*-wal
+*-shm
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.netrc
+.pypirc
+.npmrc
+.ssh/
+credentials*.json
+id_*
+*.pem
+*.key
+
+# Exports, backups, logs
+export/
+backup/
+*.bak
+logs/
+*.log
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Editors and systems
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*.kate-swp
+.*.kate-swp
+*.orig
+*.rej
+*~
