@@ -35,9 +35,9 @@ from typing import Any, Iterable, Sequence
 
 import yaml
 
-from . import context, frontmatter, journal, recall
+from . import context, frontmatter, journal, recall, session
 from .errors import MaboloError
-from .index import DEFAULT_LIMIT, Hit, Index
+from .index import DEFAULT_LIMIT, Hit, Index, SearchResult
 from .schema import PROJECT_PREFIX, parse_moment, parse_time
 
 #: The file the gate compares against, beside the cases and versioned with them.
@@ -539,9 +539,20 @@ def run_case(index: Index, case: Case, notes: Sequence[journal.Note] = ()) -> Re
     # actually send. Costing the deeper list made a case with `rank_within: 10`
     # report a preview nobody would ever be given.
     found = index.search(case.query, limit=max(case.rank_within, DEFAULT_LIMIT))
-    hits = found.hits
-    cost = index.preview_cost(hits[:DEFAULT_LIMIT])
+    return _judge_search(index, case, found, index.preview_cost(found.hits[:DEFAULT_LIMIT]), "hit")
 
+
+def _judge_search(index: Index, case: Case, found: SearchResult, cost: int, unit: str) -> Result:
+    """The verdict on a search shaped case, whatever tier asked for it.
+
+    Two tiers reach this with the same question and different numbers: how deep
+    the search went, what the answer costs, and what one returned entry is
+    called in a sentence. Everything after that is identical, and was written
+    out twice. `unit` is why there is no shared constant here: a search returns
+    hits somebody asked for, a quiet block shows lines nobody did, and the
+    report says so.
+    """
+    hits = found.hits
     if case.silence:
         if hits:
             names = ", ".join(f"{h.name} ({h.rank})" for h in hits[:3])
@@ -549,7 +560,7 @@ def run_case(index: Index, case: Case, notes: Sequence[journal.Note] = ()) -> Re
                 case=case,
                 hits=hits,
                 passed=False,
-                reasons=(f"expected silence, got {len(hits)} hit(s): {names}",),
+                reasons=(f"expected silence, got {len(hits)} {unit}(s): {names}",),
                 cost=cost,
                 query=found.query,
             )
@@ -584,32 +595,7 @@ def run_recall_case(index: Index, case: Case) -> Result:
     # for a rank beyond the block, so the limit below is already the block's.
     # Slicing again afterwards looked like the guard and never removed a hit.
     found = index.search(case.query, limit=recall.LIMIT)
-    hits = found.hits
-    cost = recall.cost(hits)
-
-    if case.silence:
-        if hits:
-            names = ", ".join(f"{h.name} ({h.rank})" for h in hits[: recall.LIMIT])
-            return Result(
-                case=case,
-                hits=hits,
-                passed=False,
-                reasons=(f"expected silence, got {len(hits)} line(s): {names}",),
-                cost=cost,
-                query=found.query,
-            )
-        return Result(case=case, hits=hits, passed=True, cost=cost, query=found.query)
-
-    reasons, rank = _judge(index, case, hits)
-    return Result(
-        case=case,
-        hits=hits,
-        passed=not reasons,
-        reasons=tuple(reasons),
-        rank=rank,
-        cost=cost,
-        query=found.query,
-    )
+    return _judge_search(index, case, found, recall.cost(found.hits), "line")
 
 
 def run_hint_case(index: Index, case: Case, notes: Sequence[journal.Note] = ()) -> Result:
@@ -633,7 +619,7 @@ def run_hint_case(index: Index, case: Case, notes: Sequence[journal.Note] = ()) 
     reasons: list[str] = []
     positions: list[int] = []
 
-    if case.project and not any(area == f"{PROJECT_PREFIX}{case.project}" for area, _ in payload.counts):
+    if not session.has_project_area(payload):
         # Otherwise a typo in the project name is the quietest pass there is:
         # the project rule simply never fires, the pinned entries still show up,
         # and the case goes green having measured half of what it claims.
@@ -770,6 +756,10 @@ class Run:
         return self.in_tier("hint")
 
     @property
+    def recalls(self) -> list[Result]:
+        return self.in_tier("recall")
+
+    @property
     def positives(self) -> list[Result]:
         return [r for r in self.searches if not r.case.silence]
 
@@ -790,28 +780,20 @@ class Run:
     def ok(self) -> bool:
         return not self.failures
 
-    def cost(self) -> tuple[int, int]:
-        """The average and the worst estimated cost of a preview, in tokens."""
-        return _average_and_worst([r.cost for r in self.positives])
+    def cost_of(self, tier: str) -> tuple[int, int]:
+        """The average and the worst cost of one tier's payload, in tokens.
 
-    def hint_cost(self) -> tuple[int, int]:
-        """The same for the session index, which is a different payload and is
-        therefore never averaged together with a search preview."""
-        return _average_and_worst([r.cost for r in self.hints])
+        Per tier, never across them: a search preview, a session index and a
+        quiet block are three different payloads, and one number over all three
+        would hide which of them moved.
 
-    @property
-    def recalls(self) -> list[Result]:
-        return self.in_tier("recall")
-
-    def recall_cost(self) -> tuple[int, int]:
-        """And again for the quiet block, a third payload with a third shape.
-
-        Averaged over the cases that expect a block, never over the silent
-        ones: a tier whose normal answer is nothing would otherwise report a
-        cost near zero and look cheap for being quiet, which says nothing about
-        what it costs on the prompts where it does speak.
+        Silent cases are left out everywhere. A tier whose normal answer is
+        nothing would otherwise report a cost near zero and look cheap for
+        being quiet, which says nothing about what it costs when it speaks. No
+        hint case is ever silent, so this is the same rule the three separate
+        versions of it had, written once.
         """
-        return _average_and_worst([r.cost for r in self.recalls if not r.case.silence])
+        return _average_and_worst([r.cost for r in self.in_tier(tier) if not r.case.silence])
 
 
 def _average_and_worst(costs: list[int]) -> tuple[int, int]:
@@ -1107,12 +1089,12 @@ def render(result: Run, changes: list[Change] | None = None) -> str:
     if negatives:
         held = sum(1 for r in negatives if r.passed)
         lines.append(f"silence held in {held} of {len(negatives)} negative cases")
-    average, worst = result.cost()
+    average, worst = result.cost_of("search")
     if average:
         lines.append(f"a preview costs about {average} tokens, {worst} at worst, estimated")
     if result.hints:
         held = sum(1 for r in result.hints if r.passed)
-        average, worst = result.hint_cost()
+        average, worst = result.cost_of("hint")
         lines.append(
             f"the session index held what was asked in {held} of {len(result.hints)} cases "
             f"and costs about {average} tokens, {worst} at worst, estimated"
@@ -1120,7 +1102,7 @@ def render(result: Run, changes: list[Change] | None = None) -> str:
     if result.recalls:
         speaking = [r for r in result.recalls if not r.case.silence]
         quiet = [r for r in result.recalls if r.case.silence]
-        average, worst = result.recall_cost()
+        average, worst = result.cost_of("recall")
         if speaking:
             held = sum(1 for r in speaking if r.passed)
             lines.append(

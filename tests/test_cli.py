@@ -5,7 +5,7 @@ import json
 import pytest
 
 from conftest import entry_text
-from mabolo import cli, context, schema
+from mabolo import cli, context, index, schema
 from mabolo.cli import main
 from mabolo.config import Config
 from mabolo.vault import Vault
@@ -574,10 +574,8 @@ def test_the_hook_gives_up_quietly_when_it_runs_out_of_time(tmp_path, capsys, mo
     here: a real clock race would make this test pass or fail by chance."""
     import time
 
-    real = cli.index_module.documents_of
-    monkeypatch.setattr(
-        cli.index_module, "documents_of", lambda entries: (time.sleep(0.4), real(entries))[1]
-    )
+    real = index.documents_of
+    monkeypatch.setattr(index, "documents_of", lambda entries: (time.sleep(0.4), real(entries))[1])
     code, out, err = session_start(tmp_path, capsys, monkeypatch, extra=["--seconds", "0.05"])
     assert code == 0
     assert out is None
@@ -691,10 +689,8 @@ def test_the_timeout_message_names_the_deadline_that_was_used(tmp_path, capsys, 
     looking in the wrong place."""
     import time
 
-    real = cli.index_module.documents_of
-    monkeypatch.setattr(
-        cli.index_module, "documents_of", lambda entries: (time.sleep(0.4), real(entries))[1]
-    )
+    real = index.documents_of
+    monkeypatch.setattr(index, "documents_of", lambda entries: (time.sleep(0.4), real(entries))[1])
     _, _, err = session_start(tmp_path, capsys, monkeypatch, extra=["--seconds", "0.05"])
     assert "0.05 seconds" in err
 

@@ -988,3 +988,22 @@ def test_the_same_change_under_the_same_policy_is_still_a_regression(vault):
     assert [c.kind for c in evaluate.compare(baseline, evaluate.Run(results=[result], entries=1))] == [
         "regressed"
     ]
+
+
+def test_a_silent_case_does_not_drag_a_tier_cost_towards_zero(vault):
+    """A tier whose normal answer is nothing would report a cost near zero and
+    look cheap for being quiet, which says nothing about what it costs on the
+    prompts where it does speak. Never tested while the rule lived in three
+    separate copies of itself."""
+    speaking = evaluate.Result(
+        case=evaluate.Case(id="a", query="q", path=None, tier="recall", entries=("x",)),
+        passed=True,
+        cost=30,
+    )
+    silent = evaluate.Result(
+        case=evaluate.Case(id="b", query="q", path=None, tier="recall", silence=True),
+        passed=True,
+        cost=0,
+    )
+    run = evaluate.Run(results=[speaking, silent], entries=2)
+    assert run.cost_of("recall") == (30, 30)

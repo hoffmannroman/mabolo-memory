@@ -28,15 +28,15 @@ import argparse
 import json
 import signal
 import sys
+import datetime as dt
 from pathlib import Path
 from typing import Callable
 
 from dataclasses import dataclass, replace
 
-from . import __version__, context, evaluate, git, journal, recall
+from . import __version__, context, evaluate, git, recall, session
 from .config import Config, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
-from . import index as index_module
 from .index import Index
 from .schema import FIXED_AREAS, PROJECT_PREFIX, now, parse_moment, parse_time
 from .validate import validate_vault
@@ -203,24 +203,25 @@ def repo_root(start: Path) -> Path:
     return start
 
 
-def _project_for(
-    args: argparse.Namespace, documents: list[index_module.Document], folder: str
-) -> tuple[str | None, str]:
-    """Which project this run is about, and where that came from.
+def _start(
+    args: argparse.Namespace, vault: Vault, folder: str, as_of: "dt.datetime | None"
+) -> session.Start:
+    """One session start, with the arguments unpacked exactly once.
 
-    Given by hand beats derived, and derived beats nothing. The source travels
-    back with the answer rather than being worked out again for the message: a
-    line that says where a value came from has to come from the code that
-    decided it.
+    The clock and the working directory are already decided by the time this is
+    called: `session.start` reads files, and reading either of those would put
+    a second answer to "when is now" inside the library.
     """
-    if args.no_project:
-        return None, "asked for no project"
-    if args.project:
-        return args.project, "as given"
-    found = context.project_for(folder, {d.area for d in documents})
-    if found:
-        return found, f"from the folder {folder}"
-    return None, f"the folder {folder} is not a project in this vault"
+    return session.start(
+        vault,
+        folder=folder,
+        as_of=as_of,
+        given_project=args.project,
+        no_project=args.no_project,
+        target_tokens=args.budget,
+        core_tokens=args.core_budget,
+        project_tokens=args.project_budget,
+    )
 
 
 def cmd_context(args: argparse.Namespace) -> int:
@@ -248,23 +249,8 @@ def cmd_context(args: argparse.Namespace) -> int:
     elif not args.no_clock:
         as_of = now()
 
-    # No search index here: this command does not search, and the projection
-    # from files to documents is what both readers of a vault share.
-    documents = index_module.documents_of(vault.entries())
-    project, source = _project_for(args, documents, repo_root(Path.cwd()).name)
-    # The journal is read for the active project only, and only by the caller:
-    # `context.build` stays a function of its arguments, and the file it would
-    # otherwise have to find is the one thing that is not in the entry list.
-    notes = journal.recent(vault.notes(), project, as_of.date() if as_of else None)
-    payload = context.build(
-        documents,
-        project=project,
-        as_of=as_of,
-        target_tokens=args.budget,
-        core_tokens=args.core_budget,
-        notes=notes,
-        project_tokens=args.project_budget,
-    )
+    started = _start(args, vault, repo_root(Path.cwd()).name, as_of)
+    payload, documents, source = started.payload, started.documents, started.source
     print(payload.text())
     print()
     when = "no moment given, so nothing counts as recent" if as_of is None else f"as of {as_of.isoformat()}"
@@ -272,7 +258,7 @@ def cmd_context(args: argparse.Namespace) -> int:
     # what was built and not what was asked for.
     where = f"project {payload.project}" if payload.project else "no active project"
     print(f"{where}, {source}, {when}")
-    if payload.project and not any(a == f"{PROJECT_PREFIX}{payload.project}" for a, _ in payload.counts):
+    if not session.has_project_area(payload):
         print(f"there is no project/{payload.project} in this vault, so nothing was added for it")
     named = f", {len(payload.named)} named only" if payload.named else ""
     print(
@@ -487,19 +473,9 @@ def _session_payload(args: argparse.Namespace) -> str:
     if not vault.is_initialised():
         return NO_CONFIG
 
-    documents = index_module.documents_of(vault.entries())
-    folder = repo_root(Path(event.get("cwd") or Path.cwd())).name
-    project, _ = _project_for(args, documents, folder)
-    as_of = None if args.no_clock else now()
-    payload = context.build(
-        documents,
-        project=project,
-        as_of=as_of,
-        target_tokens=args.budget,
-        core_tokens=args.core_budget,
-        notes=journal.recent(vault.notes(), project, as_of.date() if as_of else None),
-        project_tokens=args.project_budget,
-    )
+    where = event.get("cwd") or Path.cwd()
+    folder = repo_root(Path(where)).name
+    payload = _start(args, vault, folder, None if args.no_clock else now()).payload
     found = context.violations(payload)
     if found:
         # The payload did not hold what it promises. Nothing here tries to work
