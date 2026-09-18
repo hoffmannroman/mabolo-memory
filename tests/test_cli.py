@@ -1,7 +1,10 @@
+import io
+import json
+
 import pytest
 
 from conftest import entry_text
-from mabolo import schema
+from mabolo import cli, context, schema
 from mabolo.cli import main
 from mabolo.config import Config
 from mabolo.vault import Vault
@@ -484,3 +487,108 @@ def test_context_refuses_a_core_budget_that_is_not_one(vault, capsys):
     context_vault(vault)
     assert main(["context", str(vault.root), "--core-budget", "0"]) == 2
     assert "at least 1" in capsys.readouterr().err
+
+
+# The session start hook: it never fails, and it never sends a payload it cannot stand behind
+
+
+def hook_vault(tmp_path):
+    """A vault with one standing rule and one ordinary entry."""
+    made = Vault(tmp_path / "hv")
+    made.initialise()
+    (made.root / "infra" / "rule.md").write_text(
+        entry_text(title="Rule", description="Deep work after 20:00", mabolo={"pin": True}),
+        encoding="utf-8",
+    )
+    (made.root / "infra" / "thing.md").write_text(
+        entry_text(title="Thing", description="A machine that builds nightly"),
+        encoding="utf-8",
+    )
+    return made
+
+
+def session_start(tmp_path, capsys, monkeypatch, event: str = "{}", extra: list[str] | None = None):
+    """Run the hook with `event` on stdin: its code, its parsed output, its stderr.
+
+    All three at once, because reading the capture empties it: a test that asked
+    for stdout here and stderr later would find the second one blank.
+    """
+    monkeypatch.setattr("sys.stdin", io.StringIO(event))
+    code = main(["hook", "session-start", str(hook_vault(tmp_path).root), *(extra or [])])
+    captured = capsys.readouterr()
+    out = captured.out.strip()
+    return code, (json.loads(out) if out else None), captured.err
+
+
+def test_the_hook_prints_a_payload_a_client_can_read(tmp_path, capsys, monkeypatch):
+    code, out, _ = session_start(tmp_path, capsys, monkeypatch)
+    assert code == 0
+    assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    assert "Deep work after 20:00" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_the_hook_exits_zero_when_the_vault_cannot_be_read(tmp_path, capsys, monkeypatch):
+    """A memory that can stop a session from starting is worse than no memory."""
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "index.md").write_text("---\nnot: [valid\n---\n", encoding="utf-8")
+    (tmp_path / "broken" / "bad.md").write_text("no frontmatter here", encoding="utf-8")
+    code = main(["hook", "session-start", str(tmp_path / "broken")])
+    assert code == 0
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_the_hook_says_one_sentence_when_nothing_is_configured(tmp_path, capsys, monkeypatch):
+    """Nothing is wrong: the person has not been asked yet. Silence would leave
+    them wondering whether the thing they installed works at all."""
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    code = main(["--config", str(tmp_path / "missing.toml"), "hook", "session-start"])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert out["hookSpecificOutput"]["additionalContext"] == cli.NO_CONFIG
+
+
+def test_the_hook_reads_the_project_from_the_folder_the_session_is_in(tmp_path, capsys, monkeypatch):
+    made = hook_vault(tmp_path)
+    folder = made.area_dir("project/atlas")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "atlas-tone.md").write_text(
+        entry_text(area="project/atlas", title="Tone", description="Flat and factual"),
+        encoding="utf-8",
+    )
+    session = tmp_path / "somewhere" / "atlas"
+    (session / ".git").mkdir(parents=True)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"cwd": str(session)})))
+    main(["hook", "session-start", str(made.root)])
+    context_text = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "Active project: atlas" in context_text
+    assert "atlas-tone" in context_text
+
+
+def test_the_hook_gives_up_quietly_when_it_runs_out_of_time(tmp_path, capsys, monkeypatch):
+    """The deadline is a promise to the person waiting on the session, so it is
+    kept by giving up rather than by finishing late. Slow work is simulated
+    here: a real clock race would make this test pass or fail by chance."""
+    import time
+
+    real = cli.index_module.documents_of
+    monkeypatch.setattr(
+        cli.index_module, "documents_of", lambda entries: (time.sleep(0.4), real(entries))[1]
+    )
+    code, out, err = session_start(tmp_path, capsys, monkeypatch, extra=["--seconds", "0.05"])
+    assert code == 0
+    assert out is None
+    assert "gave up" in err
+
+
+def test_a_payload_that_fails_its_check_is_replaced_by_the_rules_alone(tmp_path, capsys, monkeypatch):
+    """The check cannot repair anything. What it can do is refuse to send a
+    payload that does not hold what it promises, and keep the part that was
+    never up for cutting."""
+    monkeypatch.setattr(context, "violations", lambda payload: ("invented for this test",))
+    code, out, _ = session_start(tmp_path, capsys, monkeypatch)
+    sent = out["hookSpecificOutput"]["additionalContext"]
+    assert code == 0
+    assert "Deep work after 20:00" in sent
+    assert "builds nightly" not in sent
+    assert context.DEGRADED in sent

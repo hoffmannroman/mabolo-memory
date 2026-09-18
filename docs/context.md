@@ -239,3 +239,39 @@ search case keeps passing while the memory gets quieter. That is why the
 question set has cases about this payload too, with `tier: hint`, and why they
 record how close an entry is to being cut rather than only whether it is there.
 See [measuring the memory](eval.md).
+
+## The hook a client calls
+
+`mabolo context` prints the payload for a person. `mabolo hook session-start`
+hands the same payload, built by the same code and the same arguments, to a
+client that supports a session start hook:
+
+```bash
+echo '{"cwd": "/path/to/a/project"}' | mabolo hook session-start
+```
+
+```json
+{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "..."}}
+```
+
+Three promises hold here, and they are worth more than the payload itself.
+
+**It never fails.** Whatever goes wrong, it exits 0 and says nothing. A session
+that gets nothing starts the way it would have without Mabolo installed. A
+memory that can stop a session from starting is worse than no memory: the
+failure arrives before the person has typed anything and looks like the agent
+is broken. What went wrong goes to stderr, where a person debugging the hook
+looks and a session does not.
+
+**It gives up on time.** Five seconds, and then nothing. The deadline is a
+promise to the person waiting, so it is kept by giving up rather than by
+finishing late.
+
+**It checks the payload before sending it.** Every standing rule reached the
+text, every chosen line reached it, no line was written twice, and the map
+stayed inside its budget. The check reads the finished payload rather than the
+selection that produced it, which is the only way it can catch a mistake the
+selection did not know it made. It repairs nothing: a payload that fails is
+replaced by the standing rules alone, plus a line saying the map could not be
+built. Losing the map costs a session the knowledge that an entry exists, and
+that can be recovered by asking. A rule that silently went missing cannot.

@@ -569,3 +569,71 @@ def test_journal_lines_are_not_entries_and_are_counted_apart():
     assert index.names == ("thing",)
     assert index.total == 1
     assert index.omitted == 0
+
+
+# The check that runs after the payload is built
+
+
+def test_a_payload_that_holds_what_it_promises_has_nothing_to_report():
+    index = context.build(
+        [doc("rule", pin=True), doc("thing", days_ago=1)], as_of=NOW
+    )
+    assert context.violations(index) == ()
+
+
+def test_a_line_written_twice_is_a_violation():
+    """The failure a test of "the core is never cut" already passed through.
+
+    Paying for one line out of the budget twice is the cheap half of the
+    damage. The expensive half is that two copies of a rule read as two rules.
+    """
+    rule = context.Line(name="rule", area="infra", summary="only once", reason=context.PINNED)
+    index = context.SessionIndex(core=(rule,), lines=(rule,), counts=(("infra", 1),))
+    assert any("more than once" in problem for problem in context.violations(index))
+
+
+def test_a_map_over_its_budget_is_a_violation():
+    line = context.Line(name="wide", area="infra", summary="x" * 400, reason=context.FRESH)
+    index = context.SessionIndex(lines=(line,), counts=(("infra", 1),), target_tokens=20)
+    assert any("over its budget" in problem for problem in context.violations(index))
+
+
+def test_a_core_over_its_budget_is_not_a_violation():
+    """It is allowed to run over, and the payload says so in its own words.
+    Reporting it here as well would turn a statement into a failure and cost a
+    session its rules for saying something true.
+
+    The rules are wide enough here that the whole payload is over the map's
+    budget while the map itself is not. A gentler case passes whether or not
+    the core is subtracted, and so proves nothing about the exemption.
+    """
+    rules = [doc(f"rule-{i}", pin=True, description="x" * 200) for i in range(4)]
+    index = context.build(rules, as_of=NOW, core_tokens=20, target_tokens=100)
+    assert index.core_is_over_budget
+    assert index.cost() > index.target_tokens
+    assert context.violations(index) == ()
+
+
+def test_a_renderer_that_loses_a_standing_rule_is_caught():
+    """The check reads the finished text, not the selection that produced it.
+    That is the only way it can catch a mistake the selection did not make."""
+
+    class Lossy(context.SessionIndex):
+        def text(self) -> str:
+            return super().text().replace("- rule: a line\n", "")
+
+    built = context.build([doc("rule", pin=True)], as_of=NOW)
+    lossy = Lossy(core=built.core, counts=built.counts)
+    assert any("standing rule rule" in problem for problem in context.violations(lossy))
+
+
+def test_the_smaller_payload_keeps_the_rules_and_drops_the_map():
+    index = context.build(
+        [doc("rule", pin=True), doc("thing", area="infra", days_ago=1)],
+        project=None,
+        as_of=NOW,
+    )
+    smaller = context.degraded(index)
+    assert "- rule: a line" in smaller
+    assert "thing" not in smaller
+    assert context.DEGRADED in smaller

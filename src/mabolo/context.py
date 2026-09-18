@@ -283,6 +283,65 @@ class SessionIndex:
         return estimate_tokens(self.text())
 
 
+#: What a payload says instead of the map when the map could not be trusted.
+DEGRADED = (
+    "The map of this vault could not be built for this session. "
+    "The standing rules above hold. Search the memory by name or topic."
+)
+
+
+def violations(payload: SessionIndex) -> tuple[str, ...]:
+    """What is wrong with a built payload, checked against what it promises.
+
+    **This changes nothing and chooses nothing.** It reads the finished object
+    the way a stranger would and says what does not add up, which is the only
+    reason it can be trusted to catch a mistake the selection made: a check
+    written into the selection shares its assumptions, and a check that could
+    fix what it finds would quietly paper over the thing worth knowing about.
+
+    The properties are the ones a session is entitled to. Every standing rule
+    reached the text, because a rule that vanishes is not missed, it is simply
+    not followed. Every chosen line reached it too. No line was written twice,
+    which is the failure a test of "the core is never cut" already passed
+    through once. And the map stayed inside the budget it was given, with the
+    core deliberately exempt: it is allowed to run over and to say so.
+    """
+    out: list[str] = []
+    body = payload.text()
+    for line in payload.core:
+        if line.render() not in body:
+            out.append(f"the standing rule {line.name} is not in the payload")
+    for line in payload.lines:
+        if line.render() not in body:
+            out.append(f"the chosen entry {line.name} is not in the payload")
+    seen = [line.name for line in payload.shown]
+    for name in sorted({n for n in seen if seen.count(n) > 1}):
+        out.append(f"{name} is in the payload more than once")
+    map_cost = payload.cost() - payload.core_cost()
+    if map_cost > payload.target_tokens:
+        out.append(
+            f"the map costs about {map_cost} tokens, over its budget of {payload.target_tokens}"
+        )
+    return tuple(out)
+
+
+def degraded(payload: SessionIndex) -> str:
+    """The smaller payload a session gets when the full one failed its check.
+
+    The rules and nothing else. They are the part that was never up for cutting
+    and the part that is cheapest to be sure of, so they are also the part worth
+    keeping when the rest cannot be trusted. Losing the map costs a session the
+    knowledge that an entry exists; losing a rule costs it the behaviour.
+    """
+    out = [header(payload.project), ""]
+    if payload.core:
+        out.append(CORE_HEADING)
+        out.extend(line.render() for line in payload.core)
+        out.append("")
+    out.append(DEGRADED)
+    return "\n".join(out)
+
+
 def _plural(count: int, one: str, many: str) -> str:
     return f"{count} {one}" if count == 1 else f"{count} {many}"
 

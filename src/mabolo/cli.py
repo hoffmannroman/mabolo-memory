@@ -1,14 +1,16 @@
 """The `mabolo` command.
 
-Four commands so far: `init` creates a vault and a configuration, `validate`
+Five commands so far: `init` creates a vault and a configuration, `validate`
 says what is wrong with one, `eval` measures whether the memory actually hands
-over the entry that answers a question, and `context` prints what a session
-would start with. Everything else arrives with the part of the tool that gives
-it something to talk about.
+over the entry that answers a question, `context` prints what a session would
+start with, and `hook` is what a client calls to be handed it. Everything else
+arrives with the part of the tool that gives it something to talk about.
 
-`context` exists before the hook that will send that payload to an agent, so
-that the payload can be read and measured by a person first. A tier nobody has
-looked at is a tier nobody can argue with.
+`context` and `hook session-start` build the same payload on purpose, through
+the same arguments and the same code. One prints it for a person to read and
+argue with, the other wraps it for a client. A tier nobody has looked at is a
+tier nobody can argue with, and two code paths to the same payload would mean
+the one that was looked at is not the one that ships.
 
 `init` prints its plan before it writes anything and ends with a real check
 rather than a success message. The other commands report; the one place they
@@ -23,6 +25,8 @@ look at this" will never show anybody the warnings.
 from __future__ import annotations
 
 import argparse
+import json
+import signal
 import sys
 from pathlib import Path
 
@@ -292,6 +296,117 @@ def cmd_context(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+#: What a session start may take before it is given up on. The client is
+#: waiting on it, so the number is a promise to the person, not to the tool.
+HOOK_SECONDS = 5
+
+#: The one sentence a session gets when Mabolo is installed and not set up. Not
+#: an error: nothing is wrong, the person simply has not been asked yet, and a
+#: hook that stayed silent would leave them wondering whether it works at all.
+NO_CONFIG = "Mabolo has no vault configured yet. Run `mabolo init` to set one up."
+
+
+class _OutOfTime(Exception):
+    """Raised by the alarm when a session start has taken too long."""
+
+
+def cmd_hook_session_start(args: argparse.Namespace) -> int:
+    """Print what a session starts with, as a client's hook expects it.
+
+    **This command never fails.** Whatever happens it exits 0, and a session
+    that gets nothing from it starts the way it would have without Mabolo
+    installed. A memory that can stop a session from starting is worse than no
+    memory: the failure would arrive at the worst possible moment, before the
+    person has typed anything, and it would look like the agent is broken.
+
+    That is also why the payload is checked before it is sent. The check cannot
+    repair anything; what it can do is refuse a payload that does not hold what
+    it promises and fall back to the standing rules alone. Losing the map costs
+    a session the knowledge that an entry exists, and that is recoverable by
+    asking. A rule that silently went missing is not.
+    """
+    signal.signal(signal.SIGALRM, _raise_out_of_time)
+    signal.setitimer(signal.ITIMER_REAL, args.seconds)
+    try:
+        text = _session_payload(args)
+    except (_OutOfTime, MaboloError, OSError, ValueError, UnicodeDecodeError) as exc:
+        # Quietly, on stderr, where a person debugging the hook will look and a
+        # session will not. The exit code stays 0: see the docstring.
+        print(f"mabolo: session start gave up ({exc})", file=sys.stderr)
+        return EXIT_OK
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    if text:
+        print(json.dumps(_hook_output(text)))
+    return EXIT_OK
+
+
+def _raise_out_of_time(signum: int, frame: object) -> None:
+    raise _OutOfTime(f"no payload within {HOOK_SECONDS} seconds")
+
+
+def _hook_output(text: str) -> dict:
+    """The shape both supported clients read a session start in."""
+    return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}
+
+
+def _session_payload(args: argparse.Namespace) -> str:
+    """The text of the payload, or an empty string when there is nothing to say."""
+    event = _hook_event()
+    config_path = Path(args.config).expanduser() if args.config else default_config_path()
+    if not args.path and not config_path.exists():
+        # A vault named on the command line needs no configuration: that is how
+        # the hook is tried out before it is installed, and how a test runs it.
+        return NO_CONFIG
+    vault = _vault_from(args)
+    if not vault.is_initialised():
+        return NO_CONFIG
+
+    documents = index_module.documents_of(vault.entries())
+    folder = repo_root(Path(event.get("cwd") or Path.cwd())).name
+    project, _ = _project_for(args, documents, folder)
+    as_of = None if args.no_clock else now()
+    payload = context.build(
+        documents,
+        project=project,
+        as_of=as_of,
+        target_tokens=args.budget,
+        core_tokens=args.core_budget,
+        notes=journal.recent(vault.notes(), project, as_of.date() if as_of else None),
+        project_tokens=args.project_budget,
+    )
+    found = context.violations(payload)
+    if found:
+        # The payload did not hold what it promises. Nothing here tries to work
+        # out which line to drop: the rules alone are the part that was never up
+        # for cutting and the cheapest to be sure of.
+        for problem in found:
+            print(f"mabolo: {problem}", file=sys.stderr)
+        return context.degraded(payload)
+    return payload.text()
+
+
+def _hook_event() -> dict:
+    """Whatever the client sent on stdin, as a dictionary.
+
+    An empty dictionary when there is nothing to read or it is not JSON. The
+    event carries the working directory, which is how a session says which
+    project it is about, and a session start that refused to run without it
+    would fail for every client that sends a shape this version has not seen.
+    """
+    if sys.stdin is None or sys.stdin.isatty():
+        return {}
+    try:
+        raw = sys.stdin.read()
+    except (OSError, UnicodeDecodeError):
+        return {}
+    try:
+        event = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        return {}
+    return event if isinstance(event, dict) else {}
+
+
 def _vault_from(args: argparse.Namespace) -> Vault:
     """The vault a command was pointed at, from the argument or the configuration."""
     config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
@@ -491,6 +606,30 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"what the journal block may cost, default {context.DEFAULT_PROJECT_TOKENS}",
     )
     shown.set_defaults(func=cmd_context)
+
+    hook = sub.add_parser("hook", help="what a client's hook calls")
+    events = hook.add_subparsers(dest="event", required=True)
+    start = events.add_parser("session-start", help="print the payload a session starts with")
+    start.add_argument("path", nargs="?", help="the vault, default is the configured one")
+    start.add_argument("--project", help="the project, default is the folder the session is in")
+    start.add_argument("--no-project", action="store_true", help="no project at all")
+    start.add_argument(
+        "--no-clock", action="store_true", help="do not read the clock, so nothing counts as recent"
+    )
+    start.add_argument("--budget", type=int, default=context.DEFAULT_TARGET_TOKENS, help="map budget")
+    start.add_argument(
+        "--core-budget", type=int, default=context.DEFAULT_CORE_TOKENS, help="standing rules budget"
+    )
+    start.add_argument(
+        "--project-budget", type=int, default=context.DEFAULT_PROJECT_TOKENS, help="journal budget"
+    )
+    start.add_argument(
+        "--seconds",
+        type=float,
+        default=HOOK_SECONDS,
+        help=f"give up after this long, default {HOOK_SECONDS}",
+    )
+    start.set_defaults(func=cmd_hook_session_start)
 
     return parser
 
