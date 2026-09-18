@@ -242,3 +242,20 @@ outside it would rank differently on two clones and no commit could be replayed.
 Your own questions belong in your own vault, next to your own entries. The cases
 in [`examples/vault`](../examples/vault) are invented and query the invented
 vault they sit in.
+
+## When the selection rule itself changes
+
+The baseline records the `policy` the session index was built under
+(`context.POLICY`, raised by hand when the choice or the order of entries
+moves). When a run uses a different one, changes that would read as
+`regressed` or `slipped` are called `policy` instead:
+
+```
+policy  session-index  passed under selection policy 2 and fails under 3, which may be the rule and not the memory
+```
+
+The run still fails. "Means something different" is not "got worse", and the
+word now says which one it is, but a rule change can be a rule change *and* a
+regression on the same day, and nothing here can tell those apart. So the gate
+stays shut until a person looks and runs `--save-baseline`, which is the same
+answer a language mismatch gets.

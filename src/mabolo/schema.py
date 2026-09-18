@@ -124,6 +124,40 @@ def parse_time(value: Any) -> dt.datetime | None:
         return None
 
 
+def is_bare_date(value: Any) -> bool:
+    """True when this says a day and nothing about the time of day."""
+    if isinstance(value, dt.datetime):
+        return False
+    if isinstance(value, dt.date):
+        return True
+    return isinstance(value, str) and ":" not in value and "T" not in value.strip().upper()
+
+
+def parse_moment(value: Any) -> dt.datetime | None:
+    """The moment a session starts at, from what a person or a case wrote.
+
+    Same as `parse_time`, except that a bare date means the **whole** of that
+    day and therefore reads as its last instant rather than its first.
+
+    That is the reading the rest of the payload already used. A journal day is
+    a calendar day, so `--as-of 2026-09-18` shows a decision written that
+    morning; an entry touched the same morning was compared against midnight
+    and came out as "not touched this week", because it lay in the future. One
+    payload, two readings of one date, and they disagreed about the same
+    morning. A day is the unit a person means when they write one.
+
+    `parse_time` keeps the old reading, and an entry's own `generated.at` still
+    uses it: a bare date there says when an entry came into being, and the
+    earliest instant of that day is the careful answer.
+    """
+    when = parse_time(value)
+    if when is None:
+        return None
+    if is_bare_date(value):
+        return when.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return when
+
+
 def is_actor(value: Any) -> bool:
     """True for `producer/version`, `human:<id>` or `process:<id>`."""
     if not isinstance(value, str):

@@ -1,4 +1,5 @@
 import io
+import time
 import json
 
 import pytest
@@ -652,3 +653,65 @@ def test_context_can_say_why_an_entry_has_no_line(vault, capsys):
     out = capsys.readouterr().out
     assert "old-news  no rule chose it" in out
     assert "working-hours" not in out.split("budget 800")[1], "it has a line, so nothing to explain"
+
+
+# What two audits found in the hooks
+
+
+@pytest.mark.parametrize("cwd", [123, ["a"], {"a": 1}, True])
+def test_the_hook_survives_a_client_that_sends_nonsense_for_the_working_directory(
+    tmp_path, capsys, monkeypatch, cwd
+):
+    """The net used to be a list of the failures somebody thought of, and it
+    left out TypeError. A session start ended in a traceback because a client
+    sent an object where a path belongs."""
+    code, _, err = session_start(tmp_path, capsys, monkeypatch, json.dumps({"cwd": cwd}))
+    assert code == 0
+    assert err == "" or "gave up" in err
+
+
+def test_the_hook_survives_an_event_too_deeply_nested_to_parse(tmp_path, capsys, monkeypatch):
+    code, _, _ = session_start(tmp_path, capsys, monkeypatch, "[" * 60000)
+    assert code == 0
+
+
+@pytest.mark.parametrize("seconds", ["0", "-1", "nan", "1e30"])
+def test_a_deadline_out_of_range_is_clamped_rather_than_refused(tmp_path, capsys, monkeypatch, seconds):
+    """`--seconds 0` disabled the timer outright, which is the opposite of what
+    a deadline is for, and nan raised before the guard was even armed. A hook
+    cannot refuse to run over an argument."""
+    code, out, _ = session_start(tmp_path, capsys, monkeypatch, extra=["--seconds", seconds])
+    assert code == 0
+    assert out is not None, "it still did its work"
+
+
+def test_the_timeout_message_names_the_deadline_that_was_used(tmp_path, capsys, monkeypatch):
+    """It named the constant, so the two second prompt hook reported five. A
+    message about a deadline that states the wrong one sends the reader
+    looking in the wrong place."""
+    import time
+
+    real = cli.index_module.documents_of
+    monkeypatch.setattr(
+        cli.index_module, "documents_of", lambda entries: (time.sleep(0.4), real(entries))[1]
+    )
+    _, _, err = session_start(tmp_path, capsys, monkeypatch, extra=["--seconds", "0.05"])
+    assert "0.05 seconds" in err
+
+
+def test_the_deadline_covers_the_writing_too(tmp_path, capsys, monkeypatch):
+    """Printing used to happen after the timer was cancelled, so a client that
+    had stopped reading its pipe could hang the very hook whose whole promise
+    is not to."""
+    slow = type("Slow", (), {"write": lambda self, text: time.sleep(0.4) or len(text), "flush": lambda self: None})()
+    root = str(hook_vault(tmp_path).root)
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    monkeypatch.setattr("sys.stdout", slow)
+    code = main(["hook", "session-start", root, "--seconds", "0.05"])
+    monkeypatch.undo()
+    err = capsys.readouterr().err
+    assert code == 0
+    # The alarm has to have fired *during* the write. Outside the guard the
+    # write simply took its time and the hook ended cleanly, which is the same
+    # exit code and the wrong behaviour.
+    assert "gave up" in err and "0.05 seconds" in err

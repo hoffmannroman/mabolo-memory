@@ -1,5 +1,6 @@
 import datetime as dt
 
+from mabolo import schema
 from mabolo.schema import Entry, Generated, MaboloBlock, Source, area_is_known, is_actor, iso, parse_time
 
 
@@ -130,3 +131,22 @@ def test_an_unreadable_timestamp_is_ignored_rather_than_guessed():
     """`validate` is what complains about it; the index must not crash on it."""
     entry = Entry.from_meta({"type": "reference", "generated": {"by": "x/1", "at": "not a date"}})
     assert entry.touched_at() is None
+
+
+def test_a_bare_date_as_a_session_moment_means_the_whole_day():
+    """A journal day is a calendar day, and an entry was compared against
+    midnight, so one payload read one date two ways and disagreed with itself
+    about the same morning."""
+    assert schema.parse_moment("2026-09-18").isoformat() == "2026-09-18T23:59:59.999999"
+    assert schema.parse_moment(dt.date(2026, 9, 18)).hour == 23
+
+
+def test_a_moment_that_states_a_time_is_left_alone():
+    assert schema.parse_moment("2026-09-18T10:00:00+03:00").hour == 10
+    assert schema.parse_moment("2026-09-18T00:00:00").hour == 0
+
+
+def test_an_entry_still_comes_into_being_at_the_start_of_its_day():
+    """`generated.at` is when an entry began, and the earliest instant of that
+    day is the careful answer. Only the session moment reads a day as whole."""
+    assert schema.parse_time("2026-09-18").isoformat() == "2026-09-18T00:00:00"

@@ -29,15 +29,16 @@ import json
 import signal
 import sys
 from pathlib import Path
+from typing import Callable
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from . import __version__, context, evaluate, git, journal, recall
 from .config import Config, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
 from . import index as index_module
 from .index import Index
-from .schema import FIXED_AREAS, PROJECT_PREFIX, now, parse_time
+from .schema import FIXED_AREAS, PROJECT_PREFIX, now, parse_moment, parse_time
 from .validate import validate_vault
 from .vault import Vault
 
@@ -236,7 +237,7 @@ def cmd_context(args: argparse.Namespace) -> int:
         raise MaboloError("--project-budget is a whole number of tokens, at least 1")
     as_of = None
     if args.as_of:
-        as_of = parse_time(args.as_of)
+        as_of = parse_moment(args.as_of)
         if as_of is None:
             raise MaboloError(f"{args.as_of!r} is not a date. Use 2026-09-18 or a full timestamp.")
         if as_of.year < 2:
@@ -326,62 +327,112 @@ class _OutOfTime(Exception):
     """Raised by the alarm when a session start has taken too long."""
 
 
-def cmd_hook_session_start(args: argparse.Namespace) -> int:
-    """Print what a session starts with, as a client's hook expects it.
+#: The longest a deadline may be set to, and the shortest. A hook that was
+#: handed a nonsensical `--seconds` is still a hook: it clamps, says so on
+#: stderr, and runs. Refusing would be the one thing it must never do.
+MIN_SECONDS, MAX_SECONDS = 0.01, 3600.0
 
-    **This command never fails.** Whatever happens it exits 0, and a session
-    that gets nothing from it starts the way it would have without Mabolo
-    installed. A memory that can stop a session from starting is worse than no
-    memory: the failure would arrive at the worst possible moment, before the
-    person has typed anything, and it would look like the agent is broken.
 
-    That is also why the payload is checked before it is sent. The check cannot
-    repair anything; what it can do is refuse a payload that does not hold what
-    it promises and fall back to the standing rules alone. Losing the map costs
-    a session the knowledge that an entry exists, and that is recoverable by
-    asking. A rule that silently went missing is not.
+@dataclass(frozen=True)
+class HookContract:
+    """What tells one hook from another. Everything else they share.
+
+    Three values rather than three flags. A flag says "behave differently here"
+    and leaves a reader to work out where; these say which event is being
+    answered, how long the client will wait, and what to call this in a message
+    to a person. What a hook does when there is no configuration is not in
+    here, because it is not a variation on a shared behaviour: it lives in the
+    payload function, where the answer to "and then what do we say" belongs.
     """
-    signal.signal(signal.SIGALRM, _raise_out_of_time)
-    signal.setitimer(signal.ITIMER_REAL, args.seconds)
-    try:
-        text = _session_payload(args)
-    except (_OutOfTime, MaboloError, OSError, ValueError, UnicodeDecodeError) as exc:
-        # Quietly, on stderr, where a person debugging the hook will look and a
-        # session will not. The exit code stays 0: see the docstring.
-        print(f"mabolo: session start gave up ({exc})", file=sys.stderr)
-        return EXIT_OK
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-    if text:
-        print(json.dumps(_hook_output(text)))
-    return EXIT_OK
+
+    event: str
+    label: str
+    seconds: float
+
+
+SESSION_START = HookContract(event="SessionStart", label="session start", seconds=HOOK_SECONDS)
+PROMPT = HookContract(event="UserPromptSubmit", label="prompt hook", seconds=PROMPT_SECONDS)
+
+
+def cmd_hook_session_start(args: argparse.Namespace) -> int:
+    """What a session starts with, as a client's hook expects it."""
+    return _run_hook(args, SESSION_START, _session_payload)
 
 
 def cmd_hook_prompt(args: argparse.Namespace) -> int:
-    """Offer the entry a prompt should have known about, or say nothing.
+    """The entry a prompt should have known about, or nothing at all."""
+    return _run_hook(args, PROMPT, _prompt_payload)
 
-    Same three promises as the session start: never fails, gives up on time,
-    and sends nothing it cannot stand behind. The third one is different in
-    kind here, because there is nothing structural to check: what stands behind
-    a quiet block is the relevance floor of the search, and the check is that
-    nothing below it is ever shown.
 
-    Saying nothing is the normal outcome and needs no line of its own. A block
-    reading "nothing to add" would cost every prompt in this vault's life the
-    tokens to say that the memory had nothing to say.
+def _run_hook(
+    args: argparse.Namespace,
+    contract: HookContract,
+    payload: "Callable[[argparse.Namespace], str]",
+) -> int:
+    """Run one hook inside the guarantees every hook makes.
+
+    **It never fails.** Whatever happens it exits 0, and a session that gets
+    nothing starts the way it would have without Mabolo installed. A memory
+    that can stop a session from starting is worse than no memory: the failure
+    arrives before the person has typed anything and looks like the agent is
+    broken. So the net is `BaseException`, not a list of the failures somebody
+    thought of: the list left out `TypeError` from a client that sent an object
+    where a path belongs, and `RecursionError` from a deeply nested event, and
+    both of those ended a session start with a traceback.
+
+    **The deadline covers the writing too.** Setting up the timer, building the
+    payload and printing it are all inside it. Printing used to happen after
+    the timer was cancelled, so a client that had stopped reading its pipe
+    could hang the very hook whose whole promise is not to.
     """
-    signal.signal(signal.SIGALRM, _raise_out_of_time)
-    signal.setitimer(signal.ITIMER_REAL, args.seconds)
+    seconds = _deadline(args, contract)
     try:
-        text = _prompt_payload(args)
-    except (_OutOfTime, MaboloError, OSError, ValueError, UnicodeDecodeError) as exc:
-        print(f"mabolo: prompt hook gave up ({exc})", file=sys.stderr)
-        return EXIT_OK
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-    if text:
-        print(json.dumps(_hook_output(text, "UserPromptSubmit")))
+        previous = signal.signal(signal.SIGALRM, _raise_out_of_time(seconds))
+        try:
+            signal.setitimer(signal.ITIMER_REAL, seconds)
+            text = payload(args)
+            if text:
+                print(json.dumps(_hook_output(contract.event, text)))
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+    except SystemExit:
+        raise
+    except BaseException as exc:
+        # Quietly, on stderr, where a person debugging the hook will look and a
+        # session will not. The exit code stays 0: see the docstring.
+        _say(f"mabolo: {contract.label} gave up ({type(exc).__name__}: {exc})")
     return EXIT_OK
+
+
+def _deadline(args: argparse.Namespace, contract: HookContract) -> float:
+    """The deadline this run will use, whatever was asked for.
+
+    A hook cannot refuse to run over an argument. `--seconds 0` disabled the
+    timer outright, which is the opposite of what a deadline is for, and `nan`
+    or a number too large for the platform raised before the guard was even
+    armed.
+    """
+    asked = args.seconds
+    if not isinstance(asked, (int, float)) or asked != asked:  # NaN is not equal to itself
+        asked = contract.seconds
+    seconds = min(max(float(asked), MIN_SECONDS), MAX_SECONDS)
+    if seconds != asked:
+        _say(f"mabolo: {contract.label} deadline {args.seconds} is out of range, using {seconds}")
+    return seconds
+
+
+def _say(message: str) -> None:
+    """One line to stderr, and never a failure of its own.
+
+    Even this can raise: stderr may be closed or full. A hook that died while
+    explaining why it gave up would break the promise it was in the middle of
+    keeping.
+    """
+    try:
+        print(message, file=sys.stderr)
+    except (OSError, ValueError):
+        pass
 
 
 def _prompt_payload(args: argparse.Namespace) -> str:
@@ -404,11 +455,22 @@ def _prompt_payload(args: argparse.Namespace) -> str:
         return recall.block(found.hits)
 
 
-def _raise_out_of_time(signum: int, frame: object) -> None:
-    raise _OutOfTime(f"no payload within {HOOK_SECONDS} seconds")
+def _raise_out_of_time(seconds: float) -> "Callable[[int, object], None]":
+    """The alarm handler for one run, which knows that run's deadline.
+
+    It used to name the constant instead, so the two second prompt hook
+    reported five, and so did every run given `--seconds`. A message about a
+    deadline that states the wrong deadline is worse than no message: it sends
+    the reader looking in the wrong place.
+    """
+
+    def handler(signum: int, frame: object) -> None:
+        raise _OutOfTime(f"no payload within {seconds:g} seconds")
+
+    return handler
 
 
-def _hook_output(text: str, event: str = "SessionStart") -> dict:
+def _hook_output(event: str, text: str) -> dict:
     """The shape both supported clients read injected context in."""
     return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
 

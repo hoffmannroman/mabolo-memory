@@ -38,7 +38,7 @@ import yaml
 from . import context, frontmatter, journal, recall
 from .errors import MaboloError
 from .index import DEFAULT_LIMIT, Hit, Index
-from .schema import PROJECT_PREFIX, parse_time
+from .schema import PROJECT_PREFIX, parse_moment, parse_time
 
 #: The file the gate compares against, beside the cases and versioned with them.
 BASELINE_FILE = "baseline.json"
@@ -353,7 +353,7 @@ def _parse_hint_case(
             "It is required, because the session index counts seven days back from it and "
             "a case without it would measure a different vault every week."
         )
-    as_of = parse_time(state["as_of"])
+    as_of = parse_moment(state["as_of"])
     if as_of is None:
         # A separate sentence from the one above. Telling somebody who wrote
         # `as_of: yesterday` that the field is required is a true statement
@@ -832,14 +832,23 @@ def run(index: Index, cases: list[Case], notes: Sequence[journal.Note] = ()) -> 
 class Change:
     """One difference between this run and the baseline."""
 
-    kind: str  # regressed | slipped | improved | new | gone
+    kind: str  # regressed | slipped | policy | improved | new | gone
     case_id: str
     message: str
 
     @property
     def is_worse(self) -> bool:
-        """Only these two fail a run. An improvement is news, not a problem."""
-        return self.kind in ("regressed", "slipped")
+        """What fails a run. An improvement is news, not a problem.
+
+        `policy` fails it too, and deliberately. The selection rule changed, so
+        the numbers below mean something different than the ones they are held
+        against, and "means something different" is not the same as "got
+        worse": the word says so. But a rule change can also be a rule change
+        *and* a regression on the same day, and nothing here can tell those
+        apart. So the gate stays shut until a person looks and says
+        `--save-baseline`, which is the same answer the language mismatch gets.
+        """
+        return self.kind in ("regressed", "slipped", "policy")
 
 
 @dataclass(frozen=True)
@@ -975,6 +984,12 @@ class Baseline:
             )
 
 
+#: What a change is called when the selection rule moved under it. Not
+#: "regressed": that word is a claim about quality, and the only honest claim
+#: here is that the question changed.
+POLICY_CHANGED = "policy"
+
+
 def compare(baseline: Baseline | None, result: Run, *, subset: bool = False) -> list[Change]:
     """What moved since the baseline, in the order a person wants to read it.
 
@@ -985,6 +1000,7 @@ def compare(baseline: Baseline | None, result: Run, *, subset: bool = False) -> 
     if baseline is None:
         return []
     stored = baseline.cases
+    moved_policy = baseline.policy != context.POLICY
     changes: list[Change] = []
     for current in sorted(result.measured, key=lambda r: r.case.id):
         was = stored.get(current.case.id)
@@ -1004,6 +1020,16 @@ def compare(baseline: Baseline | None, result: Run, *, subset: bool = False) -> 
             )
             continue
         if was.passed and not current.passed:
+            if moved_policy:
+                changes.append(
+                    Change(
+                        POLICY_CHANGED,
+                        current.case.id,
+                        f"passed under selection policy {baseline.policy} and fails under "
+                        f"{context.POLICY}, which may be the rule and not the memory",
+                    )
+                )
+                continue
             changes.append(Change("regressed", current.case.id, "passed in the baseline and fails now"))
             continue
         if not was.passed and current.passed:
@@ -1019,7 +1045,12 @@ def compare(baseline: Baseline | None, result: Run, *, subset: bool = False) -> 
                 # gate stores a rank: by the time it fails, the change that
                 # caused it is several commits back.
                 changes.append(
-                    Change("slipped", current.case.id, f"slipped from rank {was.rank} to rank {current.rank}")
+                    Change(
+                        POLICY_CHANGED if moved_policy else "slipped",
+                        current.case.id,
+                        f"slipped from rank {was.rank} to rank {current.rank}"
+                        + (f" under a new selection policy ({baseline.policy} to {context.POLICY})" if moved_policy else "")
+                    )
                 )
             elif current.rank < was.rank:
                 changes.append(

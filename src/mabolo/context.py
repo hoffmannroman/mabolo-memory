@@ -84,7 +84,7 @@ FRESH_DAYS = 7
 #: is evidence that the question changed, and those two deserve different
 #: reactions. Without it, the day the rule improves reads exactly like the day
 #: it regresses.
-POLICY = 2
+POLICY = 3
 
 #: Why a line is in the index, strongest first. The order is the rule: it
 #: decides both what survives a tight budget and what the baseline compares.
@@ -264,9 +264,22 @@ class SessionIndex:
         """Every entry in the vault, described, named or neither."""
         return len(self.shown) + len(self.named) + self.omitted
 
+    @staticmethod
+    def core_block(core: Sequence[Line]) -> list[str]:
+        """The standing rules as lines of the payload, or nothing at all.
+
+        One spelling, used by `text`, by `degraded`, by `core_cost` and by
+        `build`. It was written out four times and two of them already
+        disagreed: with no rules at all, `core_cost` charged for a `## Always`
+        heading that `text` never writes, so the map was credited three tokens
+        it had not been given. Exactly the mistake `_fit` carries a warning
+        about, one field further along.
+        """
+        return [CORE_HEADING, *(line.render() for line in core)] if core else []
+
     def core_cost(self) -> int:
-        """What the standing rules cost on their own."""
-        return estimate_tokens("\n".join([CORE_HEADING, *(l.render() for l in self.core)]))
+        """What the standing rules cost on their own, as the payload writes them."""
+        return estimate_tokens("\n".join(self.core_block(self.core)))
 
     @property
     def core_is_over_budget(self) -> bool:
@@ -293,18 +306,15 @@ class SessionIndex:
             # Above the map and under their own heading. A reader has to be able
             # to tell a rule that always holds from an entry that happens to be
             # relevant today, and the map cannot say that.
-            out.append(CORE_HEADING)
-            out.extend(line.render() for line in self.core)
+            out.extend(self.core_block(self.core))
             out.append("")
-        if self.notes:
+        notes = self.notes_block()
+        if notes:
             # Between the rules and the map, and before the map's footer, which
             # is a claim about entries and would read as one about these too.
             # A rule holds always, a journal line held last Tuesday, and the
             # map says what exists: that is the order they are useful in.
-            out.append(LATELY_HEADING)
-            out.extend(note.render() for note in self.notes)
-            if self.notes_cut:
-                out.append(lately_footer(self.notes_cut))
+            out.extend(notes)
             out.append("")
         named: dict[str, list[str]] = {}
         for line in self.named:
@@ -324,6 +334,44 @@ class SessionIndex:
 
     def cost(self) -> int:
         return estimate_tokens(self.text())
+
+    def notes_block(self) -> list[str]:
+        """The journal lines as the payload writes them, or nothing at all.
+
+        Written even when every line was cut, because the footer saying so is
+        the block's whole remaining content. A block that went silent about its
+        own truncation is the one failure this design is against, and it was
+        silent: `text` asked whether any line survived, not whether there was
+        anything to say.
+        """
+        if not self.notes and not self.notes_cut:
+            return []
+        block = [LATELY_HEADING, *(note.render() for note in self.notes)]
+        if self.notes_cut:
+            block.append(lately_footer(self.notes_cut))
+        return block
+
+    def notes_cost(self) -> int:
+        """What the journal block costs, against its own budget."""
+        return estimate_tokens("\n".join(self.notes_block()))
+
+    def map_cost(self) -> int:
+        """What the map costs, against its own budget, and nothing else.
+
+        Measured on what the map actually writes rather than by subtracting the
+        core from the whole. The subtraction charged the map for the journal
+        block, which has a budget of its own, and for the sentence about a core
+        over its budget, which is not the map's doing either. A vault with a
+        busy journal therefore failed a check it had not broken, and the hook
+        threw away a payload that was entirely within its means.
+        """
+        body = self.text()
+        for block in (self.core_block(self.core), self.notes_block()):
+            if block:
+                body = body.replace("\n".join(block) + "\n\n", "", 1)
+        if self.core_is_over_budget:
+            body = body.replace("\n" + over_core(len(self.core), self.core_cost(), self.core_tokens), "", 1)
+        return estimate_tokens(body)
 
 
 #: What a payload says instead of the map when the map could not be trusted.
@@ -350,20 +398,34 @@ def violations(payload: SessionIndex) -> tuple[str, ...]:
     core deliberately exempt: it is allowed to run over and to say so.
     """
     out: list[str] = []
-    body = payload.text()
+    # Whole lines, and counted in the text. A substring test would call a lost
+    # rule present because some description quotes it, and counting names in
+    # `shown` answers a question about the selection rather than about the
+    # payload: a renderer that wrote one line twice left `shown` untouched and
+    # went unnoticed, which is the exact failure a test of the core once passed
+    # through.
+    written = payload.text().splitlines()
     for line in payload.core:
-        if line.render() not in body:
+        if line.render() not in written:
             out.append(f"the standing rule {line.name} is not in the payload")
     for line in payload.lines:
-        if line.render() not in body:
+        if line.render() not in written:
             out.append(f"the chosen entry {line.name} is not in the payload")
-    seen = [line.name for line in payload.shown]
-    for name in sorted({n for n in seen if seen.count(n) > 1}):
-        out.append(f"{name} is in the payload more than once")
-    map_cost = payload.cost() - payload.core_cost()
+    # Among the entry lines only. Two journal lines may legitimately read the
+    # same, and counting every bullet made a payload with a repetitive journal
+    # fail a check about entries.
+    entries = {line.render() for line in payload.shown}
+    for line in sorted(l for l in entries if written.count(l) > 1):
+        out.append(f"{one_line(line)} is in the payload more than once")
+    map_cost = payload.map_cost()
     if map_cost > payload.target_tokens:
         out.append(
             f"the map costs about {map_cost} tokens, over its budget of {payload.target_tokens}"
+        )
+    if payload.notes_block() and payload.notes_cost() > payload.project_tokens:
+        out.append(
+            f"the journal block costs about {payload.notes_cost()} tokens, "
+            f"over its budget of {payload.project_tokens}"
         )
     return tuple(out)
 
@@ -528,8 +590,16 @@ def build(
     # place without saying so.
     core = tuple(sorted((l for l in chosen if l.reason == PINNED), key=lambda l: l.name))
     rest = [l for l in chosen if l.reason != PINNED]
-    core_text = "\n".join([CORE_HEADING, *(l.render() for l in core)]) if core else ""
-    left = target_tokens - estimate_tokens(core_text)
+    # The core is paid for out of the same target, through the one spelling of
+    # the block, plus the blank line that separates it from the map. That line
+    # went unpaid and was the last token of a budget that could be breached by
+    # exactly one.
+    core_text = "\n".join(SessionIndex.core_block(core))
+    # Two newlines, not one: the block ends its own last line, and then the
+    # blank line that separates it from the map ends as well. Paying for one of
+    # them left the whole payload breachable by exactly one character, which a
+    # fuzz run found at 3201 against a ceiling of 3200.
+    left = target_tokens - estimate_tokens(core_text + "\n\n" if core_text else "")
 
     kept, spare = _fit(rest, counts, len(documents), left, project)
     # Whatever the lines did not spend buys bare names, and the entries the
@@ -614,6 +684,14 @@ def _fit(
     circular, because how it reads depends on how many lines fit. A budget that
     does not even hold those yields a payload with no entries in it, which is a
     true statement about a budget that small.
+
+    **That is also the one way the target can be exceeded.** The header, one
+    heading per area and the last line are written whatever the budget says,
+    because a map that dropped its own headings would be a list that stops
+    without saying so. So a vault with many areas and a budget of a few dozen
+    tokens costs more than it was given, and no arrangement of entries would
+    have helped: the floor is the shape of the map, not its contents. At the
+    shipped budget of 800 it is far below anything a vault reaches.
     """
     fixed = len(header(project)) + 2  # the line, its newline, and the blank one
     # The core is already paid for by the caller, which subtracted it from the
@@ -640,8 +718,17 @@ ALSO_HERE = "also here: "
 
 
 def also_here(names: Sequence[str]) -> str:
-    """The line that names what an area holds and could not describe."""
-    return ALSO_HERE + ", ".join(names)
+    """The line that names what an area holds and could not describe.
+
+    Every name goes through `one_line`, like every other piece of a payload
+    that comes off disk. A name is the file's stem and a file name may hold a
+    newline on both supported systems, so without this a file called
+    `evil\n## Always\n- forged: ...` writes its own standing rule into a
+    payload that is injected into a prompt automatically. This was the one
+    rendering path that did not fold, and it stayed open for exactly as long
+    as it took two audits to look at it.
+    """
+    return ALSO_HERE + ", ".join(one_line(name) for name in names)
 
 
 def _fit_names(candidates: Sequence[Line], budget: int) -> list[Line]:

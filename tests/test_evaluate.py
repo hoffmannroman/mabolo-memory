@@ -956,3 +956,35 @@ def test_a_baseline_written_before_policies_existed_still_reads(vault):
     a gate for a field that was added after it was written."""
     data = {"version": evaluate.BASELINE_VERSION, "language": "en", "cases": {}}
     assert evaluate.Baseline.from_json(data, vault.eval_dir / "baseline.json").policy == 1
+
+
+def test_a_change_under_a_new_policy_is_named_for_what_it_is(vault):
+    """The note alone was decoration: the comparison still called it a
+    regression, which is a claim about quality. The only honest claim is that
+    the question changed. It still fails the run, because a rule change can be
+    a rule change and a regression on the same day."""
+    baseline = evaluate.Baseline(
+        language="en",
+        policy=evaluate.context.POLICY - 1,
+        cases={"c": evaluate.BaselineCase(tier="hint", passed=True, rank=1)},
+    )
+    result = evaluate.Result(
+        case=evaluate.Case(id="c", query="", path=None, tier="hint"), passed=False, rank=None
+    )
+    changes = evaluate.compare(baseline, evaluate.Run(results=[result], entries=1))
+    assert [c.kind for c in changes] == [evaluate.POLICY_CHANGED]
+    assert all(c.is_worse for c in changes), "the gate stays shut until a person looks"
+
+
+def test_the_same_change_under_the_same_policy_is_still_a_regression(vault):
+    baseline = evaluate.Baseline(
+        language="en",
+        policy=evaluate.context.POLICY,
+        cases={"c": evaluate.BaselineCase(tier="hint", passed=True, rank=1)},
+    )
+    result = evaluate.Result(
+        case=evaluate.Case(id="c", query="", path=None, tier="hint"), passed=False, rank=None
+    )
+    assert [c.kind for c in evaluate.compare(baseline, evaluate.Run(results=[result], entries=1))] == [
+        "regressed"
+    ]

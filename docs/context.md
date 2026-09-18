@@ -309,8 +309,12 @@ promise to the person waiting, so it is kept by giving up rather than by
 finishing late.
 
 **It checks the payload before sending it.** Every standing rule reached the
-text, every chosen line reached it, no line was written twice, and the map
-stayed inside its budget. The check reads the finished payload rather than the
+text, every chosen line reached it, no line was written twice, the map stayed
+inside its budget and the journal block inside its own. Every one of those is
+measured on the finished text: whole lines, counted where they were written.
+An earlier version compared substrings and counted names in the selection
+instead, which meant a line rendered twice went unnoticed and a busy journal
+made a map that was well inside its budget look like it had broken it. The check reads the finished payload rather than the
 selection that produced it, which is the only way it can catch a mistake the
 selection did not know it made. It repairs nothing: a payload that fails is
 replaced by the standing rules alone, plus a line saying the map could not be

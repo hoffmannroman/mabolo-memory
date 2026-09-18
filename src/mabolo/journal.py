@@ -41,8 +41,15 @@ from .schema import PROJECT_PREFIX
 #: so that a `##` inside a fenced block cannot open a new day.
 _DAY = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2})\s*$")
 
-#: A bullet, with the text that follows it.
-_BULLET = re.compile(r"^[-*]\s+(.*)$")
+#: A bullet, with the text that follows it. Anchored at the start of the line
+#: as written, so an indented bullet is a nested one and belongs to the bullet
+#: above it rather than starting a note of its own.
+_BULLET = re.compile(r"^[-*+]\s+(.*)$")
+
+#: A fence, open or close. The validator strips fenced blocks before it looks
+#: for day headings, and this reader has to agree with it: a `## 2026-01-01`
+#: printed inside a pasted terminal session is not a day in this journal.
+_FENCE = re.compile(r"^\s*(```+|~~~+)")
 
 #: The project a line points at: a relative link into `project/<name>/`. The
 #: name stops at the next slash or the closing bracket, so both a link to the
@@ -103,8 +110,18 @@ def parse(text: str) -> list[Note]:
         match = _LINK.search(body)
         out.append(Note(at=day, text=body, project=match.group(1) if match else None))
 
+    fenced = False
     for raw in text.splitlines():
         line = raw.rstrip()
+        if _FENCE.match(line):
+            # Inside a fence nothing is a heading and nothing is a bullet. The
+            # fence line itself ends any open bullet, because a note does not
+            # continue into a code block.
+            close()
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
         heading = _DAY.match(line)
         if heading:
             close()
@@ -113,20 +130,30 @@ def parse(text: str) -> list[Note]:
             except ValueError:
                 day = None
             continue
-        if line.lstrip().startswith("#"):
+        if line.startswith("#"):
             # Any other heading closes the day rather than inheriting it: a
             # line under "## Notes" is not a line of the day above it.
+            #
+            # At the start of the line as written, never after stripping. An
+            # indented line beginning with `#` is a continuation that happens
+            # to start with a hash, and `#42 for details` is the ordinary way
+            # to name an issue: treating it as a heading dropped the rest of
+            # that bullet, the link that named its project, and every bullet
+            # left in the day.
             close()
             day = None
             continue
         if not line.strip():
             close()
             continue
-        bullet = _BULLET.match(line.lstrip())
+        bullet = _BULLET.match(line)
         if bullet:
             close()
             open_bullet = [bullet.group(1).strip()]
         elif open_bullet is not None:
+            # Indented bullets land here too, as continuations. A nested list
+            # is one decision written in two levels, not two decisions, and the
+            # nested half carries no link of its own.
             open_bullet.append(line.strip())
     close()
     return out

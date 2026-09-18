@@ -118,3 +118,56 @@ def test_a_line_dated_in_the_future_is_not_recent_yet():
     here = journal.Note(at=DAY, text="real", project="atlas")
     picked = journal.recent([later, here], "atlas", as_of=dt.date(2026, 9, 18))
     assert [n.text for n in picked] == ["real"]
+
+
+# What the audits found
+
+
+def test_a_hash_inside_a_wrapped_line_is_not_a_heading():
+    """`#42 for details` is how an issue gets named. Read as a heading it ended
+    the bullet, took the link that named its project with it, and closed the
+    day, so every later bullet lost its date and vanished."""
+    notes = journal.parse(
+        "## 2026-09-16\n\n- fixed the build, see\n"
+        "  #42 for details, [atlas](project/atlas/index.md)\n"
+        "- second decision, [atlas](project/atlas/index.md)\n"
+    )
+    assert [n.project for n in notes] == ["atlas", "atlas"]
+    assert "#42" in notes[0].text
+
+
+def test_a_real_heading_at_the_start_of_a_line_still_closes_the_day():
+    notes = journal.parse("## 2026-09-16\n\n- dated\n\n## Notes\n\n- adrift\n")
+    assert [n.text for n in notes] == ["dated"]
+
+
+def test_a_day_inside_a_code_fence_is_not_a_day():
+    """The validator strips fenced blocks before it looks for headings, and
+    this reader has to agree: a pasted terminal session is not a journal."""
+    notes = journal.parse(
+        "## 2026-09-18\n\n- ran this:\n```\n## 2026-01-01\n"
+        "- inside, [atlas](project/atlas/index.md)\n```\n"
+        "- after, [atlas](project/atlas/index.md)\n"
+    )
+    assert [n.at.isoformat() for n in notes] == ["2026-09-18", "2026-09-18"]
+    assert [n.text for n in notes][1].startswith("after")
+
+
+def test_a_tilde_fence_counts_too():
+    notes = journal.parse("## 2026-09-18\n\n~~~\n## 2026-01-01\n~~~\n- real, [atlas](project/atlas/index.md)\n")
+    assert [n.at.isoformat() for n in notes] == ["2026-09-18"]
+
+
+def test_a_nested_bullet_belongs_to_the_one_above_it():
+    """One decision written in two levels, not two decisions. As its own note
+    the nested half carried no link, so it arrived as a projectless line."""
+    notes = journal.parse(
+        "## 2026-09-18\n\n- [atlas](project/atlas/index.md): the parent\n  - the child\n"
+    )
+    assert len(notes) == 1
+    assert notes[0].project == "atlas" and "the child" in notes[0].text
+
+
+def test_a_plus_is_a_bullet_as_well():
+    notes = journal.parse("## 2026-09-18\n\n+ written with a plus, [atlas](project/atlas/index.md)\n")
+    assert [n.project for n in notes] == ["atlas"]
