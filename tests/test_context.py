@@ -461,29 +461,85 @@ def test_a_pinned_entry_goes_into_the_core_and_under_its_own_heading():
     assert "- recent" not in index.text().split("## infra")[0], "the core holds rules, not finds"
 
 
-def test_the_core_is_never_cut_however_small_the_budget():
-    """Everywhere else this tool refuses to trim a list quietly. The one list
-    where a silent trim does the most damage is this one: a rule that vanishes
-    is not missed, it is simply not followed."""
-    rules = [doc(f"rule-{i:02d}", pin=True, description="x" * 60) for i in range(20)]
-    index = context.build(rules, as_of=NOW, target_tokens=50)
-    assert len(index.core) == 20
-    assert index.cut == 0
+def test_the_thirteenth_rule_gets_no_seat_and_the_payload_names_it():
+    """Seats, not a budget. A budget asks how to shorten a sentence until it
+    fits; seats ask which rule goes, which is the question that has to reach a
+    person. And a rule without a seat is named, every time: a session cannot
+    tell a rule that was never written from one that fell off a list."""
+    rules = [
+        doc(f"rule-{i:02d}", pin=True, days_ago=100 - i, description="short")
+        for i in range(context.CORE_SEATS + 1)
+    ]
+    index = context.build(rules, as_of=NOW)
+    assert len(index.core) == context.CORE_SEATS
+    assert [name for name, _ in index.unseated] == ["rule-12"]
+    assert "not loaded: rule-12 (seat 13 of 12)" in index.text()
+    assert index.core_is_full
+
+
+def test_the_newest_pin_is_the_one_that_loses_its_seat():
+    """The opposite of how the map is cut, and the whole point. The rule nobody
+    remembers is by definition an old one, so letting age decide would drop
+    exactly the rule whose absence goes unnoticed for weeks. Losing the newest
+    puts the loss where the action was, in front of the person who caused it."""
+    rules = [
+        doc(f"rule-{i:02d}", pin=True, days_ago=100 - i, description="short")
+        for i in range(context.CORE_SEATS + 3)
+    ]
+    index = context.build(rules, as_of=NOW)
+    assert [name for name, _ in index.unseated] == ["rule-12", "rule-13", "rule-14"]
+    assert "rule-00" in index.names, "the oldest rule keeps its seat"
+
+
+def test_a_rule_longer_than_a_seat_is_left_out_whole_and_not_cut():
+    """Half a rule reads like a whole one. The line is the rule as it gets
+    loaded, so a rule that does not fit on one is not shortened: it is named,
+    and its long form is one read away in the entry."""
+    index = context.build(
+        [doc("wide-rule", pin=True, description="x" * 400), doc("plain-rule", pin=True)],
+        as_of=NOW,
+    )
+    assert [line.name for line in index.core] == ["plain-rule"]
+    assert index.unseated[0][0] == "wide-rule"
+    assert "characters, 160 allowed" in index.text()
+    assert "x" * 200 not in index.text(), "not cut mid sentence either"
+
+
+def test_the_core_never_costs_more_than_its_seats_hold():
+    """The ceiling follows from arithmetic rather than from an estimate, which
+    matters because the token count in this project is a division and says so."""
+    for count in (0, 1, 12, 13, 40, 100):
+        for width in (10, 80, 159, 160, 400):
+            rules = [
+                doc(f"rule-{i:03d}", pin=True, days_ago=200 - i, description="x" * width)
+                for i in range(count)
+            ]
+            index = context.build(rules, as_of=NOW)
+            core = "\n".join(index.core_block(index.core))
+            assert len(core) <= context.CORE_SEATS * (context.SEAT_CHARS + 1) + len(
+                context.CORE_HEADING
+            ), (count, width)
+
+
+def test_a_rule_without_a_seat_is_counted_as_named_and_not_as_missing():
+    rules = [
+        doc(f"rule-{i:02d}", pin=True, days_ago=100 - i, description="short")
+        for i in range(context.CORE_SEATS + 1)
+    ]
+    index = context.build(rules, as_of=NOW)
+    assert index.total == context.CORE_SEATS + 1
     assert index.omitted == 0
 
 
-def test_a_core_over_its_budget_says_so_in_the_payload():
-    rules = [doc(f"rule-{i:02d}", pin=True, description="x" * 60) for i in range(20)]
-    index = context.build(rules, as_of=NOW, core_tokens=100)
-    assert index.core_is_over_budget
-    assert index.text().rstrip().endswith("Unpin what is no longer a rule.")
-    assert "Nothing was dropped" in index.text()
-
-
-def test_a_core_inside_its_budget_says_nothing():
-    index = context.build([doc("one-rule", pin=True)], as_of=NOW, core_tokens=300)
-    assert not index.core_is_over_budget
-    assert "over its budget" not in index.text()
+def test_an_undated_pin_keeps_its_seat_against_a_dated_newcomer():
+    """A pin that names no day falls back to the day the entry was touched, and
+    an entry that states no time at all is as old as it gets. Either way the
+    rule that has been there longest is not the one that goes."""
+    old = doc("undated-rule", pin=True)
+    new = [doc(f"rule-{i:02d}", pin=True, days_ago=1, description="short") for i in range(context.CORE_SEATS)]
+    index = context.build([*new, old], as_of=NOW)
+    assert "undated-rule" in index.names
+    assert len(index.unseated) == 1
 
 
 def test_a_pinned_rule_costs_the_map_a_line_rather_than_another_rule():
@@ -638,20 +694,18 @@ def test_a_map_over_its_budget_is_a_violation():
     assert any("over its budget" in problem for problem in context.violations(index))
 
 
-def test_a_core_over_its_budget_is_not_a_violation():
-    """It is allowed to run over, and the payload says so in its own words.
-    Reporting it here as well would turn a statement into a failure and cost a
-    session its rules for saying something true.
-
-    The rules are wide enough here that the whole payload is over the map's
-    budget while the map itself is not. A gentler case passes whether or not
-    the core is subtracted, and so proves nothing about the exemption.
-    """
-    rules = [doc(f"rule-{i}", pin=True, description="x" * 200) for i in range(4)]
-    index = context.build(rules, as_of=NOW, core_tokens=20, target_tokens=100)
-    assert index.core_is_over_budget
-    assert index.cost() > index.target_tokens
-    assert context.violations(index) == ()
+def test_a_full_core_is_a_violation_now_that_it_can_be_prevented():
+    """It used to be exempt, because nothing could be done about it at the time
+    and a session losing its rules over a true statement would have been worse.
+    With seats there is something to do about it: unpin one, and the payload
+    says which. So it is a finding again, and the hook falls back rather than
+    shipping a payload missing a rule it did not mention."""
+    rules = [
+        doc(f"rule-{i:02d}", pin=True, days_ago=100 - i, description="short")
+        for i in range(context.CORE_SEATS + 1)
+    ]
+    index = context.build(rules, as_of=NOW)
+    assert any("no seat" in problem for problem in context.violations(index))
 
 
 def test_a_renderer_that_loses_a_standing_rule_is_caught():
@@ -890,3 +944,22 @@ def test_a_pinned_entry_of_no_project_at_all_still_holds_everywhere():
     project is a rule for every session, which is what pinning is for."""
     index = context.build([doc("global-rule", area="persona", pin=True)], project="beacon", as_of=NOW)
     assert [line.name for line in index.core] == ["global-rule"]
+
+
+def test_the_day_a_rule_was_pinned_beats_the_day_it_was_last_touched():
+    """A rule pinned long ago and edited yesterday is an old rule, not a new
+    one. Without the pin's own day, fixing a typo in the oldest rule would move
+    it to the front of the queue and cost it its seat."""
+    old_pin_new_edit = Document(
+        "long-standing", "long-standing", "short", "persona", None, (),
+        pin=True, pinned_at=dt.date(2020, 1, 1), at=NOW,
+    )
+    newcomers = [
+        doc(f"rule-{i:02d}", area="persona", pin=True, days_ago=200, description="short")
+        for i in range(context.CORE_SEATS)
+    ]
+    for line in context.build([*newcomers, old_pin_new_edit], as_of=NOW).core:
+        if line.name == "long-standing":
+            break
+    else:
+        raise AssertionError("the rule pinned in 2020 lost its seat to one pinned in 2026")

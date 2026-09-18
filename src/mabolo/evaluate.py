@@ -891,12 +891,19 @@ class Baseline:
     #: move either because the memory got worse or because the question did,
     #: and one of those is a regression while the other is the work.
     policy: int = context.POLICY
+    #: How many standing rules the core held when this was measured. Stored,
+    #: and **refused** rather than noted when it moves under the same policy:
+    #: the seat count is the one number in this project that must not drift
+    #: quietly, because the whole mechanism is that it cannot be raised in
+    #: passing. A baseline that accepted a new one would be the back door.
+    seats: int = context.CORE_SEATS
 
     @classmethod
     def from_run(cls, result: Run, language: str) -> Baseline:
         return cls(
             language=language,
             policy=context.POLICY,
+            seats=context.CORE_SEATS,
             cases={
                 r.case.id: BaselineCase(tier=r.case.tier, passed=r.passed, rank=r.rank)
                 for r in sorted(result.measured, key=lambda r: r.case.id)
@@ -919,6 +926,9 @@ class Baseline:
         policy = data.get("policy", 1)
         if not isinstance(policy, int) or isinstance(policy, bool) or policy < 1:
             raise MaboloError(f"{where} states a selection policy that is not a version number")
+        seats = data.get("seats", context.CORE_SEATS)
+        if not isinstance(seats, int) or isinstance(seats, bool) or seats < 1:
+            raise MaboloError(f"{where} states a seat count that is not a whole number of seats")
         return cls(
             language=language,
             cases={
@@ -927,6 +937,7 @@ class Baseline:
             },
             version=version,
             policy=policy,
+            seats=seats,
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -934,6 +945,7 @@ class Baseline:
             "version": self.version,
             "language": self.language,
             "policy": self.policy,
+            "seats": self.seats,
             "cases": {case_id: case.to_json() for case_id, case in sorted(self.cases.items())},
         }
 
@@ -955,6 +967,24 @@ class Baseline:
             f"used {context.POLICY}, so what moved below may be the rule changing rather than "
             "the memory getting worse"
         )
+
+    def check_seats(self) -> None:
+        """Refuse a run whose seat count moved without the policy moving with it.
+
+        Not a note, unlike the policy: a changed number of seats is a changed
+        promise about how much a session carries, and the promise is the whole
+        mechanism. Raising it in passing is exactly what happened to the budget
+        it replaces, twice, and the second time it was called a content change.
+        Moving it deliberately means moving the policy too, which is a second
+        deliberate act in a second file.
+        """
+        if self.seats != context.CORE_SEATS and self.policy == context.POLICY:
+            raise MaboloError(
+                f"the baseline was measured with {self.seats} seats in the core and this version "
+                f"has {context.CORE_SEATS}, under the same selection policy {context.POLICY}. "
+                "Changing how many standing rules a session carries is a change to the rule: "
+                "raise `context.POLICY` as well, then `mabolo eval --save-baseline`."
+            )
 
     def check_language(self, language: str) -> None:
         """Refuse to compare a run against a baseline measured in another language."""

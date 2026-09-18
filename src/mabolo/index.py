@@ -138,6 +138,10 @@ class Document:
     aliases: tuple[str, ...]
     #: The entry asked to be in every session.
     pin: bool = False
+    #: The day it asked, when it says so. The core has a fixed number of seats
+    #: and the newest pin is the one that loses one, so this is what decides.
+    #: None means the pin named no day and `at` stands in for it.
+    pinned_at: dt.date | None = None
     #: When the entry was last touched, in UTC. See `Entry.touched_at`, which is
     #: where that is decided; nothing here interprets a timestamp of its own.
     at: dt.datetime | None = None
@@ -276,7 +280,8 @@ def _document(entry: Entry) -> Document:
         area=entry.area,
         path=entry.path,
         aliases=tuple(q.fold(a) for a in entry.mabolo.aliases),
-        pin=entry.mabolo.pin,
+        pin=bool(entry.mabolo.pin),
+        pinned_at=entry.mabolo.pin if isinstance(entry.mabolo.pin, dt.date) else None,
         at=entry.touched_at(),
         words=tuple(words),
         fields=fields,

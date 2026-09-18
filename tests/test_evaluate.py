@@ -1007,3 +1007,25 @@ def test_a_silent_case_does_not_drag_a_tier_cost_towards_zero(vault):
     )
     run = evaluate.Run(results=[speaking, silent], entries=2)
     assert run.cost_of("recall") == (30, 30)
+
+
+def test_a_moved_seat_count_under_the_same_policy_is_refused(vault):
+    """Not a note, unlike the policy. A changed number of seats is a changed
+    promise about how much a session carries, and raising it in passing is
+    exactly what happened to the budget it replaces, twice."""
+    baseline = evaluate.Baseline(language="en", seats=evaluate.context.CORE_SEATS + 1)
+    with pytest.raises(MaboloError, match="Changing how many standing rules"):
+        baseline.check_seats()
+
+
+def test_the_same_seat_count_passes_and_a_moved_policy_excuses_it(vault):
+    evaluate.Baseline(language="en", seats=evaluate.context.CORE_SEATS).check_seats()
+    evaluate.Baseline(
+        language="en", seats=evaluate.context.CORE_SEATS + 1, policy=evaluate.context.POLICY - 1
+    ).check_seats()
+
+
+def test_a_baseline_written_before_seats_existed_still_reads(vault):
+    data = {"version": evaluate.BASELINE_VERSION, "language": "en", "policy": 1, "cases": {}}
+    read = evaluate.Baseline.from_json(data, vault.eval_dir / "baseline.json")
+    assert read.seats == evaluate.context.CORE_SEATS

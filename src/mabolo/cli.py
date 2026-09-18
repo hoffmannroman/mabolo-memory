@@ -203,6 +203,19 @@ def repo_root(start: Path) -> Path:
     return start
 
 
+def _budget_at_most(flag: str, value: int, ceiling: int) -> None:
+    """A budget is a ceiling, so an argument may only come in under it."""
+    if value < 1:
+        # A budget of zero or less prints "budget -1" above an empty payload,
+        # which is arithmetic rather than an answer.
+        raise MaboloError(f"{flag} is a whole number of tokens, at least 1")
+    if value > ceiling:
+        raise MaboloError(
+            f"{flag} is {value}, over the {ceiling} this version ships with. "
+            "A budget can be lowered here, not raised: raising it is how a ceiling stops being one."
+        )
+
+
 def _start(
     args: argparse.Namespace, vault: Vault, folder: str, as_of: "dt.datetime | None"
 ) -> session.Start:
@@ -219,7 +232,6 @@ def _start(
         given_project=args.project,
         no_project=args.no_project,
         target_tokens=args.budget,
-        core_tokens=args.core_budget,
         project_tokens=args.project_budget,
     )
 
@@ -227,15 +239,13 @@ def _start(
 def cmd_context(args: argparse.Namespace) -> int:
     """Print the session index: what a session would be handed at its start."""
     vault = _vault_from(args)
-    if args.core_budget < 1:
-        raise MaboloError("--core-budget is a whole number of tokens, at least 1")
-    if args.budget < 1:
-        # The case format asks for at least one token, and a budget of zero or
-        # less prints "budget -1" above an empty payload, which is arithmetic
-        # rather than an answer.
-        raise MaboloError("--budget is a whole number of tokens, at least 1")
-    if args.project_budget < 1:
-        raise MaboloError("--project-budget is a whole number of tokens, at least 1")
+    # A budget may be lowered from the command line and never raised. Raising
+    # it is how a ceiling stops being one: the flag is always to hand, and the
+    # next person who finds a payload cut short reaches for it instead of for
+    # the reason. Lowering is safe, because it can only make a session cheaper
+    # than the contract promises.
+    _budget_at_most("--budget", args.budget, context.DEFAULT_TARGET_TOKENS)
+    _budget_at_most("--project-budget", args.project_budget, context.DEFAULT_PROJECT_TOKENS)
     as_of = None
     if args.as_of:
         as_of = parse_moment(args.as_of)
@@ -270,12 +280,13 @@ def cmd_context(args: argparse.Namespace) -> int:
         # these and the budget took them away again, which is the one thing a
         # person may want to fix by raising the budget.
         print(f"{payload.cut} chosen {'entry' if payload.cut == 1 else 'entries'} did not fit in the budget")
-    if payload.core:
+    if payload.core or payload.unseated:
         print(
-            f"{len(payload.core)} standing "
-            f"{'rule' if len(payload.core) == 1 else 'rules'} pinned, about "
-            f"{payload.core_cost()} tokens of the {payload.core_tokens} the core is meant to cost"
+            f"{len(payload.core)} of {context.CORE_SEATS} seats taken by standing rules, "
+            f"about {payload.core_cost()} tokens"
         )
+    for name, why in payload.unseated:
+        print(f"  no seat: {name} ({why})")
     if args.why_not:
         # After the counts rather than instead of them: the counts say how much
         # is missing, and this says which lever moves each piece of it.
@@ -285,10 +296,10 @@ def cmd_context(args: argparse.Namespace) -> int:
             print("every entry in this vault has a line of its own")
         for name, reason in rows:
             print(f"  {name}  {reason}")
-    if payload.core_is_over_budget:
-        # A finding, not a failure: nothing was dropped, and the vault still
-        # works. But a person has to decide which rule stops being one, and
-        # nobody decides what nobody is told.
+    if payload.core_is_full:
+        # A finding, not a failure: the vault still works, and everything it
+        # holds is still readable. But a rule that did not get a seat is not
+        # being followed, and nobody decides what nobody is told.
         return EXIT_FINDINGS
     return EXIT_OK
 
@@ -559,6 +570,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
         note = None
         if baseline is not None:
             baseline.check_language(language)
+            baseline.check_seats()
             note = baseline.policy_note()
         changes = evaluate.compare(baseline, result, subset=bool(args.case))
         print(evaluate.render(result, changes))
@@ -705,12 +717,6 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"what the payload should cost, in tokens, default {context.DEFAULT_TARGET_TOKENS}",
     )
     shown.add_argument(
-        "--core-budget",
-        type=int,
-        default=context.DEFAULT_CORE_TOKENS,
-        help=f"what the standing rules may cost, default {context.DEFAULT_CORE_TOKENS}",
-    )
-    shown.add_argument(
         "--why-not",
         action="store_true",
         help="for every entry without a line of its own, the first reason why",
@@ -733,9 +739,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-clock", action="store_true", help="do not read the clock, so nothing counts as recent"
     )
     start.add_argument("--budget", type=int, default=context.DEFAULT_TARGET_TOKENS, help="map budget")
-    start.add_argument(
-        "--core-budget", type=int, default=context.DEFAULT_CORE_TOKENS, help="standing rules budget"
-    )
     start.add_argument(
         "--project-budget", type=int, default=context.DEFAULT_PROJECT_TOKENS, help="journal budget"
     )

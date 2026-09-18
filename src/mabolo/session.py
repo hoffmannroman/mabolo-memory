@@ -80,7 +80,6 @@ def start(
     given_project: str | None = None,
     no_project: bool = False,
     target_tokens: int = context.DEFAULT_TARGET_TOKENS,
-    core_tokens: int = context.DEFAULT_CORE_TOKENS,
     project_tokens: int = context.DEFAULT_PROJECT_TOKENS,
 ) -> Start:
     """Everything a session start needs, read once and built once.
@@ -102,7 +101,6 @@ def start(
         project=project,
         as_of=as_of,
         target_tokens=target_tokens,
-        core_tokens=core_tokens,
         notes=notes,
         project_tokens=project_tokens,
     )

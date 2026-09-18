@@ -334,8 +334,24 @@ def _check_block(block: dict[str, Any], out: _Collector, expected_area: str | No
                 "mabolo.area",
             )
 
-    if "pin" in block and not isinstance(block.get("pin"), bool):
-        out.err("mabolo.pin.invalid", "mabolo.pin must be true or false", "mabolo.pin")
+    if "pin" in block:
+        pin = block.get("pin")
+        # A day, or `true`. The day is what decides which rule loses a seat
+        # when the core is full, so it is the better spelling; `true` stays
+        # valid, and the vault check warns about it rather than refusing it.
+        ok = isinstance(pin, bool) or isinstance(pin, (dt.date, dt.datetime))
+        if isinstance(pin, str):
+            try:
+                dt.date.fromisoformat(pin.strip())
+                ok = True
+            except ValueError:
+                ok = False
+        if not ok:
+            out.err(
+                "mabolo.pin.invalid",
+                "mabolo.pin must be true, false, or the day it was pinned as 2026-09-19",
+                "mabolo.pin",
+            )
 
     anchor = block.get("anchor")
     if anchor is not None:
@@ -734,6 +750,78 @@ def area_of(root: Path, path: Path) -> str | None:
     return parts[0]
 
 
+def _check_seats(entries: list[Entry]) -> list[Problem]:
+    """Whether every standing rule has a seat, and says when it was pinned.
+
+    Reported here because this is where a person looks for things to fix, and
+    because the payload's own line about it is read by the model rather than by
+    a human. Both come from the same function in `context`, so the validator
+    and the payload cannot disagree about which rule is out.
+
+    This is the second of three places the seat limit shows up, and the weakest
+    of them. The first is the write path, which refuses the thirteenth pin in
+    front of the person setting it; the third is the eval baseline, which will
+    not accept a moved seat count. This one catches a hand edit or a merge.
+    """
+    from . import context
+    from .errors import MaboloError as _Error
+    from .index import documents_of
+
+    try:
+        documents = documents_of(entries)
+    except _Error:
+        # Two entries answering to one name, which this run is already
+        # reporting elsewhere. A vault that cannot be read cannot have its
+        # seats counted, and saying so twice helps nobody.
+        return []
+    rules = [
+        line
+        for line in (
+            context.Line(
+                name=d.name,
+                area=d.area,
+                summary=d.description or d.title or d.name,
+                reason=context.PINNED,
+                at=d.at,
+                pinned_at=d.pinned_at or (d.at.date() if d.at else None),
+            )
+            for d in documents
+            if d.pin
+        )
+    ]
+    out: list[Problem] = []
+    _, unseated = context._seat(sorted(rules, key=context._seat_key))
+    for name, why in unseated:
+        out.append(
+            _problem(
+                ERROR,
+                "mabolo.core.full",
+                f"this rule is pinned and did not get a seat in the core ({why}). "
+                f"A session does not follow it. Unpin another rule, or shorten this one to "
+                f"{context.SEAT_CHARS} characters including its name.",
+                next((e.path for e in entries if e.name == name), None),
+            )
+        )
+    for entry in entries:
+        if entry.mabolo.pin is True:
+            out.append(
+                _problem(
+                    WARNING,
+                    "mabolo.pin.undated",
+                    "this pin says `true` rather than the day it was set, so the newest pin "
+                    "cannot be told from the oldest when the core is full. Write `pin: "
+                    f"{jetzt_tag()}` instead.",
+                    entry.path,
+                )
+            )
+    return out
+
+
+def jetzt_tag() -> str:
+    """Today, for a message that suggests a date. Never read by a check."""
+    return dt.date.today().isoformat()
+
+
 def validate_vault(root: Path, areas: Iterable[str] = FIXED_AREAS) -> Report:
     """Validate a whole vault, including the checks that need every file at once."""
     report = Report()
@@ -810,6 +898,7 @@ def validate_vault(root: Path, areas: Iterable[str] = FIXED_AREAS) -> Report:
             )
 
     report.extend(_check_links(root, files))
+    report.extend(_check_seats(report.entries))
     try:
         has_index = (root / INDEX_FILE).exists()
     except OSError as exc:

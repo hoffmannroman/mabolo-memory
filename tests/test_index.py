@@ -304,3 +304,29 @@ def test_a_search_preview_line_cannot_forge_a_line_either(vault):
     assert line == "- bad name: first ## forged (9 entries)"
     assert entry_line("e", "", "A title") == "- e: A title"
     assert entry_line("e", "", "") == "- e: e"
+
+
+def test_the_day_a_pin_was_set_reaches_the_document(tmp_path):
+    """The seating order reads it, so it has to survive the projection from a
+    file to what the readers see. Building a Document by hand in a test never
+    crosses this step."""
+    import datetime as dt
+
+    from mabolo.index import documents_of
+    from mabolo.schema import Entry, MaboloBlock
+
+    dated = Entry(
+        type="reference",
+        title="Dated",
+        mabolo=MaboloBlock(area="persona", pin=dt.date(2026, 9, 19)),
+        path=tmp_path / "persona" / "dated.md",
+    )
+    plain = Entry(
+        type="reference",
+        title="Plain",
+        mabolo=MaboloBlock(area="persona", pin=True),
+        path=tmp_path / "persona" / "plain.md",
+    )
+    by_name = {d.name: d for d in documents_of([dated, plain])}
+    assert by_name["dated"].pin is True and by_name["dated"].pinned_at == dt.date(2026, 9, 19)
+    assert by_name["plain"].pin is True and by_name["plain"].pinned_at is None

@@ -150,3 +150,22 @@ def test_an_entry_still_comes_into_being_at_the_start_of_its_day():
     """`generated.at` is when an entry began, and the earliest instant of that
     day is the careful answer. Only the session moment reads a day as whole."""
     assert schema.parse_time("2026-09-18").isoformat() == "2026-09-18T00:00:00"
+
+
+def test_a_pin_can_name_the_day_it_was_set():
+    assert MaboloBlock.from_meta({"pin": "2026-09-19"}).pin == dt.date(2026, 9, 19)
+    assert MaboloBlock.from_meta({"pin": dt.date(2026, 9, 19)}).pin == dt.date(2026, 9, 19)
+
+
+def test_a_plain_true_is_still_a_pin():
+    """The older spelling keeps working. Refusing it would turn a formatting
+    preference into a vault that cannot be read."""
+    assert MaboloBlock.from_meta({"pin": True}).pin is True
+    assert MaboloBlock.from_meta({"pin": False}).pin is False
+    assert MaboloBlock.from_meta({}).pin is False
+
+
+def test_an_unreadable_pin_is_still_a_pin_rather_than_a_crash():
+    """The readers render what is on disk. A typo in one entry's pin must not
+    cost a session its whole payload; `validate` is where it gets reported."""
+    assert MaboloBlock.from_meta({"pin": "someday"}).pin is True

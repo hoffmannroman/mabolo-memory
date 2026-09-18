@@ -1,3 +1,5 @@
+from conftest import entry_text
+from mabolo import context
 from mabolo.validate import validate_meta, validate_vault
 from mabolo.vault import Vault
 
@@ -414,3 +416,44 @@ def test_a_vault_that_declares_no_language_is_read_as_english(tmp_path):
     vault.index_file.write_text("---\nokf_version: '0.2'\n---\n\n# Vault\n", encoding="utf-8")
     assert vault.validate().ok
     assert vault.declared_language() == "en"
+
+
+def test_a_pinned_rule_without_a_seat_is_an_error_naming_the_rule(vault):
+    """The payload's own line about this is read by the model. This is the one
+    a person sees, and it says what to do about it."""
+    for i in range(context.CORE_SEATS + 1):
+        (vault.root / "persona" / f"rule-{i:02d}.md").write_text(
+            entry_text(
+                area="persona",
+                title=f"Rule {i}",
+                description="a standing rule",
+                mabolo={"pin": f"2026-09-{i + 1:02d}"},
+            ),
+            encoding="utf-8",
+        )
+    report = validate_vault(vault.root)
+    full = [p for p in report.problems if p.code == "mabolo.core.full"]
+    assert len(full) == 1
+    assert "rule-12" in str(full[0].path)
+    assert "does not follow it" in full[0].message
+
+
+def test_a_pin_that_names_no_day_is_a_warning_not_an_error(vault):
+    """It still works, it just cannot be told apart from the oldest pin when
+    the core fills up."""
+    (vault.root / "persona" / "old-style.md").write_text(
+        entry_text(area="persona", title="Old", description="a rule", mabolo={"pin": True}),
+        encoding="utf-8",
+    )
+    report = validate_vault(vault.root)
+    assert report.ok
+    assert any(p.code == "mabolo.pin.undated" for p in report.problems)
+
+
+def test_a_pin_that_is_neither_a_day_nor_a_boolean_is_an_error(vault):
+    (vault.root / "persona" / "nonsense.md").write_text(
+        entry_text(area="persona", title="N", description="a rule", mabolo={"pin": "someday"}),
+        encoding="utf-8",
+    )
+    report = validate_vault(vault.root)
+    assert any(p.code == "mabolo.pin.invalid" for p in report.problems)

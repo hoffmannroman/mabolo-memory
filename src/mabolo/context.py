@@ -52,14 +52,22 @@ from .schema import PROJECT_PREFIX, as_utc
 #: the smaller of the two is the only number that is right in both.
 DEFAULT_TARGET_TOKENS = 800
 
-#: What the core may cost. A pinned entry is a standing rule: it has to be there
-#: before anybody knows they need it, because nobody looks up a rule they have
-#: forgotten. So the core is never cut, and this number is the point at which
-#: the payload says so out loud instead of quietly dropping the oldest rule.
-#: Measured: a rule written as one sentence costs about 20 tokens, so fifteen
-#: fit. That is the real limit on how many standing rules a session can carry,
-#: and it is better said than discovered.
-DEFAULT_CORE_TOKENS = 300
+#: How many standing rules a session can carry, and how long each may be.
+#:
+#: **Seats, not a budget.** A budget answers "how do I shorten this sentence
+#: until it fits"; seats answer "which rule goes", which is the question that
+#: has to be asked. A seat is also something a person can count without a
+#: shell: it is the number of files saying `pin:`. And the ceiling follows by
+#: arithmetic rather than from an estimate, which matters because the token
+#: count in this project is `ceil(len / 4)` and says so.
+#:
+#: Twelve was chosen against the eleven rules that exist today, measured as
+#: one-liners: 71 to 211 characters, median 156. The line is the rule as it
+#: gets loaded, so a rule that does not fit on one is not shortened, it is left
+#: without a seat and named. The long form lives in the entry and is one read
+#: away.
+CORE_SEATS = 12
+SEAT_CHARS = 160
 
 #: What the journal block may cost. Its own budget rather than a share of the
 #: map's, because unlike the core it *can* be cut: the oldest line goes first
@@ -125,17 +133,28 @@ def header(project: str | None) -> str:
 CORE_HEADING = "## Always"
 
 
-def over_core(count: int, cost: int, target: int) -> str:
-    """The sentence a vault gets when it pins more than the core can hold.
+#: Why a rule did not get a seat. Both are the entry's own doing, and both are
+#: named in the payload rather than left to be noticed.
+NO_SEAT = "seat {n} of {total}"
+TOO_LONG = "line of {n} characters, {total} allowed"
 
-    A statement, not a cut. Everywhere else this tool refuses to trim a list
-    quietly, and the one list where a silent trim would do the most damage is
-    this one: a rule that vanishes is not missed, it is simply not followed.
+
+def unseated_line(unseated: Sequence[tuple[str, str]]) -> str:
+    """What the payload says about the rules that did not get a seat.
+
+    Named, every time, and never merely counted. A rule that vanishes is not
+    missed: it is simply not followed, and the session cannot tell the
+    difference between a rule that was never written and one that fell off the
+    end of a list. So the names are here, and what to do about it is one line
+    away in `mabolo validate`.
+
+    This is the fallback, not the mechanism. A full core is supposed to be
+    refused when somebody pins the thirteenth rule, where the person who
+    caused it is standing. This line is what a hand-edited vault or a merge
+    gets, and it is read by the model rather than by a person.
     """
-    return (
-        f"The core is over its budget: {_plural(count, 'rule', 'rules')}, about {cost} tokens, "
-        f"target {target}. Nothing was dropped. Unpin what is no longer a rule."
-    )
+    named = ", ".join(f"{name} ({why})" for name, why in unseated)
+    return f"not loaded: {named}. Run `mabolo validate` and unpin what is no longer a rule."
 
 
 #: The heading the journal lines sit under. They are not a part of the map
@@ -194,6 +213,8 @@ class Line:
     summary: str
     reason: str
     at: dt.datetime | None = None
+    #: The day this was pinned, when the pin names one. Seating order.
+    pinned_at: dt.date | None = None
 
     def render(self) -> str:
         return entry_line(self.name, self.summary, self.summary)
@@ -233,7 +254,8 @@ class SessionIndex:
     cut: int = 0
     project: str | None = None
     target_tokens: int = DEFAULT_TARGET_TOKENS
-    core_tokens: int = DEFAULT_CORE_TOKENS
+    #: Rules that asked for a seat and did not get one, with the reason.
+    unseated: tuple[tuple[str, str], ...] = ()
     project_tokens: int = DEFAULT_PROJECT_TOKENS
 
     @property
@@ -261,8 +283,13 @@ class SessionIndex:
 
     @property
     def total(self) -> int:
-        """Every entry in the vault, described, named or neither."""
-        return len(self.shown) + len(self.named) + self.omitted
+        """Every entry in the vault, described, named or neither.
+
+        A rule that got no seat counts here too, and not as omitted: it is
+        named, with the reason, on its own line. Counting it as "not shown at
+        all" would be the payload lying about the one thing it just said.
+        """
+        return len(self.shown) + len(self.named) + len(self.unseated) + self.omitted
 
     @staticmethod
     def core_block(core: Sequence[Line]) -> list[str]:
@@ -282,8 +309,9 @@ class SessionIndex:
         return estimate_tokens("\n".join(self.core_block(self.core)))
 
     @property
-    def core_is_over_budget(self) -> bool:
-        return bool(self.core) and self.core_cost() > self.core_tokens
+    def core_is_full(self) -> bool:
+        """True when a rule asked for a seat and did not get one."""
+        return bool(self.unseated)
 
     def position(self, name: str) -> int | None:
         """Where a name sits, 1 being the safest, or None if it is not there.
@@ -328,8 +356,8 @@ class SessionIndex:
                 out.append(also_here(sorted(named[area])))
             out.append("")
         out.append(footer(self.omitted, len(self.named)))
-        if self.core_is_over_budget:
-            out.append(over_core(len(self.core), self.core_cost(), self.core_tokens))
+        if self.unseated:
+            out.append(unseated_line(self.unseated))
         return "\n".join(out)
 
     def cost(self) -> int:
@@ -369,8 +397,8 @@ class SessionIndex:
         for block in (self.core_block(self.core), self.notes_block()):
             if block:
                 body = body.replace("\n".join(block) + "\n\n", "", 1)
-        if self.core_is_over_budget:
-            body = body.replace("\n" + over_core(len(self.core), self.core_cost(), self.core_tokens), "", 1)
+        if self.unseated:
+            body = body.replace("\n" + unseated_line(self.unseated), "", 1)
         return estimate_tokens(body)
 
 
@@ -417,6 +445,11 @@ def violations(payload: SessionIndex) -> tuple[str, ...]:
     entries = {line.render() for line in payload.shown}
     for line in sorted(l for l in entries if written.count(l) > 1):
         out.append(f"{one_line(line)} is in the payload more than once")
+    for name, why in payload.unseated:
+        # A rule that asked to be in every session and is not. Reported rather
+        # than tolerated: unlike the old budget, there is now something a person
+        # can do about it, and the payload already says what.
+        out.append(f"the standing rule {name} got no seat ({why})")
     map_cost = payload.map_cost()
     if map_cost > payload.target_tokens:
         out.append(
@@ -528,6 +561,46 @@ def _reason(
     return None
 
 
+def _seat_key(line: Line) -> tuple[dt.date, str]:
+    """Seating order: oldest pin first, then by name.
+
+    **The newest pin is the one that loses a seat**, which is the opposite of
+    how the map is cut and is the whole point. The rule nobody remembers is by
+    definition an old one, so letting age decide would drop exactly the rule
+    whose absence goes unnoticed for weeks. Losing the newest puts the loss
+    where the action was: the rule written a minute ago does not hold until its
+    author makes room, and its author is standing right there.
+
+    A pin that names no day falls back to the day the entry was touched, and
+    then to the oldest possible day, so an undated pin keeps its seat against a
+    dated newcomer. The name breaks a tie, because two machines can pin on one
+    day and the answer has to be the same on both.
+    """
+    return (line.pinned_at or _OLDEST.date(), line.name)
+
+
+def _seat(rules: Sequence[Line]) -> tuple[list[Line], tuple[tuple[str, str], ...]]:
+    """Which rules get a seat, and why the others did not.
+
+    Two ways to lose one, and both belong to the rule itself rather than to the
+    budget: there were already twelve, or the line is longer than a seat holds.
+    Neither is a cut. A rule is loaded whole or not at all, because half a rule
+    read as a whole one is worse than a missing one, and the missing one is at
+    least named.
+    """
+    seated: list[Line] = []
+    unseated: list[tuple[str, str]] = []
+    for line in rules:
+        rendered = line.render()
+        if len(rendered) > SEAT_CHARS:
+            unseated.append((line.name, TOO_LONG.format(n=len(rendered), total=SEAT_CHARS)))
+        elif len(seated) >= CORE_SEATS:
+            unseated.append((line.name, NO_SEAT.format(n=len(seated) + 1, total=CORE_SEATS)))
+        else:
+            seated.append(line)
+    return seated, tuple(unseated)
+
+
 def _fit_notes(notes: Sequence[Note], target_tokens: int) -> tuple[list[Note], int]:
     """As many journal lines as their own budget holds, newest first.
 
@@ -558,7 +631,6 @@ def build(
     project: str | None = None,
     as_of: dt.datetime | dt.date | None = None,
     target_tokens: int = DEFAULT_TARGET_TOKENS,
-    core_tokens: int = DEFAULT_CORE_TOKENS,
     notes: Sequence[Note] = (),
     project_tokens: int = DEFAULT_PROJECT_TOKENS,
 ) -> SessionIndex:
@@ -587,6 +659,7 @@ def build(
                 summary=_summary(document),
                 reason=reason,
                 at=document.at,
+                pinned_at=document.pinned_at or (document.at.date() if document.at else None),
             )
         )
     chosen.sort(key=_cut_key)
@@ -595,8 +668,9 @@ def build(
     # Whatever is left of the target is what the map may spend, so pinning a
     # rule costs the map a line, visibly, rather than costing another rule its
     # place without saying so.
-    core = tuple(sorted((l for l in chosen if l.reason == PINNED), key=lambda l: l.name))
-    rest = [l for l in chosen if l.reason != PINNED]
+    seated, unseated = _seat(sorted((l for l in chosen if l.reason == PINNED), key=_seat_key))
+    core = tuple(sorted(seated, key=lambda l: l.name))
+    rest = [l for l in chosen if l.reason != PINNED and l.name not in {u for u, _ in unseated}]
     # The core is paid for out of the same target, through the one spelling of
     # the block, plus the blank line that separates it from the map. That line
     # went unpaid and was the last token of a budget that could be breached by
@@ -627,17 +701,17 @@ def build(
     shown_notes, notes_cut = _fit_notes(list(notes), project_tokens)
     return SessionIndex(
         core=core,
+        unseated=unseated,
         chosen=tuple(line.name for line in chosen),
         notes=tuple(shown_notes),
         notes_cut=notes_cut,
         lines=tuple(kept),
         named=tuple(named),
         counts=tuple(sorted(counts.items())),
-        omitted=len(documents) - len(core) - len(kept) - len(named),
+        omitted=len(documents) - len(core) - len(kept) - len(named) - len(unseated),
         cut=len(rest) - len(kept),
         project=project,
         target_tokens=target_tokens,
-        core_tokens=core_tokens,
         project_tokens=project_tokens,
     )
 

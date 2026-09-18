@@ -158,6 +158,29 @@ def parse_moment(value: Any) -> dt.datetime | None:
     return when
 
 
+def _as_pin(value: Any) -> bool | dt.date:
+    """`true`, a day, or not pinned at all.
+
+    A string that looks like a date becomes one; anything else that is truthy
+    is a plain pin. Refusing an unreadable value would make a typo in one
+    entry's `pin` field cost a session its whole payload, and the readers here
+    render what is on disk rather than what a validator wishes were there.
+    `validate` is where a malformed pin gets reported.
+    """
+    if value is True:
+        return True
+    if isinstance(value, dt.datetime):
+        return value.date()
+    if isinstance(value, dt.date):
+        return value
+    if isinstance(value, str):
+        try:
+            return dt.date.fromisoformat(value.strip())
+        except ValueError:
+            return bool(value.strip())
+    return False
+
+
 def is_actor(value: Any) -> bool:
     """True for `producer/version`, `human:<id>` or `process:<id>`."""
     if not isinstance(value, str):
@@ -298,7 +321,11 @@ class MaboloBlock:
 
     area: str = ""
     anchor: str | None = None
-    pin: bool = False
+    #: `true`, or the day the entry was pinned. A standing rule competes for a
+    #: seat in the core, and when there is one seat too few the newest pin is
+    #: the one that loses it, so the day has to travel with the pin. `true`
+    #: stays valid and falls back to `generated.at`.
+    pin: bool | dt.date = False
     aliases: list[str] = field(default_factory=list)
     # Only the design area uses these three.
     scope: str | None = None
@@ -320,7 +347,7 @@ class MaboloBlock:
         return cls(
             area=area.strip() if isinstance(area, str) else "",
             anchor=anchor.strip() if isinstance(anchor, str) and anchor.strip() else None,
-            pin=value.get("pin") is True,
+            pin=_as_pin(value.get("pin")),
             aliases=_string_list(value.get("aliases")),
             scope=scope.strip() if isinstance(scope, str) and scope.strip() else None,
             applies_to=_string_list(value.get("applies_to")),

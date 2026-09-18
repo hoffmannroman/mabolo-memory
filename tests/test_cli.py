@@ -467,29 +467,50 @@ def test_a_folder_in_no_repository_at_all_is_its_own_answer(tmp_path):
     assert repo_root(lonely) == lonely
 
 
-def test_context_reports_a_core_over_its_budget_as_a_finding(vault, capsys):
-    """Nothing was dropped, so it is not a failure. But somebody has to decide
-    which rule stops being one, and nobody decides what nobody is told."""
+def test_context_reports_a_rule_without_a_seat_as_a_finding(vault, capsys):
+    """Nothing was lost from the vault, so it is not a failure. But a rule
+    without a seat is not being followed, and nobody decides what nobody is
+    told. The name and the reason are both in the output."""
     context_vault(vault)
-    assert main(["context", str(vault.root), "--as-of", "2026-09-18", "--core-budget", "5"]) == 1
+    for i in range(schema_seats := context_seats()):
+        (vault.root / "persona" / f"extra-{i:02d}.md").write_text(
+            entry_text(
+                area="persona",
+                title=f"Extra {i}",
+                description="one more standing rule",
+                mabolo={"pin": True},
+                generated={"by": "mabolo/0.1.0", "at": f"2026-09-{10 + i % 8:02d}T10:00:00+03:00"},
+            ),
+            encoding="utf-8",
+        )
+    assert main(["context", str(vault.root), "--as-of", "2026-09-18"]) == 1
     out = capsys.readouterr().out
-    assert "The core is over its budget" in out
-    assert "Nothing was dropped" in out
-    assert "1 standing rule pinned, about" in out
+    assert "not loaded:" in out
+    assert "no seat:" in out
+    assert f"of {schema_seats} seats taken" in out
 
 
-def test_context_is_clean_when_the_core_fits(vault, capsys):
+def context_seats() -> int:
+    return context.CORE_SEATS
+
+
+def test_context_is_clean_when_every_rule_has_a_seat(vault, capsys):
     context_vault(vault)
     assert main(["context", str(vault.root), "--as-of", "2026-09-18"]) == 0
     out = capsys.readouterr().out
-    assert "over its budget" not in out
-    assert "of the 300 the core is meant to cost" in out
+    assert "not loaded:" not in out
+    assert f"1 of {context.CORE_SEATS} seats taken by standing rules" in out
 
 
-def test_context_refuses_a_core_budget_that_is_not_one(vault, capsys):
+def test_the_core_size_is_not_a_command_line_option_any_more(vault, capsys):
+    """It was the back door: one flag and the whole mechanism is off. A budget
+    may be lowered from here, never raised, and the number of seats is not a
+    budget at all."""
     context_vault(vault)
-    assert main(["context", str(vault.root), "--core-budget", "0"]) == 2
-    assert "at least 1" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exit:
+        main(["context", str(vault.root), "--core-budget", "5000"])
+    assert exit.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err
 
 
 # The session start hook: it never fails, and it never sends a payload it cannot stand behind
@@ -711,3 +732,13 @@ def test_the_deadline_covers_the_writing_too(tmp_path, capsys, monkeypatch):
     # write simply took its time and the hook ended cleanly, which is the same
     # exit code and the wrong behaviour.
     assert "gave up" in err and "0.05 seconds" in err
+
+
+def test_a_budget_may_be_lowered_from_the_command_line_but_not_raised(vault, capsys):
+    """Raising it is how a ceiling stops being one: the flag is always to hand,
+    and the next person who finds a payload cut short reaches for it instead of
+    for the reason."""
+    context_vault(vault)
+    assert main(["context", str(vault.root), "--budget", "200"]) == 0
+    assert main(["context", str(vault.root), "--budget", "5000"]) == 2
+    assert "can be lowered here, not raised" in capsys.readouterr().err

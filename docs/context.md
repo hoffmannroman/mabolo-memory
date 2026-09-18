@@ -225,6 +225,55 @@ newline would otherwise write its own heading and its own closing sentence into
 the middle of a payload that is injected into a prompt automatically. The words
 survive, the structure does not bend.
 
+## Seats, not a budget
+
+The core has **twelve seats**, and one line per seat holds **160 characters**.
+Both numbers are in `context.py`, neither is a command line option, and the
+ceiling follows from them by arithmetic rather than from an estimate. That
+matters: the token count in this project is `ceil(len / 4)` and says so, which
+is fine for a target and not fine for a guarantee.
+
+A budget asks "how do I shorten this sentence until it fits". Seats ask "which
+rule goes", and that is the question that has to reach a person. A seat is also
+something you can count without a shell: it is the number of files saying
+`pin:`.
+
+**The newest pin loses its seat, not the oldest.** This is the opposite of how
+the map is cut, and it is the point. The rule nobody remembers is by definition
+an old one, so letting age decide would drop exactly the rule whose absence
+goes unnoticed for weeks. Losing the newest puts the loss where the action was:
+the rule written a minute ago does not hold until its author makes room, and
+its author is standing right there.
+
+```yaml
+mabolo:
+  pin: 2026-09-19   # the day it was pinned; `true` still works and warns
+```
+
+A rule whose line is longer than a seat is not shortened. It is left out whole
+and named, because half a rule reads like a whole one, and its long form is one
+`read` away in the entry.
+
+Nothing is ever dropped silently. A rule without a seat is named in the payload
+with the reason, it is an error in `mabolo validate`, and `mabolo context` ends
+with 1:
+
+```
+not loaded: rule-12 (seat 13 of 12). Run `mabolo validate` and unpin what is no longer a rule.
+```
+
+Three places say it, and the payload is the weakest of them: it is read by the
+model rather than by a person. The write path is where this is meant to be
+caught, in front of whoever is setting the thirteenth pin, and that arrives with
+the write tools in P3. The third is the eval baseline, which stores the seat
+count and **refuses** a run where it moved without the selection policy moving
+too. Raising a ceiling in passing is what happened to the budget this replaces,
+twice.
+
+The other budgets work the same way from the command line: `--budget` and
+`--project-budget` may be **lowered**, never raised. Lowering can only make a
+session cheaper than promised; raising is how a ceiling stops being one.
+
 ## The budget, and the one it does not apply to
 
 The target is about 800 tokens, estimated, and it is a target rather than a
