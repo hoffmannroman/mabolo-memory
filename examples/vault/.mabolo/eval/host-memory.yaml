@@ -4,4 +4,4 @@ query: how much memory does the build server have?
 expect:
   entries: [build-server]
   rank_within: 3
-tier: index
+tier: search

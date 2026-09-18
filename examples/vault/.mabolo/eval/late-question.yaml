@@ -3,4 +3,4 @@ query: can I send an urgent question at 23:00?
 expect:
   entries: [working-hours]
   rank_within: 1
-tier: index
+tier: search

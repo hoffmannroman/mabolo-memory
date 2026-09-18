@@ -96,3 +96,37 @@ def test_a_source_keeps_fields_this_version_does_not_know():
 
 def test_a_type_that_is_not_text_does_not_become_the_word_none():
     assert Entry.from_meta({"type": None}).type == ""
+
+
+# When an entry was last touched, which is what the session index cuts by
+
+
+def test_touched_at_is_the_latest_of_generated_and_verified():
+    """A verification is a touch. Reading only `generated` would make an entry
+    somebody confirmed yesterday look years old to the session index."""
+    entry = Entry.from_meta({
+        "type": "reference",
+        "generated": {"by": "mabolo/0.1.0", "at": "2026-08-01T10:00:00+00:00"},
+        "verified": [
+            {"by": "human:alex", "at": "2026-09-10T10:00:00+00:00"},
+            {"by": "human:alex", "at": "2026-08-20T10:00:00+00:00"},
+        ],
+    })
+    assert entry.touched_at().isoformat() == "2026-09-10T10:00:00+00:00"
+
+
+def test_touched_at_is_none_when_the_entry_states_no_time():
+    assert Entry.from_meta({"type": "reference"}).touched_at() is None
+
+
+def test_touched_at_reads_a_timestamp_without_an_offset_as_utc():
+    """Local time would sort the same commit differently in two time zones."""
+    entry = Entry.from_meta({"type": "reference", "generated": {"by": "x/1", "at": "2026-09-10T10:00:00"}})
+    assert entry.touched_at().tzinfo is not None
+    assert entry.touched_at().utcoffset().total_seconds() == 0
+
+
+def test_an_unreadable_timestamp_is_ignored_rather_than_guessed():
+    """`validate` is what complains about it; the index must not crash on it."""
+    entry = Entry.from_meta({"type": "reference", "generated": {"by": "x/1", "at": "not a date"}})
+    assert entry.touched_at() is None

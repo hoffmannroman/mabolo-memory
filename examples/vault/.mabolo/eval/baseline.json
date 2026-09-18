@@ -2,93 +2,115 @@
   "cases": {
     "atlas-database": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "search"
     },
     "atlas-release": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "search"
     },
     "atlas-tone": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "search"
     },
     "backup-window": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "search"
     },
     "beacon-schedule": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "search"
     },
     "build-workers": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "search"
     },
     "centred-text": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "search"
     },
     "deploy-source": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "search"
     },
     "failing-test": {
       "passed": true,
-      "rank": null
+      "rank": null,
+      "tier": "search"
     },
     "gratitude": {
       "passed": true,
-      "rank": null
+      "rank": null,
+      "tier": "search"
     },
     "host-memory": {
       "passed": true,
-      "rank": 2
+      "rank": 2,
+      "tier": "search"
     },
     "late-question": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "search"
     },
     "resume-work": {
       "passed": true,
-      "rank": null
+      "rank": null,
+      "tier": "search"
     },
     "review-shape": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "search"
     },
     "secrets-by-alias": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "search"
     },
     "session-index-atlas": {
       "passed": true,
-      "rank": 6
+      "rank": 6,
+      "tier": "hint"
     },
     "session-index-goes-quiet": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "hint"
     },
     "session-index-without-a-project": {
       "passed": true,
-      "rank": 3
+      "rank": 3,
+      "tier": "hint"
     },
     "smalltalk": {
       "passed": true,
-      "rank": null
+      "rank": null,
+      "tier": "search"
     },
     "staging-parity": {
       "passed": true,
-      "rank": 1
+      "rank": 1,
+      "tier": "search"
     },
     "two-rules": {
       "passed": true,
-      "rank": 2
+      "rank": 2,
+      "tier": "search"
     },
     "unrelated-fact": {
       "passed": true,
-      "rank": null
+      "rank": null,
+      "tier": "search"
     }
   },
   "language": "en",
-  "version": 2
+  "version": 3
 }

@@ -1,6 +1,7 @@
 import pytest
 
 from conftest import entry_text
+from mabolo import schema
 from mabolo.cli import main
 from mabolo.config import Config
 from mabolo.vault import Vault
@@ -279,11 +280,22 @@ def test_context_prints_the_payload_and_what_it_costs(vault, capsys):
 
 
 def test_context_can_be_told_not_to_read_the_clock(vault, capsys):
+    """With an entry written moments ago, so that reading the clock anyway
+    would show up as an extra line rather than as nothing at all."""
     context_vault(vault)
+    (vault.root / "infra" / "written-just-now.md").write_text(
+        entry_text(
+            title="Just now",
+            description="Written moments ago",
+            generated={"by": "mabolo/0.1.0", "at": schema.now().isoformat()},
+        ),
+        encoding="utf-8",
+    )
     assert main(["context", str(vault.root), "--no-clock"]) == 0
     out = capsys.readouterr().out
     assert "nothing counts as recent" in out
     assert "- working-hours" in out, "a pin does not depend on a moment"
+    assert "written-just-now" not in out, "no moment was given, so nothing is recent"
 
 
 def test_context_refuses_a_date_it_cannot_read(vault, capsys):
@@ -326,3 +338,24 @@ def test_eval_explains_a_hint_case_with_the_payload_it_measured(vault, capsys):
     assert "state   session start, no active project, as of 2026-09-18" in out
     assert "1.      working-hours  (persona, pinned) <-- expected" in out
     assert "omitted 1 of 2 entries, 0 cut by the budget" in out
+
+
+def test_context_refuses_a_budget_that_is_not_a_budget(vault, capsys):
+    context_vault(vault)
+    for budget in ("0", "-1"):
+        assert main(["context", str(vault.root), "--budget", budget]) == 2
+        assert "at least 1" in capsys.readouterr().err
+
+
+def test_context_refuses_a_date_it_cannot_count_a_week_back_from(vault, capsys):
+    """Seven days before year one is not a date Python can express, and the
+    command promises sentences rather than tracebacks."""
+    context_vault(vault)
+    assert main(["context", str(vault.root), "--as-of", "0001-01-03"]) == 2
+    assert "too far back" in capsys.readouterr().err
+
+
+def test_context_says_when_the_named_project_does_not_exist(vault, capsys):
+    context_vault(vault)
+    assert main(["context", str(vault.root), "--project", "atlsa", "--as-of", "2026-09-18"]) == 0
+    assert "there is no project/atlsa in this vault" in capsys.readouterr().out

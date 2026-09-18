@@ -3,4 +3,4 @@ query: does staging run the same migrations as production?
 expect:
   entries: [staging-mirrors-production]
   rank_within: 1
-tier: index
+tier: search

@@ -23,8 +23,9 @@ longer offered there is still findable by name, so every search case keeps
 passing while the memory gets quieter. That is the failure this tool is named
 after, so it has cases of its own.
 
-* `tier: index` is a search. A question goes in, entries come back, and the case
-  says which ones and how far down.
+* `tier: search` is a search. A question goes in, entries come back, and the
+  case says which ones and how far down. It is what a case gets when it names no
+  tier at all, and `tier: index`, the name it had before, still reads.
 * `tier: hint` is the session index. There is no question at all: the trigger is
   the session starting, so the case describes the state it started in and says
   what has to be in the payload, what has to stay out of it, and what it may
@@ -43,11 +44,13 @@ expect:
   entries: [deploy-from-main]     # by name; an alias resolves to its entry
   rank_within: 1                  # how far down the answer may be
   must_cite: true                 # the answer has to point at the entry
-tier: index
+tier: search
 ```
 
 A hint case has no `query`. The session start is its trigger, so it carries the
-state that start happened in:
+state that start happened in. A `state.project` that is not a project area in
+the vault fails the case: otherwise a typo is the quietest pass there is, since
+the project rule simply never fires and the pinned entries still show up.
 
 ```yaml
 id: session-index-atlas
@@ -86,7 +89,7 @@ query: carry on
 expect:
   entries: []
   silence: true
-tier: index
+tier: search
 ```
 
 | Key | What it means |
@@ -97,7 +100,7 @@ tier: index
 | `expect.rank_within` | How far down the list the entry may appear. Default 5 |
 | `expect.must_cite` | The answer has to cite the entry. Needs a model in the loop |
 | `expect.silence` | Nothing at all is the correct answer |
-| `tier` | `index`, `hint`, `recall` or `design` |
+| `tier` | `search`, `hint`, `recall` or `design`. Defaults to `search` |
 | `note` | For a reader. Ignored by the run |
 
 A hint case uses a different half of the format, and the two are kept apart: a
@@ -112,9 +115,13 @@ than ignored.
 | `expect.not_in_payload` | Entries that have to stay out of it |
 | `expect.budget_tokens` | What the whole payload may cost, estimated |
 
-An unknown key is an error rather than something ignored. A case is a
-measurement instrument, and an instrument that silently drops a setting reports
-a number about something other than what was asked. For the same reason a case
+An unknown key is an error rather than something ignored, and so is a key that
+belongs to the other shape: a `query` on a hint case and a `state` on a search
+case are both refused by name. A case is a measurement instrument, and an
+instrument that silently drops a setting reports a number about something other
+than what was asked. For the same reason nothing here is coerced. An id has to
+be text, a tier has to be text, and an empty name in a list of entries is an
+error rather than one expectation quietly fewer than the file shows. For the same reason a case
 file that sets the same key twice is refused instead of quietly keeping the
 last one, and a file in `.mabolo/eval/` that is not a case is named rather than
 stepped over.
@@ -135,7 +142,7 @@ The other half needs a model in the loop, and the harness does not run one. It
 says so for every case it cannot decide, and never counts one as a pass:
 
 ```
-index    19 cases, 19 pass, 0 fail
+search   19 cases, 19 pass, 0 fail
 hint     3 cases, 3 pass, 0 fail
 recall   1 case not measured yet, quiet recall needs the session hook, which is not built yet
 design   1 case not measured yet, applies_to as a load trigger is not built yet
@@ -159,8 +166,14 @@ cases, and every later run is compared against it. Two things fail the run:
 
 Getting better is reported as a note and fails nothing.
 
-The baseline stores whether a case passed and at which rank. Deliberately not
-the BM25 score: a rank is ordinal, while a score is a float that moves whenever
+The baseline stores which tier a case was measured in, whether it passed, and at
+which rank. The tier is in it because a rank means a different thing in each one:
+in a search it is where the entry came back, in a hint it is how far the entry
+sits from the line the budget cuts at. A case that keeps its id and changes its
+tier is reported as new rather than as having slipped between two scales that
+have nothing to do with each other.
+
+The rank itself is deliberately not the BM25 score: a rank is ordinal, while a score is a float that moves whenever
 anything about the corpus moves. A gate built on scores fires on noise, and a
 gate that fires on noise gets switched off. Ranks are not a promise that two
 different SQLite builds rank identically, only that the gate is not comparing

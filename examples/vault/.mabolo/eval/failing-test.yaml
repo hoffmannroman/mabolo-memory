@@ -4,4 +4,4 @@ query: fix the failing test
 expect:
   entries: []
   silence: true
-tier: index
+tier: search

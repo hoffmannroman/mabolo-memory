@@ -43,7 +43,7 @@ from typing import Iterable
 
 from . import query as q
 from .errors import MaboloError
-from .schema import PROJECT_PREFIX, Entry, parse_time
+from .schema import PROJECT_PREFIX, Entry
 
 #: The searchable fields and their BM25 weight, in one place. The column list,
 #: the insert statement and the weight arguments are all built from this, so a
@@ -109,11 +109,8 @@ class Document:
     aliases: tuple[str, ...]
     #: The entry asked to be in every session.
     pin: bool = False
-    #: When the entry was last touched, as the file itself states it: the latest
-    #: of `generated.at` and every `verified.at`. Taken from the frontmatter and
-    #: not from the filesystem, because an mtime is not part of a commit and a
-    #: clone would sort the session index differently from the machine it was
-    #: written on.
+    #: When the entry was last touched, in UTC. See `Entry.touched_at`, which is
+    #: where that is decided; nothing here interprets a timestamp of its own.
     at: dt.datetime | None = None
     #: Every word of the entry, folded and split the way a query is, sorted so
     #: that a prefix can be found without walking the list.
@@ -163,10 +160,12 @@ class Hit:
         return self.document.path
 
     def line(self) -> str:
-        """The one line a preview would show for this entry.
+        """The one line a preview of a search result would show for this entry.
 
-        Provisional, and only used to estimate what a preview costs. What the
-        reading tier actually sends is decided where the reading tier is built.
+        Only used to estimate what a preview costs. It looks like a line of the
+        session index and is not one: that payload is built in `context`, from
+        its own rule, and the two are free to diverge the day a search preview
+        needs to say something a session index does not.
         """
         shown = self.description or self.title or self.name
         return f"- {self.name}: {shown}"
@@ -205,22 +204,6 @@ def _searchable(text: str) -> str:
     return " ".join(q.words_of(text))
 
 
-def touched_at(entry: Entry) -> dt.datetime | None:
-    """When an entry was last touched, according to the entry itself.
-
-    The latest of `generated.at` and every `verified.at`, normalised to UTC. An
-    entry that gives no offset is read as UTC rather than as local time: local
-    time would make the same commit sort differently in two time zones, and the
-    session index cuts by exactly this value.
-    """
-    stamps = [entry.generated.at] if entry.generated else []
-    stamps += [v.at for v in entry.verified]
-    times = [t for t in (parse_time(s) for s in stamps) if t is not None]
-    if not times:
-        return None
-    return max(t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc) for t in times)
-
-
 def _document(entry: Entry) -> Document:
     """One entry as the index sees it."""
     values = {
@@ -240,7 +223,7 @@ def _document(entry: Entry) -> Document:
         path=entry.path,
         aliases=tuple(q.fold(a) for a in entry.mabolo.aliases),
         pin=entry.mabolo.pin,
-        at=touched_at(entry),
+        at=entry.touched_at(),
         words=tuple(words),
         fields=fields,
     )
@@ -254,7 +237,7 @@ class Index:
         # index, down to the rowids that break a tie in the ranking.
         self.documents = tuple(sorted(documents, key=lambda d: d.name))
         self.language = language
-        self.targets = self._name_targets()
+        self.targets, self.entry_targets = self._name_targets()
         self.names = frozenset(self.targets)
         self._by_key = {doc.key: doc for doc in self.documents}
         self._db = sqlite3.connect(":memory:")
@@ -289,29 +272,52 @@ class Index:
             )
         return cls(documents, language=language)
 
-    def _name_targets(self) -> dict[str, frozenset[str]]:
+    def _name_targets(self) -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
         """Every name a question could use, and the entries it points at.
 
-        An entry name and an alias point at one entry. A project name points at
-        every entry of that project, because naming the project is a statement
-        about all of them.
+        Two maps, because two callers mean different things by "name". A
+        question may name a project, and naming a project is a statement about
+        all of its entries. Someone naming an entry means that one entry, so the
+        second map leaves projects out; see `resolve_entry`.
         """
         targets: dict[str, set[str]] = {}
+        entries: dict[str, set[str]] = {}
         for doc in self.documents:
             for name in (doc.key, *doc.aliases):
                 targets.setdefault(name, set()).add(doc.name)
+                entries.setdefault(name, set()).add(doc.name)
             if doc.area.startswith(PROJECT_PREFIX):
                 project = q.fold(doc.area[len(PROJECT_PREFIX) :])
                 targets.setdefault(project, set()).add(doc.name)
-        return {name: frozenset(owners) for name, owners in targets.items()}
+        return (
+            {name: frozenset(owners) for name, owners in targets.items()},
+            {name: frozenset(owners) for name, owners in entries.items()},
+        )
 
     def resolve(self, name: str) -> Document | None:
-        """The entry a name or an alias points at, or None."""
+        """The entry a name, an alias or a one entry project points at, or None.
+
+        This is the search's idea of a name. Whoever names an entry and means
+        that entry wants `resolve_entry`.
+        """
+        return self._resolve_in(self.targets, name)
+
+    def resolve_entry(self, name: str) -> Document | None:
+        """The entry a name or an alias points at, and never a project.
+
+        An eval case names the entry it expects. Letting a project name resolve
+        here meant that a case naming `atlas` passed against the single entry
+        that happened to live in `project/atlas`: a green case measuring
+        something other than what its file says.
+        """
+        return self._resolve_in(self.entry_targets, name)
+
+    def _resolve_in(self, targets: dict[str, frozenset[str]], name: str) -> Document | None:
         wanted = q.fold(name)
         found = self._by_key.get(wanted)
         if found is not None:
             return found
-        owners = self.targets.get(wanted) or frozenset()
+        owners = targets.get(wanted) or frozenset()
         if len(owners) == 1:
             return self._by_key.get(q.fold(next(iter(owners))))
         return None

@@ -4,9 +4,12 @@ A memory that preloads everything is a memory you pay for on every prompt,
 whether or not it had anything to say. A memory that preloads a truncated
 version of everything is worse: it looks complete and is not.
 
-So a session is handed a map. Every area with how many entries it holds, the few
-entries this session is most likely to need, and a last line saying how many
-were left out.
+So a session is handed a map. Every area that holds entries, with how many it
+holds, the few entries this session is most likely to need, and a last line
+saying how many were left out. An empty vault therefore shows only that last
+line: the list of areas comes from the entries themselves and never from the
+configuration on one machine, because two clones of one commit have to produce
+the same payload.
 
 ```bash
 mabolo context                                  # the configured vault, as of now
@@ -50,7 +53,9 @@ this order:
 1. **It is pinned.** `mabolo.pin: true` in the entry.
 2. **It belongs to the active project.**
 3. **It was touched in the last seven days**, according to the entry itself: the
-   later of `generated.at` and any `verified.at`.
+   later of `generated.at` and any `verified.at`. Both ends count: a timestamp
+   in the future is not recent either, or one wrong clock would keep an entry at
+   the front of every session for years.
 
 That order is also the order entries survive in. When the payload does not fit
 the budget the least safe line goes first, and inside one class the oldest goes
@@ -73,6 +78,15 @@ itself would answer differently every week, and no measurement of it would hold.
 once a vault has a few thousand entries, and silently trimming the tail is the
 failure this whole design is against. A rule can be read, argued with and
 replayed. That matters more here than being clever.
+
+## Nothing in an entry can forge the shape of it
+
+The heading, the entry lines and the last line are what a reader trusts, and all
+three are built from files a person or an agent wrote. So every value that goes
+into the payload is reduced to one printable line first. A description holding a
+newline would otherwise write its own heading and its own closing sentence into
+the middle of a payload that is injected into a prompt automatically. The words
+survive, the structure does not bend.
 
 ## The budget
 

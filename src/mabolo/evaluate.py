@@ -38,13 +38,13 @@ import yaml
 from . import context, frontmatter
 from .errors import MaboloError
 from .index import DEFAULT_LIMIT, Hit, Index
-from .schema import parse_time
+from .schema import PROJECT_PREFIX, parse_time
 
 #: The file the gate compares against, beside the cases and versioned with them.
 BASELINE_FILE = "baseline.json"
 #: Bumped when the shape of that file changes. An older Mabolo refuses a newer
 #: baseline rather than comparing against fields it does not understand.
-BASELINE_VERSION = 2
+BASELINE_VERSION = 3
 
 #: A case file is small. A larger one is a mistake worth naming rather than
 #: parsing, and the entry reader has the same kind of limit.
@@ -63,13 +63,35 @@ DEFERRED = {
 #: entry is in the payload a session starts with. That is where a memory goes
 #: quiet without failing anything, because the curation drops the oldest line
 #: first and nobody is told.
-MEASURED_TIERS = ("index", "hint")
+MEASURED_TIERS = ("search", "hint")
 #: What a case can be about. Everything beyond the measured ones is exactly the
 #: keys of DEFERRED, so a new tier cannot be accepted while the sentence
 #: explaining why it is deferred is still missing.
 TIERS = (*MEASURED_TIERS, *DEFERRED)
+#: The tier a case gets when it does not say. A search is what most cases are.
+DEFAULT_TIER = "search"
+#: `search` was called `index` until the word had four meanings in this project:
+#: the SQLite index, the session index, this tier and `index.md`. An old case
+#: still reads, and writes nothing back, so a vault can be renamed in its own
+#: time.
+TIER_ALIASES = {"index": "search"}
+
+#: What each shape of case may carry. A tier is refused unless it appears in
+#: both tables, so a new shape cannot be half defined. Listing what is allowed,
+#: rather than each shape listing what the others own, is what keeps a fourth
+#: shape from having to be mentioned in the three that came before it.
+TRIGGER_KEYS = {"search": {"query"}, "hint": {"state"}}
+EXPECT_KEYS = {
+    "search": {"entries", "rank_within", "must_cite", "silence"},
+    "hint": {"in_payload", "not_in_payload", "budget_tokens"},
+}
+COMMON_KEYS = {"id", "tier", "note", "expect"}
 
 DEFERRED_CITE = "must_cite needs a model in the loop, which the harness does not run"
+
+#: What a deferred tier is measured as, until it is built. They are search
+#: shaped: a prompt goes in and entries are expected back.
+DEFERRED_SHAPE = "search"
 
 DEFAULT_RANK_WITHIN = DEFAULT_LIMIT
 
@@ -89,7 +111,7 @@ class Case:
     id: str
     query: str
     path: Path
-    tier: str = "index"
+    tier: str = DEFAULT_TIER
     # A search case.
     entries: tuple[str, ...] = ()
     rank_within: int = DEFAULT_RANK_WITHIN
@@ -161,7 +183,11 @@ def _as_names(value: Any, where: Path, field_name: str = "expect.entries") -> tu
         value = [value]
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise MaboloError(f"{where}: {field_name} is a list of entry names")
-    return tuple(v.strip() for v in value if v.strip())
+    if any(not v.strip() for v in value):
+        # Dropping it quietly would leave a case measuring one name fewer than
+        # the file shows, which is the whole failure this harness is against.
+        raise MaboloError(f"{where}: {field_name} holds an empty name")
+    return tuple(v.strip() for v in value)
 
 
 def _as_count(value: Any, field_name: str, where: Path) -> int:
@@ -171,16 +197,22 @@ def _as_count(value: Any, field_name: str, where: Path) -> int:
     return value
 
 
-def _reject(data: dict[str, Any], keys: Iterable[str], path: Path, why: str) -> None:
-    """Refuse the fields belonging to the other shape of case.
+def _tier_of(data: dict[str, Any], path: Path) -> str:
+    """The tier a case declares, or the default when it declares none.
 
-    Ignoring them would be the quiet failure this harness exists against: a case
-    that carries `query` under `tier: hint` looks like it measures a question
-    and measures a session start.
+    Only an absent key is a default. `tier: false` and `tier: ""` used to become
+    `search` through a truthiness test, which is a visibly broken case measuring
+    something its file never asked for.
     """
-    present = sorted(k for k in keys if k in data)
-    if present:
-        raise MaboloError(f"{path}: {', '.join(present)} {why}")
+    if "tier" not in data:
+        return DEFAULT_TIER
+    raw = data["tier"]
+    if not isinstance(raw, str) or not raw.strip():
+        raise MaboloError(f"{path}: tier is text, one of {', '.join(TIERS)}, not {raw!r}")
+    tier = TIER_ALIASES.get(raw.strip(), raw.strip())
+    if tier not in TIERS:
+        raise MaboloError(f"{path}: tier is one of {', '.join(TIERS)}, not {raw.strip()!r}")
+    return tier
 
 
 def parse_case(data: Any, path: Path) -> Case:
@@ -192,17 +224,16 @@ def parse_case(data: Any, path: Path) -> Case:
     """
     if not isinstance(data, dict):
         raise MaboloError(f"{path}: a case is one mapping, with id, a trigger and expect")
-    unknown = sorted(set(data) - {"id", "query", "expect", "tier", "note", "state"})
-    if unknown:
-        raise MaboloError(f"{path}: unknown key(s) {', '.join(unknown)} in this case")
 
-    case_id = str(data.get("id") or "").strip()
-    if not case_id:
-        raise MaboloError(f"{path}: the case needs an id")
+    raw_id = data.get("id")
+    if not isinstance(raw_id, str) or not raw_id.strip():
+        # Not `str(...)`: an id of 123 used to become "123" without a word, and
+        # the baseline is keyed by that string.
+        raise MaboloError(f"{path}: the case needs an id, as text")
+    case_id = raw_id.strip()
 
-    tier = str(data.get("tier") or "index").strip()
-    if tier not in TIERS:
-        raise MaboloError(f"{path}: tier is one of {', '.join(TIERS)}, not {tier!r}")
+    tier = _tier_of(data, path)
+    shape = tier if tier in MEASURED_TIERS else DEFERRED_SHAPE
 
     expect = data.get("expect")
     if expect is None:
@@ -210,21 +241,29 @@ def parse_case(data: Any, path: Path) -> Case:
     if not isinstance(expect, dict):
         raise MaboloError(f"{path}: expect is a mapping")
 
-    if tier == "hint":
-        return _parse_hint_case(data, expect, case_id, path)
+    # What this shape may carry, named once. A key belonging to another shape is
+    # refused rather than ignored: a `query` under `tier: hint` would look like
+    # it measures a question and measure a session start.
+    allowed = COMMON_KEYS | TRIGGER_KEYS[shape]
+    unknown = sorted(set(data) - allowed)
+    if unknown:
+        raise MaboloError(
+            f"{path}: {', '.join(unknown)} does not belong on a {tier} case. "
+            f"It takes {', '.join(sorted(TRIGGER_KEYS[shape]))}."
+        )
+    unknown = sorted(set(expect) - EXPECT_KEYS[shape])
+    if unknown:
+        raise MaboloError(
+            f"{path}: {', '.join(unknown)} does not belong under expect on a {tier} case. "
+            f"It takes {', '.join(sorted(EXPECT_KEYS[shape]))}."
+        )
 
-    _reject(
-        data,
-        ("state",),
-        path,
-        "belongs to a hint case; this one is triggered by its query",
-    )
+    if shape == "hint":
+        return _parse_hint_case(data, expect, case_id, tier, path)
+
     query = data.get("query")
     if not isinstance(query, str) or not query.strip():
         raise MaboloError(f"{path}: the case needs a query")
-    unknown = sorted(set(expect) - {"entries", "rank_within", "must_cite", "silence"})
-    if unknown:
-        raise MaboloError(f"{path}: unknown key(s) {', '.join(unknown)} under expect")
 
     entries = _as_names(expect.get("entries"), path)
     silence = _as_bool(expect.get("silence"), "expect.silence", path)
@@ -251,7 +290,7 @@ def parse_case(data: Any, path: Path) -> Case:
     )
 
 
-def _parse_hint_case(data: dict[str, Any], expect: Any, case_id: str, path: Path) -> Case:
+def _parse_hint_case(data: dict[str, Any], expect: Any, case_id: str, tier: str, path: Path) -> Case:
     """A case about the session index, which has a state instead of a question.
 
     Every field is required to be explicit, `as_of` most of all. The selection
@@ -259,13 +298,6 @@ def _parse_hint_case(data: dict[str, Any], expect: Any, case_id: str, path: Path
     that let the harness read the clock would measure a different vault every
     week and report the difference as a regression in the search.
     """
-    _reject(
-        data,
-        ("query",),
-        path,
-        "does not belong on a hint case: the session start is the trigger, "
-        "and the state it happens in goes under state:",
-    )
     state = data.get("state")
     if not isinstance(state, dict):
         raise MaboloError(
@@ -278,20 +310,22 @@ def _parse_hint_case(data: dict[str, Any], expect: Any, case_id: str, path: Path
     project = state.get("project")
     if project is not None and (not isinstance(project, str) or not project.strip()):
         raise MaboloError(f"{path}: state.project is the name of a project, or absent")
-    as_of = parse_time(state.get("as_of"))
-    if as_of is None:
+    if "as_of" not in state or state["as_of"] is None:
         raise MaboloError(
             f"{path}: state.as_of is the date the session starts at, such as 2026-09-18. "
-            "It is required, because the index counts seven days back from it and a case "
-            "without it would measure a different vault every week."
+            "It is required, because the session index counts seven days back from it and "
+            "a case without it would measure a different vault every week."
+        )
+    as_of = parse_time(state["as_of"])
+    if as_of is None:
+        # A separate sentence from the one above. Telling somebody who wrote
+        # `as_of: yesterday` that the field is required is a true statement
+        # about the wrong problem.
+        raise MaboloError(
+            f"{path}: state.as_of is {state['as_of']!r}, which is not a date. "
+            "Write it as 2026-09-18, or as a full timestamp."
         )
 
-    unknown = sorted(set(expect) - {"in_payload", "not_in_payload", "budget_tokens"})
-    if unknown:
-        raise MaboloError(
-            f"{path}: unknown key(s) {', '.join(unknown)} under expect for a hint case. "
-            "It expects in_payload, not_in_payload and budget_tokens."
-        )
     present = _as_names(expect.get("in_payload"), path, "expect.in_payload")
     absent = _as_names(expect.get("not_in_payload"), path, "expect.not_in_payload")
     budget = expect.get("budget_tokens")
@@ -311,7 +345,7 @@ def _parse_hint_case(data: dict[str, Any], expect: Any, case_id: str, path: Path
         id=case_id,
         query="",
         path=path,
-        tier="hint",
+        tier=tier,
         project=project.strip() if isinstance(project, str) else None,
         as_of=as_of,
         in_payload=present,
@@ -491,8 +525,17 @@ def run_hint_case(index: Index, case: Case) -> Result:
     reasons: list[str] = []
     positions: list[int] = []
 
+    if case.project and not any(area == f"{PROJECT_PREFIX}{case.project}" for area, _ in payload.counts):
+        # Otherwise a typo in the project name is the quietest pass there is:
+        # the project rule simply never fires, the pinned entries still show up,
+        # and the case goes green having measured half of what it claims.
+        reasons.append(
+            f"state.project {case.project!r} is not a project area in this vault, "
+            "so this case cannot measure the project rule"
+        )
+
     for wanted in case.in_payload:
-        name, missing = _resolve(index, wanted)
+        name, missing = resolve_expected(index, wanted)
         if missing:
             reasons.append(missing)
             continue
@@ -506,7 +549,7 @@ def run_hint_case(index: Index, case: Case) -> Result:
         positions.append(position)
 
     for unwanted in case.not_in_payload:
-        name, missing = _resolve(index, unwanted)
+        name, missing = resolve_expected(index, unwanted)
         if missing:
             reasons.append(missing)
             continue
@@ -526,8 +569,10 @@ def run_hint_case(index: Index, case: Case) -> Result:
     # The worst position, for the same reason a search case stores the worst
     # rank: it is the line closest to being cut, so it is the one that warns
     # first. None as soon as anything went wrong, because a failing case has no
-    # position worth comparing.
-    position = max(positions) if not reasons and len(positions) == len(case.in_payload) else None
+    # position worth comparing, and None when the case names nothing that has to
+    # be present: a case asserting only absences has no position at all, and
+    # `max` of nothing used to end the whole run in a traceback.
+    position = max(positions) if not reasons and positions else None
     return Result(
         case=case,
         passed=not reasons,
@@ -538,9 +583,14 @@ def run_hint_case(index: Index, case: Case) -> Result:
     )
 
 
-def _resolve(index: Index, wanted: str) -> tuple[str, str | None]:
-    """The entry a case names, or the sentence saying it is not in this vault."""
-    document = index.resolve(wanted)
+def resolve_expected(index: Index, wanted: str) -> tuple[str, str | None]:
+    """The entry a case names, or the sentence saying it is not in this vault.
+
+    Through `resolve_entry`, so a case names an entry or an alias and never a
+    project. Both shapes of case go through here: the sentence a reader gets
+    when a case names something that is gone has to be the same sentence.
+    """
+    document = index.resolve_entry(wanted)
     if document is None:
         return wanted, (
             f"{wanted} is not an entry in this vault, so the case cannot be measured. "
@@ -561,14 +611,11 @@ def _judge(index: Index, case: Case, hits: tuple[Hit, ...]) -> tuple[list[str], 
     ranks: list[int] = []
     by_name = {hit.name: hit for hit in hits}
     for wanted in case.entries:
-        document = index.resolve(wanted)
-        if document is None:
-            reasons.append(
-                f"{wanted} is not an entry in this vault, so the case cannot be measured. "
-                "It was probably renamed or removed."
-            )
+        name, missing = resolve_expected(index, wanted)
+        if missing:
+            reasons.append(missing)
             continue
-        hit = by_name.get(document.name)
+        hit = by_name.get(name)
         if hit is None:
             reasons.append(f"{wanted} was not returned at all")
             continue
@@ -608,7 +655,7 @@ class Run:
 
     @property
     def searches(self) -> list[Result]:
-        return self.in_tier("index")
+        return self.in_tier("search")
 
     @property
     def hints(self) -> list[Result]:
@@ -675,8 +722,16 @@ class Change:
 
 @dataclass(frozen=True)
 class BaselineCase:
-    """What the baseline remembers about one case: whether it passed, and where."""
+    """What the baseline remembers about one case: its tier, whether it passed, and where.
 
+    The tier is part of it because a rank means something different in each one.
+    In a search it is where the entry came back in the results; in a hint it is
+    how far an entry sits from the line the budget cuts at. A case that keeps its
+    id and changes its tier used to be reported as having slipped from one to
+    the other, which is a red run about nothing.
+    """
+
+    tier: str
     passed: bool
     rank: int | None = None
 
@@ -684,6 +739,9 @@ class BaselineCase:
     def from_json(cls, data: Any, case_id: str, where: Path) -> BaselineCase:
         if not isinstance(data, dict):
             raise MaboloError(f"{where}: the record for {case_id!r} is not a mapping")
+        tier = data.get("tier")
+        if not isinstance(tier, str) or not tier:
+            raise MaboloError(f"{where}: the record for {case_id!r} does not say which tier it measured")
         passed = data.get("passed")
         rank = data.get("rank")
         # `isinstance(True, int)` is true in Python, so a rank of `true` would
@@ -692,10 +750,10 @@ class BaselineCase:
             raise MaboloError(f"{where}: {case_id!r} says passed is {passed!r}, which is not yes or no")
         if rank is not None and (not isinstance(rank, int) or isinstance(rank, bool) or rank < 1):
             raise MaboloError(f"{where}: {case_id!r} says rank is {rank!r}, which is not a position")
-        return cls(passed=passed, rank=rank)
+        return cls(tier=tier, passed=passed, rank=rank)
 
     def to_json(self) -> dict[str, Any]:
-        return {"passed": self.passed, "rank": self.rank}
+        return {"tier": self.tier, "passed": self.passed, "rank": self.rank}
 
 
 @dataclass(frozen=True)
@@ -721,7 +779,7 @@ class Baseline:
         return cls(
             language=language,
             cases={
-                r.case.id: BaselineCase(passed=r.passed, rank=r.rank)
+                r.case.id: BaselineCase(tier=r.case.tier, passed=r.passed, rank=r.rank)
                 for r in sorted(result.measured, key=lambda r: r.case.id)
             },
         )
@@ -783,6 +841,18 @@ def compare(baseline: Baseline | None, result: Run, *, subset: bool = False) -> 
         was = stored.get(current.case.id)
         if was is None:
             changes.append(Change("new", current.case.id, "is new and not in the baseline"))
+            continue
+        if was.tier != current.case.tier:
+            # Two measurements wearing one id. Comparing their ranks would
+            # report a slip between two scales that have nothing to do with
+            # each other.
+            changes.append(
+                Change(
+                    "new",
+                    current.case.id,
+                    f"was measured as a {was.tier} case and is now a {current.case.tier} case",
+                )
+            )
             continue
         if was.passed and not current.passed:
             changes.append(Change("regressed", current.case.id, "passed in the baseline and fails now"))

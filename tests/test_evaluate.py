@@ -3,6 +3,8 @@
 import json
 import shutil
 
+import yaml
+
 import pytest
 
 from conftest import entry_text
@@ -55,20 +57,20 @@ def test_a_case_is_read_with_everything_it_says(tmp_path):
     assert case.must_cite and case.measurable and not case.silence
 
 
-def test_a_case_without_a_tier_is_an_index_case(tmp_path):
+def test_a_case_without_a_tier_is_a_search_case(tmp_path):
     case = evaluate.parse_case(
         {"id": "x", "query": "q", "expect": {"entries": ["a"]}}, tmp_path / "c.yaml"
     )
-    assert case.tier == "index" and case.rank_within == evaluate.DEFAULT_RANK_WITHIN
+    assert case.tier == "search" and case.rank_within == evaluate.DEFAULT_RANK_WITHIN
 
 
 def test_a_key_nobody_knows_is_refused_rather_than_ignored(tmp_path):
     """An instrument that ignores a setting reports a number about something else."""
-    with pytest.raises(MaboloError, match="unknown key"):
+    with pytest.raises(MaboloError, match="does not belong"):
         evaluate.parse_case(
             {"id": "x", "query": "q", "expect": {"entries": ["a"]}, "rank": 2}, tmp_path / "c.yaml"
         )
-    with pytest.raises(MaboloError, match="unknown key"):
+    with pytest.raises(MaboloError, match="does not belong"):
         evaluate.parse_case(
             {"id": "x", "query": "q", "expect": {"entries": ["a"], "top": 2}}, tmp_path / "c.yaml"
         )
@@ -344,7 +346,7 @@ def test_the_baseline_round_trips(vault):
 def test_the_baseline_stores_ranks_and_not_scores(vault):
     """A score is a float that moves with the corpus. A gate on it fires on noise."""
     stored = evaluate.Baseline.from_run(passing(vault), "en").to_json()
-    assert stored["cases"]["c"] == {"passed": True, "rank": 1}
+    assert stored["cases"]["c"] == {"tier": "search", "passed": True, "rank": 1}
     assert "score" not in json.dumps(stored)
 
 
@@ -383,9 +385,10 @@ def test_a_record_that_is_not_a_record_is_refused(vault):
     base = {"version": evaluate.BASELINE_VERSION, "language": "en"}
     for broken, complaint in (
         ({"x": True}, "not a mapping"),
-        ({"x": {"passed": "false"}}, "not yes or no"),
-        ({"x": {"passed": True, "rank": True}}, "not a position"),
-        ({"x": {"passed": True, "rank": 0}}, "not a position"),
+        ({"x": {"passed": True, "rank": 1}}, "does not say which tier"),
+        ({"x": {"tier": "search", "passed": "false"}}, "not yes or no"),
+        ({"x": {"tier": "search", "passed": True, "rank": True}}, "not a position"),
+        ({"x": {"tier": "search", "passed": True, "rank": 0}}, "not a position"),
     ):
         path.write_text(json.dumps({**base, "cases": broken}), encoding="utf-8")
         with pytest.raises(MaboloError, match=complaint):
@@ -401,7 +404,7 @@ def test_a_case_that_stops_passing_is_a_regression(vault):
 
 def test_a_rank_that_slips_without_failing_is_still_a_regression(vault):
     """The early warning. By the time it fails, the cause is several commits back."""
-    baseline = evaluate.Baseline(language="en", cases={"c": evaluate.BaselineCase(True, 1)})
+    baseline = evaluate.Baseline(language="en", cases={"c": evaluate.BaselineCase(tier="search", passed=True, rank=1)})
     result = run_one(
         vault,
         "snapshot every night and releases cut from main",
@@ -414,7 +417,7 @@ def test_a_rank_that_slips_without_failing_is_still_a_regression(vault):
 
 def test_two_failing_runs_are_never_called_an_improvement(vault):
     """A failing case has no rank, so there is nothing to call better."""
-    baseline = evaluate.Baseline(language="en", cases={"c": evaluate.BaselineCase(False, None)})
+    baseline = evaluate.Baseline(language="en", cases={"c": evaluate.BaselineCase(tier="search", passed=False, rank=None)})
     result = run_one(
         vault, "snapshot every night and releases cut from main",
         {"entries": ["deploy-from-main"], "rank_within": 1},
@@ -424,7 +427,7 @@ def test_two_failing_runs_are_never_called_an_improvement(vault):
 
 
 def test_getting_better_is_news_and_not_a_failure(vault):
-    baseline = evaluate.Baseline(language="en", cases={"c": evaluate.BaselineCase(True, 4)})
+    baseline = evaluate.Baseline(language="en", cases={"c": evaluate.BaselineCase(tier="search", passed=True, rank=4)})
     changes = evaluate.compare(baseline, passing(vault))
     assert [c.kind for c in changes] == ["improved"] and not changes[0].is_worse
 
@@ -436,7 +439,7 @@ def test_a_case_the_baseline_never_saw_is_reported_as_new(vault):
 
 def test_a_case_the_baseline_knows_and_the_run_left_out_is_reported(vault):
     baseline = evaluate.Baseline(language="en", cases={
-        "c": evaluate.BaselineCase(True, 1), "missing": evaluate.BaselineCase(True, 1)})
+        "c": evaluate.BaselineCase(tier="search", passed=True, rank=1), "missing": evaluate.BaselineCase(tier="search", passed=True, rank=1)})
     changes = evaluate.compare(baseline, passing(vault))
     assert [(c.kind, c.case_id) for c in changes] == [("gone", "missing")]
 
@@ -444,7 +447,7 @@ def test_a_case_the_baseline_knows_and_the_run_left_out_is_reported(vault):
 def test_a_partial_run_does_not_report_the_cases_it_left_out(vault):
     """`--case` means leaving them out, so reporting them is true and useless."""
     baseline = evaluate.Baseline(language="en", cases={
-        "c": evaluate.BaselineCase(True, 1), "missing": evaluate.BaselineCase(True, 1)})
+        "c": evaluate.BaselineCase(tier="search", passed=True, rank=1), "missing": evaluate.BaselineCase(tier="search", passed=True, rank=1)})
     assert evaluate.compare(baseline, passing(vault), subset=True) == []
 
 
@@ -456,6 +459,14 @@ def test_the_baseline_is_written_with_a_stable_byte_order(vault):
 
 
 # The hint tier: is the entry in what a session starts with
+
+
+def hint_case(tmp_path, expect: dict, **state) -> evaluate.Case:
+    """One hint case, with `as_of` filled in unless the test is about it."""
+    state.setdefault("as_of", "2026-09-18")
+    return evaluate.parse_case(
+        {"id": "c", "tier": "hint", "state": state, "expect": expect}, tmp_path / "c.yaml"
+    )
 
 
 HINT = """
@@ -490,12 +501,16 @@ def hint_vault(vault):
         ),
         encoding="utf-8",
     )
+    folder = vault.area_dir("project/atlas")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "atlas-tone.md").write_text(
+        entry_text(area="project/atlas", title="Tone", description="Flat and factual"),
+        encoding="utf-8",
+    )
     return Index.build(vault.entries())
 
 
 def test_a_hint_case_is_read_with_its_state(tmp_path):
-    import yaml
-
     case = evaluate.parse_case(yaml.safe_load(HINT), tmp_path / "c.yaml")
     assert case.tier == "hint"
     assert case.project == "atlas"
@@ -518,7 +533,7 @@ def test_a_hint_case_refuses_a_query(tmp_path):
 
 
 def test_a_search_case_refuses_a_state(tmp_path):
-    with pytest.raises(MaboloError, match="belongs to a hint case"):
+    with pytest.raises(MaboloError, match="does not belong on a search case"):
         evaluate.parse_case(
             {"id": "c", "query": "anything", "state": {"as_of": "2026-09-18"},
              "expect": {"entries": ["a"]}},
@@ -544,7 +559,7 @@ def test_a_hint_case_without_a_state_is_refused(tmp_path):
 
 
 def test_a_hint_case_refuses_the_keys_of_a_search_case(tmp_path):
-    with pytest.raises(MaboloError, match="unknown key"):
+    with pytest.raises(MaboloError, match="does not belong"):
         evaluate.parse_case(
             {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18"},
              "expect": {"entries": ["a"], "rank_within": 1}},
@@ -589,8 +604,6 @@ def test_a_budget_that_is_not_a_count_is_refused(tmp_path, budget):
 
 
 def test_a_hint_case_passes_when_the_entry_is_in_the_session_index(vault, tmp_path):
-    import yaml
-
     index = hint_vault(vault)
     result = evaluate.run_case(index, evaluate.parse_case(yaml.safe_load(HINT), tmp_path / "c.yaml"))
     assert result.passed, result.reasons
@@ -609,7 +622,7 @@ def test_a_hint_case_fails_and_says_how_full_the_index_was(vault, tmp_path):
     result = evaluate.run_case(index, case)
     assert not result.passed
     assert result.rank is None
-    assert "is not in the session index, which holds 1 of 2 entries" in result.reasons[0]
+    assert "is not in the session index, which holds 1 of 3 entries" in result.reasons[0]
 
 
 def test_a_hint_case_fails_when_something_that_should_be_gone_is_still_there(vault, tmp_path):
@@ -671,8 +684,6 @@ def test_the_asserted_budget_does_not_change_the_index_it_measures(vault, tmp_pa
 
 def test_the_two_measured_tiers_are_counted_apart(vault, tmp_path):
     index = hint_vault(vault)
-    import yaml
-
     cases = [
         evaluate.parse_case(yaml.safe_load(HINT), tmp_path / "hint.yaml"),
         evaluate.parse_case(
@@ -683,9 +694,9 @@ def test_the_two_measured_tiers_are_counted_apart(vault, tmp_path):
     ]
     result = evaluate.run(index, cases)
     assert len(result.in_tier("hint")) == 1
-    assert len(result.in_tier("index")) == 1
+    assert len(result.in_tier("search")) == 1
     report = evaluate.render(result)
-    assert "index    1 case, 1 pass, 0 fail" in report
+    assert "search   1 case, 1 pass, 0 fail" in report
     assert "hint     1 case, 1 pass, 0 fail" in report
     assert "the session index held what was asked in 1 of 1 cases" in report
 
@@ -693,7 +704,7 @@ def test_the_two_measured_tiers_are_counted_apart(vault, tmp_path):
 def test_a_hint_case_that_slips_down_the_index_is_reported(vault, tmp_path):
     """The early warning: still in the index, and closer to the line where the
     budget cuts."""
-    baseline = evaluate.Baseline(language="en", cases={"c": evaluate.BaselineCase(passed=True, rank=1)})
+    baseline = evaluate.Baseline(language="en", cases={"c": evaluate.BaselineCase(tier="hint", passed=True, rank=1)})
     case = evaluate.parse_case(
         {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18"},
          "expect": {"in_payload": ["a"]}},
@@ -702,3 +713,130 @@ def test_a_hint_case_that_slips_down_the_index_is_reported(vault, tmp_path):
     run = evaluate.Run(results=[evaluate.Result(case=case, passed=True, rank=3)])
     changes = evaluate.compare(baseline, run)
     assert [c.kind for c in changes] == ["slipped"]
+
+
+# What the audits found: a case that cannot fail, and a run that cannot finish
+
+
+def test_a_hint_case_that_only_asserts_absences_passes_and_has_no_rank(vault, tmp_path):
+    """The parser allows it, so the runner has to survive it. `max` of an empty
+    list used to end the whole run in a traceback, with no report and no
+    baseline, and a case saying only "these must be gone" is a real case."""
+    index = hint_vault(vault)
+    result = evaluate.run_case(index, hint_case(tmp_path, {"not_in_payload": ["backups-run-nightly"]}))
+    assert result.passed, result.reasons
+    assert result.rank is None
+
+
+def test_a_budget_only_hint_case_passes_and_has_no_rank(vault, tmp_path):
+    index = hint_vault(vault)
+    result = evaluate.run_case(index, hint_case(tmp_path, {"budget_tokens": 800}))
+    assert result.passed and result.rank is None
+
+
+def test_a_hint_case_naming_a_project_the_vault_does_not_have_fails(vault, tmp_path):
+    """Otherwise a typo is the quietest pass there is: the project rule never
+    fires, the pins still show up, and the case goes green having measured half
+    of what it says."""
+    index = hint_vault(vault)
+    case = hint_case(tmp_path, {"in_payload": ["deploy-from-main"]}, project="atlsa")
+    result = evaluate.run_case(index, case)
+    assert not result.passed
+    assert "is not a project area in this vault" in result.reasons[0]
+
+
+def test_an_expectation_never_resolves_to_a_project_name(vault, tmp_path):
+    """`resolve` lets a question name a project and mean all of its entries. An
+    expectation names one entry, so a project holding exactly one entry used to
+    make a case pass against something its file never mentioned."""
+    folder = vault.area_dir("project/gamma")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "only-one.md").write_text(
+        entry_text(area="project/gamma", title="Only", description="The only one", mabolo={"pin": True}),
+        encoding="utf-8",
+    )
+    index = Index.build(vault.entries())
+    assert index.resolve("gamma") is not None, "a question may still name the project"
+    assert index.resolve_entry("gamma") is None
+    result = evaluate.run_case(index, hint_case(tmp_path, {"in_payload": ["gamma"]}))
+    assert not result.passed
+    assert "is not an entry in this vault" in result.reasons[0]
+
+
+def test_a_search_case_names_an_entry_and_not_a_project_either(vault, tmp_path):
+    folder = vault.area_dir("project/gamma")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "only-one.md").write_text(
+        entry_text(area="project/gamma", title="Only", description="The only one in gamma"),
+        encoding="utf-8",
+    )
+    index = Index.build(vault.entries())
+    case = evaluate.parse_case(
+        {"id": "c", "query": "the only one in gamma", "expect": {"entries": ["gamma"]}},
+        tmp_path / "c.yaml",
+    )
+    result = evaluate.run_case(index, case)
+    assert not result.passed
+    assert "is not an entry in this vault" in result.reasons[0]
+
+
+def test_a_tier_that_is_not_text_is_refused_rather_than_defaulted(tmp_path):
+    """`tier: false` used to become a search case through a truthiness test."""
+    for broken in (False, 0, ""):
+        with pytest.raises(MaboloError, match="tier is"):
+            evaluate.parse_case(
+                {"id": "c", "tier": broken, "query": "q", "expect": {"entries": ["a"]}},
+                tmp_path / "c.yaml",
+            )
+
+
+def test_an_id_that_is_not_text_is_refused(tmp_path):
+    """The baseline is keyed by it, so 123 silently becoming "123" is a record
+    about a case nobody can find again."""
+    with pytest.raises(MaboloError, match="needs an id"):
+        evaluate.parse_case({"id": 123, "query": "q", "expect": {"entries": ["a"]}}, tmp_path / "c.yaml")
+
+
+def test_an_empty_name_in_a_list_is_refused_rather_than_dropped(tmp_path):
+    with pytest.raises(MaboloError, match="holds an empty name"):
+        hint_case(tmp_path, {"in_payload": ["deploy-from-main", "  "]})
+    with pytest.raises(MaboloError, match="holds an empty name"):
+        evaluate.parse_case(
+            {"id": "c", "query": "q", "expect": {"entries": ["a", ""]}}, tmp_path / "c.yaml"
+        )
+
+
+def test_a_missing_moment_and_an_unreadable_one_are_different_complaints(tmp_path):
+    """Telling somebody who wrote `as_of: yesterday` that the field is required
+    is a true statement about the wrong problem."""
+    with pytest.raises(MaboloError, match="It is required"):
+        evaluate.parse_case(
+            {"id": "c", "tier": "hint", "state": {}, "expect": {"in_payload": ["a"]}},
+            tmp_path / "c.yaml",
+        )
+    with pytest.raises(MaboloError, match="is not a date"):
+        hint_case(tmp_path, {"in_payload": ["a"]}, as_of="yesterday")
+
+
+def test_the_old_name_of_the_search_tier_still_reads(tmp_path):
+    """A vault written before the rename keeps working, and nothing rewrites it."""
+    case = evaluate.parse_case(
+        {"id": "c", "tier": "index", "query": "q", "expect": {"entries": ["a"]}},
+        tmp_path / "c.yaml",
+    )
+    assert case.tier == "search"
+
+
+def test_a_case_that_changed_tier_is_new_and_not_a_slip(vault, tmp_path):
+    """A rank means where an entry came back in a search, or how far it sits
+    from the line the budget cuts at. Comparing one against the other is a red
+    run about nothing."""
+    baseline = evaluate.Baseline(
+        language="en", cases={"c": evaluate.BaselineCase(tier="search", passed=True, rank=1)}
+    )
+    case = hint_case(tmp_path, {"in_payload": ["a"]})
+    run = evaluate.Run(results=[evaluate.Result(case=case, passed=True, rank=6)])
+    changes = evaluate.compare(baseline, run)
+    assert [c.kind for c in changes] == ["new"]
+    assert not changes[0].is_worse
+    assert "was measured as a search case" in changes[0].message

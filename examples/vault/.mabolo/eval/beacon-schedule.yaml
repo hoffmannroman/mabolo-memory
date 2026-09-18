@@ -3,4 +3,4 @@ query: how often does beacon run?
 expect:
   entries: [beacon-runs-on-a-schedule]
   rank_within: 1
-tier: index
+tier: search

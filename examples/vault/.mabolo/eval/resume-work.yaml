@@ -3,4 +3,4 @@ query: please continue where you left off
 expect:
   entries: []
   silence: true
-tier: index
+tier: search

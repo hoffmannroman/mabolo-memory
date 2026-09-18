@@ -82,9 +82,9 @@ Releases are cut from `main`.[^s1]
 Both are generated, so an entry may not be called `index` or `log`.
 
 Mabolo only ever replaces an `index.md` it could have written itself: one with
-no frontmatter, or the root one with nothing but `okf_version`. Anything else in
-a file of that name is reported and left alone, because a file Mabolo did not
-write is a file somebody else did.
+no frontmatter, or the root one with nothing but `okf_version` and the
+`mabolo.language` block. Anything else in a file of that name is reported and
+left alone, because a file Mabolo did not write is a file somebody else did.
 
 ```yaml
 ---
@@ -110,9 +110,16 @@ entries they query. See [measuring the memory](eval.md).
 The session index offers what changed in the last seven days, and it reads that
 off the entry itself: the later of `generated.at` and any `verified.at`. Not the
 file's modification time, which is not part of a commit and would differ in a
-fresh clone. A timestamp without an offset is read as UTC, so the same commit
-sorts the same way in every time zone. An entry that gives no time at all is
-never recent, though a pin or an active project still brings it in.
+fresh clone.
+
+Every timestamp is converted to UTC before anything is compared. One without an
+offset is read as UTC rather than as local time, and one with an offset is
+converted rather than taken as it stands: seven days back from the same moment
+written in two zones can otherwise cross a daylight saving boundary differently
+and land on two different instants.
+
+A time in the future is not recent. An entry that gives no time at all is never
+recent either, though a pin or an active project still brings it in.
 
 ## Links
 

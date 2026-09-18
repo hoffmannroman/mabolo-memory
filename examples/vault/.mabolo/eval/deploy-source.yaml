@@ -4,4 +4,4 @@ expect:
   entries: [deploy-from-main]
   rank_within: 1
   must_cite: true
-tier: index
+tier: search

@@ -3,4 +3,4 @@ query: should this body text be centred?
 expect:
   entries: [no-centred-layouts]
   rank_within: 1
-tier: index
+tier: search

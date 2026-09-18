@@ -96,8 +96,8 @@ so the vault is readable by anything that speaks it, and everything specific to
 Mabolo lives in one namespaced block you can ignore.
 
 **A session gets a map, not a copy.** What arrives at the start of a session is
-every area with a count, the entries you pinned, the project you are in, and
-whatever moved this week. The last line always says how many entries were left
+every area that holds something, with a count, plus the entries you pinned, the
+project you are in, and whatever moved this week. The last line always says how many entries were left
 out, because a list that stops without saying so reads like a complete one. The
 selection is a rule you can read, not a model: it can be replayed at an old
 commit, and that is what makes a drop in recall traceable to the change that
@@ -138,8 +138,8 @@ This is early, and the README says only what exists:
   entries came back, in which order, whether the memory stayed quiet when it
   should, and what a preview would cost. It compares every run against a saved
   baseline and fails when an answer slips down the list, before it disappears.
-* `mabolo context` prints what a session would start with: every area and how
-  many entries it holds, the few entries this session is likely to need, and a
+* `mabolo context` prints what a session would start with: every area that holds
+  entries and how many, the few entries this session is likely to need, and a
   last line saying how many were left out. The eval measures that payload too,
   so an entry that stops being offered is a failing case rather than a silence.
   See [what a session starts with](docs/context.md).

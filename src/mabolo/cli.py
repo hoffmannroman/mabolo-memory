@@ -32,7 +32,7 @@ from . import __version__, context, evaluate, git
 from .config import Config, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
 from .index import Index
-from .schema import FIXED_AREAS, now, parse_time
+from .schema import FIXED_AREAS, PROJECT_PREFIX, now, parse_time
 from .validate import validate_vault
 from .vault import Vault
 
@@ -182,11 +182,21 @@ def cmd_validate(args: argparse.Namespace) -> int:
 def cmd_context(args: argparse.Namespace) -> int:
     """Print the session index: what a session would be handed at its start."""
     vault = _vault_from(args)
+    if args.budget < 1:
+        # The case format asks for at least one token, and a budget of zero or
+        # less prints "budget -1" above an empty payload, which is arithmetic
+        # rather than an answer.
+        raise MaboloError("--budget is a whole number of tokens, at least 1")
     as_of = None
     if args.as_of:
         as_of = parse_time(args.as_of)
         if as_of is None:
             raise MaboloError(f"{args.as_of!r} is not a date. Use 2026-09-18 or a full timestamp.")
+        if as_of.year < 2:
+            # Seven days before year one is not a date Python can express, and
+            # the resulting OverflowError would leave this command as a
+            # traceback rather than a sentence.
+            raise MaboloError(f"{args.as_of!r} is too far back to count a week from")
     elif not args.no_clock:
         as_of = now()
 
@@ -200,8 +210,12 @@ def cmd_context(args: argparse.Namespace) -> int:
     print(payload.text())
     print()
     when = "no moment given, so nothing counts as recent" if as_of is None else f"as of {as_of.isoformat()}"
-    where = f"project {args.project}" if args.project else "no active project"
+    # From the payload rather than from the arguments, so the line describes
+    # what was built and not what was asked for.
+    where = f"project {payload.project}" if payload.project else "no active project"
     print(f"{where}, {when}")
+    if payload.project and not any(a == f"{PROJECT_PREFIX}{payload.project}" for a, _ in payload.counts):
+        print(f"there is no project/{payload.project} in this vault, so nothing was added for it")
     print(
         f"{len(payload.lines)} of {payload.total} entries shown, "
         f"about {payload.cost()} tokens, estimated, budget {payload.target_tokens}"
@@ -307,7 +321,7 @@ def _explain(index: Index, result: evaluate.Result) -> None:
         print(f"  phrases {', '.join(parsed.phrases)}")
     named = sorted(index.names_in(parsed))
     print(f"  names   {', '.join(named) or 'none of the query is a name this vault knows'}")
-    expected = {d.name for d in (index.resolve(w) for w in case.entries) if d is not None}
+    expected = {d.name for d in (index.resolve_entry(w) for w in case.entries) if d is not None}
     if not result.hits:
         print("  result  nothing, the relevance floor turned every candidate away")
     for hit in result.hits:
@@ -330,8 +344,8 @@ def _explain_hint(index: Index, result: evaluate.Result) -> None:
         print("  result  no session index was built")
         print()
         return
-    expected = {n for n, _ in (_named(index, w) for w in case.in_payload)}
-    unwanted = {n for n, _ in (_named(index, w) for w in case.not_in_payload)}
+    expected = {n for n, _ in (evaluate.resolve_expected(index, w) for w in case.in_payload)}
+    unwanted = {n for n, _ in (evaluate.resolve_expected(index, w) for w in case.not_in_payload)}
     if not payload.lines:
         print("  result  the session index is empty")
     for position, line in enumerate(payload.lines, start=1):
@@ -343,11 +357,6 @@ def _explain_hint(index: Index, result: evaluate.Result) -> None:
     print(f"  omitted {payload.omitted} of {payload.total} entries, {payload.cut} cut by the budget")
     print(f"  cost    about {result.cost} tokens for the whole payload, estimated")
     print()
-
-
-def _named(index: Index, wanted: str) -> tuple[str, bool]:
-    document = index.resolve(wanted)
-    return (document.name if document else wanted, document is not None)
 
 
 def build_parser() -> argparse.ArgumentParser:

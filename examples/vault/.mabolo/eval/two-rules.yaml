@@ -4,4 +4,4 @@ query: how do error messages and dates have to be written?
 expect:
   entries: [dates-are-iso, errors-name-the-fix]
   rank_within: 2
-tier: index
+tier: search

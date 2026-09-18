@@ -91,6 +91,24 @@ def iso(value: dt.datetime | dt.date | str | None) -> str | None:
     return text or None
 
 
+def as_utc(when: dt.datetime | dt.date) -> dt.datetime:
+    """Any date or datetime as an aware UTC datetime, and the only place that rule lives.
+
+    Two halves, and both were a bug before this was one function. A value
+    without an offset is read as UTC rather than as local time, or the same
+    commit would sort differently in two time zones. A value *with* an offset
+    is converted, not passed through: arithmetic on an aware datetime moves
+    wall clock time, so subtracting seven days from the same moment expressed
+    in Athens and in UTC crosses a daylight saving boundary differently and
+    lands on two different instants.
+    """
+    if not isinstance(when, dt.datetime):
+        when = dt.datetime.combine(when, dt.time.min)
+    if when.tzinfo is None:
+        return when.replace(tzinfo=dt.timezone.utc)
+    return when.astimezone(dt.timezone.utc)
+
+
 def parse_time(value: Any) -> dt.datetime | None:
     """A datetime from a string, a date or a datetime, or None if it is none of those."""
     if isinstance(value, dt.datetime):
@@ -352,6 +370,22 @@ class Entry:
     @property
     def is_design(self) -> bool:
         return self.mabolo.area == "design"
+
+    def touched_at(self) -> dt.datetime | None:
+        """When this entry was last touched, according to the entry itself.
+
+        The latest of `generated.at` and every `verified.at`, in UTC. A
+        verification is a touch: reading only `generated` would make an entry
+        somebody confirmed yesterday look years old to the session index.
+
+        Taken from the frontmatter and never from the filesystem. An mtime is
+        not part of a commit, so a fresh clone would order the session index
+        differently from the machine the vault was written on.
+        """
+        stamps = [self.generated.at] if self.generated else []
+        stamps += [v.at for v in self.verified]
+        times = [t for t in (parse_time(s) for s in stamps) if t is not None]
+        return max(as_utc(t) for t in times) if times else None
 
     @classmethod
     def from_meta(cls, meta: dict[str, Any], body: str = "", path: Path | None = None,
