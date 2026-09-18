@@ -868,3 +868,25 @@ def test_the_payload_holds_its_target_once_the_fixed_text_fits():
             if index.core_cost() > 800:
                 continue
             assert index.cost() <= 800, (pins, width, index.cost())
+
+
+def test_a_rule_pinned_in_another_project_is_not_a_standing_rule_here():
+    """Where an entry lives is a statement about where it applies. The pin was
+    checked first, so a rule pinned inside `project/beacon` arrived under
+    `## Always` in an atlas session: a standing rule for a project this session
+    is not about, with nothing in the payload saying where it came from."""
+    documents = [
+        doc("beacon-rule", area="project/beacon", pin=True),
+        doc("atlas-rule", area="project/atlas", pin=True),
+        doc("global-rule", area="persona", pin=True),
+    ]
+    here = context.build(documents, project="atlas", as_of=NOW)
+    assert [line.name for line in here.core] == ["atlas-rule", "global-rule"]
+    assert "beacon-rule" not in here.text().split(context.CORE_HEADING)[1].split("\n\n")[0]
+
+
+def test_a_pinned_entry_of_no_project_at_all_still_holds_everywhere():
+    """The rule is about project areas, not about pins. A pin outside any
+    project is a rule for every session, which is what pinning is for."""
+    index = context.build([doc("global-rule", area="persona", pin=True)], project="beacon", as_of=NOW)
+    assert [line.name for line in index.core] == ["global-rule"]

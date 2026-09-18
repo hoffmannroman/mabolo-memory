@@ -84,7 +84,7 @@ FRESH_DAYS = 7
 #: is evidence that the question changed, and those two deserve different
 #: reactions. Without it, the day the rule improves reads exactly like the day
 #: it regresses.
-POLICY = 3
+POLICY = 4
 
 #: Why a line is in the index, strongest first. The order is the rule: it
 #: decides both what survives a tight budget and what the baseline compares.
@@ -510,6 +510,13 @@ def _reason(
     keeps an entry at the front of every session and pushes out the entries that
     really did move this week.
     """
+    if document.area.startswith(PROJECT_PREFIX) and document.area != f"{PROJECT_PREFIX}{project}":
+        # Somebody else's project, and a pin does not change that. The pin was
+        # checked first, so a rule pinned inside `project/beacon` arrived under
+        # `## Always` in an atlas session: a standing rule for a project this
+        # session is not about, and nothing in the payload said where it came
+        # from. Where an entry lives is a statement about where it applies.
+        return None
     if document.pin:
         return PINNED
     if project and document.area == f"{PROJECT_PREFIX}{project}":

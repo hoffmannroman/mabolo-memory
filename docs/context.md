@@ -140,6 +140,12 @@ Three rules hold this block:
 Journal lines are not entries. They carry no name, they are never searched, and
 they are counted apart from the entries in every number this command prints.
 
+A pin says "always", and the area says "here". A rule pinned inside
+`project/beacon` is a standing rule for sessions about beacon, and nothing at
+all for a session about atlas: where an entry lives is a statement about where
+it applies. A pin outside any project area holds everywhere, which is what
+pinning is for.
+
 ## Two kinds of entry, and only one of them is a rule
 
 A fact can wait until somebody asks for it: you notice that you need the port
