@@ -312,13 +312,72 @@ def test_an_unmeasured_case_is_not_counted_as_a_pass(vault):
             vault.eval_dir / "a.yaml",
         ),
         evaluate.parse_case(
-            {"id": "b", "query": "q", "expect": {"entries": ["deploy-from-main"]}, "tier": "recall"},
+            {"id": "b", "query": "q", "expect": {"entries": ["deploy-from-main"]}, "tier": "design"},
             vault.eval_dir / "b.yaml",
         ),
     ]
     result = evaluate.run(index, cases)
     assert len(result.results) == 2 and len(result.measured) == 1 and len(result.deferred) == 1
     assert "not measured yet" in evaluate.render(result)
+
+
+def test_a_case_waiting_on_something_is_not_counted_as_a_pass_either(vault):
+    """A whole tier can be unbuilt, and a single case can be waiting inside a
+    tier that works. Both are unmeasured, and both have to be visible: a case
+    kept as evidence of a gap that nothing prints has become invisible instead,
+    which is the opposite of why it is kept."""
+    index = small_vault(vault)
+    case = evaluate.parse_case(
+        {
+            "id": "b",
+            "query": "it is half past eleven",
+            "needs": "meaning",
+            "expect": {"entries": ["deploy-from-main"]},
+            "tier": "recall",
+        },
+        vault.eval_dir / "b.yaml",
+    )
+    result = evaluate.run(index, [case])
+    assert not result.measured and len(result.deferred) == 1
+    assert "waiting on meaning" in evaluate.render(result)
+
+
+def test_a_case_cannot_wait_on_something_nobody_defined(vault):
+    with pytest.raises(MaboloError, match="not something a case can wait for"):
+        evaluate.parse_case(
+            {"id": "b", "query": "q", "needs": "telepathy", "expect": {"entries": ["x"]}},
+            vault.eval_dir / "b.yaml",
+        )
+
+
+def test_a_recall_case_cannot_ask_for_a_rank_no_prompt_is_shown(vault):
+    """The block holds three lines. A case allowed to ask for rank five would
+    pass on an entry nobody is ever shown."""
+    with pytest.raises(MaboloError, match="the block a prompt is shown holds"):
+        evaluate.parse_case(
+            {"id": "b", "query": "q", "tier": "recall", "expect": {"entries": ["x"], "rank_within": 5}},
+            vault.eval_dir / "b.yaml",
+        )
+
+
+def test_a_recall_case_never_looks_past_the_lines_a_prompt_is_shown(vault):
+    """The one difference between this tier and a search: an entry below the
+    third line was never shown, so it cannot count as recalled. The rank rule
+    above is half of that, and this is the other half: the search itself is
+    asked for no more than the block holds."""
+    index = small_vault(vault)
+    case = evaluate.parse_case(
+        {"id": "b", "query": "releases", "tier": "recall", "expect": {"entries": ["deploy-from-main"]}},
+        vault.eval_dir / "b.yaml",
+    )
+    seen: list[int] = []
+    original = Index.search
+    try:
+        Index.search = lambda self, text, limit=5: seen.append(limit) or original(self, text, limit)
+        evaluate.run_recall_case(index, case)
+    finally:
+        Index.search = original
+    assert seen == [evaluate.recall.LIMIT]
 
 
 # The baseline

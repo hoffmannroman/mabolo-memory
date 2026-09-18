@@ -31,6 +31,11 @@ after, so it has cases of its own.
   what has to be in the payload, what has to stay out of it, and what it may
   cost. What that payload is and how it is chosen:
   [what a session starts with](context.md).
+* `tier: recall` is the quiet block a prompt is interrupted with. Search
+  shaped, like the first one, and cut to what a prompt is actually shown: three
+  lines. A case cannot ask for a rank beyond that, because an entry on the
+  fourth line was never shown and must not count as recalled. What it offers
+  and why it usually says nothing: [quiet recall](recall.md).
 
 ## What a case looks like
 
@@ -101,7 +106,20 @@ tier: search
 | `expect.must_cite` | The answer has to cite the entry. Needs a model in the loop |
 | `expect.silence` | Nothing at all is the correct answer |
 | `tier` | `search`, `hint`, `recall` or `design`. Defaults to `search` |
+| `needs` | What this one case is waiting for. Only `meaning` so far |
 | `note` | For a reader. Ignored by the run |
+
+`needs` is for a case that is red on purpose. A tier is deferred because
+nothing was built; a case is blocked because what it asks for is a decision
+that was made and has not been taken back. `needs: meaning` says the entry
+shares no word with the prompt, so keyword search cannot reach it and
+embeddings are off by default.
+
+Such a case is kept rather than deleted or rewritten. Deleting it deletes the
+evidence that the gap exists; rewriting it into something the search can answer
+turns a known limit into a green tick. It is never counted as a pass, and it
+gets a line of its own in the report so that keeping it is not the same as
+hiding it.
 
 A hint case uses a different half of the format, and the two are kept apart: a
 `query` on a hint case and a `state` on a search case are both refused rather
@@ -144,8 +162,9 @@ says so for every case it cannot decide, and never counts one as a pass:
 ```
 search   19 cases, 19 pass, 0 fail
 hint     3 cases, 3 pass, 0 fail
-recall   1 case not measured yet, quiet recall needs the session hook, which is not built yet
+recall   2 cases, 2 pass, 0 fail
 design   1 case not measured yet, applies_to as a load trigger is not built yet
+blocked  1 case waiting on meaning: this case needs meaning rather than words…
 ```
 
 Each tier is counted on its own and never added up with another. They measure

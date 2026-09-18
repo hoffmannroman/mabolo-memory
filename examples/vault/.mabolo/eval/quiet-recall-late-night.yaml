@@ -1,5 +1,9 @@
 id: quiet-recall-late-night
-note: not a search but an interruption, so it needs the session hook to be measurable
+note: >
+  Kept red on purpose. The prompt says half past eleven and the entry says
+  after 20:00, so they share no word at all: this is the case that says in one
+  line why keyword search alone cannot carry quiet recall.
+needs: meaning
 query: I will start the big refactor now, it is half past eleven
 expect:
   entries: [working-hours]

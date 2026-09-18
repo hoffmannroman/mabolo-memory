@@ -592,3 +592,52 @@ def test_a_payload_that_fails_its_check_is_replaced_by_the_rules_alone(tmp_path,
     assert "Deep work after 20:00" in sent
     assert "builds nightly" not in sent
     assert context.DEGRADED in sent
+
+
+def prompt_hook(tmp_path, capsys, monkeypatch, event: str, extra: list[str] | None = None):
+    monkeypatch.setattr("sys.stdin", io.StringIO(event))
+    code = main(["hook", "prompt", str(hook_vault(tmp_path).root), *(extra or [])])
+    captured = capsys.readouterr()
+    out = captured.out.strip()
+    return code, (json.loads(out) if out else None), captured.err
+
+
+def test_the_prompt_hook_offers_what_the_prompt_should_have_known(tmp_path, capsys, monkeypatch):
+    event = json.dumps({"prompt": "the machine that builds nightly is out of memory"})
+    code, out, _ = prompt_hook(tmp_path, capsys, monkeypatch, event)
+    assert code == 0
+    assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    assert "thing" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_the_prompt_hook_says_nothing_when_nothing_is_relevant(tmp_path, capsys, monkeypatch):
+    """Silence is the normal answer, and it is a bare empty output: no heading,
+    no blank line, nothing for a client to strip."""
+    code, out, _ = prompt_hook(tmp_path, capsys, monkeypatch, json.dumps({"prompt": "what is for dinner"}))
+    assert code == 0 and out is None
+
+
+def test_the_prompt_hook_says_nothing_when_there_is_no_prompt(tmp_path, capsys, monkeypatch):
+    code, out, _ = prompt_hook(tmp_path, capsys, monkeypatch, "{}")
+    assert code == 0 and out is None
+
+
+def test_the_prompt_hook_stays_quiet_about_a_missing_configuration(tmp_path, capsys, monkeypatch):
+    """The session start says one sentence about setup. Repeating it on every
+    prompt would be the tool nagging about itself."""
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "anything at all"})))
+    code = main(["--config", str(tmp_path / "missing.toml"), "hook", "prompt"])
+    assert code == 0 and capsys.readouterr().out.strip() == ""
+
+
+def test_the_prompt_hook_gives_up_quietly_when_it_runs_out_of_time(tmp_path, capsys, monkeypatch):
+    import time
+
+    real = cli.Index.build
+    monkeypatch.setattr(
+        cli.Index, "build", lambda *a, **k: (time.sleep(0.4), real(*a, **k))[1]
+    )
+    event = json.dumps({"prompt": "the machine that builds nightly"})
+    code, out, err = prompt_hook(tmp_path, capsys, monkeypatch, event, extra=["--seconds", "0.05"])
+    assert code == 0 and out is None
+    assert "gave up" in err

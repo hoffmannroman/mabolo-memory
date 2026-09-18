@@ -32,7 +32,7 @@ from pathlib import Path
 
 from dataclasses import replace
 
-from . import __version__, context, evaluate, git, journal
+from . import __version__, context, evaluate, git, journal, recall
 from .config import Config, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
 from . import index as index_module
@@ -300,6 +300,12 @@ def cmd_context(args: argparse.Namespace) -> int:
 #: waiting on it, so the number is a promise to the person, not to the tool.
 HOOK_SECONDS = 5
 
+#: What a prompt may take. Less than half of a session start, because this one
+#: runs ahead of every single prompt and the person is mid sentence: a session
+#: start happens once and is expected to take a moment, while a pause here is
+#: felt every time and is blamed on the agent.
+PROMPT_SECONDS = 2
+
 #: The one sentence a session gets when Mabolo is installed and not set up. Not
 #: an error: nothing is wrong, the person simply has not been asked yet, and a
 #: hook that stayed silent would leave them wondering whether it works at all.
@@ -341,13 +347,60 @@ def cmd_hook_session_start(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_hook_prompt(args: argparse.Namespace) -> int:
+    """Offer the entry a prompt should have known about, or say nothing.
+
+    Same three promises as the session start: never fails, gives up on time,
+    and sends nothing it cannot stand behind. The third one is different in
+    kind here, because there is nothing structural to check: what stands behind
+    a quiet block is the relevance floor of the search, and the check is that
+    nothing below it is ever shown.
+
+    Saying nothing is the normal outcome and needs no line of its own. A block
+    reading "nothing to add" would cost every prompt in this vault's life the
+    tokens to say that the memory had nothing to say.
+    """
+    signal.signal(signal.SIGALRM, _raise_out_of_time)
+    signal.setitimer(signal.ITIMER_REAL, args.seconds)
+    try:
+        text = _prompt_payload(args)
+    except (_OutOfTime, MaboloError, OSError, ValueError, UnicodeDecodeError) as exc:
+        print(f"mabolo: prompt hook gave up ({exc})", file=sys.stderr)
+        return EXIT_OK
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    if text:
+        print(json.dumps(_hook_output(text, "UserPromptSubmit")))
+    return EXIT_OK
+
+
+def _prompt_payload(args: argparse.Namespace) -> str:
+    """The block a prompt is interrupted with, or an empty string for silence."""
+    event = _hook_event()
+    prompt = args.prompt or event.get("prompt") or ""
+    if not isinstance(prompt, str) or not prompt.strip():
+        return ""
+    config_path = Path(args.config).expanduser() if args.config else default_config_path()
+    if not args.path and not config_path.exists():
+        # Silence, not the sentence the session start gives. That one is said
+        # once when a session begins; said again on every prompt it would be
+        # the tool nagging about its own setup.
+        return ""
+    vault = _vault_from(args)
+    if not vault.is_initialised():
+        return ""
+    with Index.build(vault.entries(), language=vault.declared_language()) as index:
+        found = index.search(prompt, limit=recall.LIMIT)
+        return recall.block(found.hits)
+
+
 def _raise_out_of_time(signum: int, frame: object) -> None:
     raise _OutOfTime(f"no payload within {HOOK_SECONDS} seconds")
 
 
-def _hook_output(text: str) -> dict:
-    """The shape both supported clients read a session start in."""
-    return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}
+def _hook_output(text: str, event: str = "SessionStart") -> dict:
+    """The shape both supported clients read injected context in."""
+    return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
 
 
 def _session_payload(args: argparse.Namespace) -> str:
@@ -630,6 +683,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"give up after this long, default {HOOK_SECONDS}",
     )
     start.set_defaults(func=cmd_hook_session_start)
+
+    prompt = events.add_parser("prompt", help="offer what a prompt should have known")
+    prompt.add_argument("path", nargs="?", help="the vault, default is the configured one")
+    prompt.add_argument("--prompt", help="the prompt, default is the one on stdin")
+    prompt.add_argument(
+        "--seconds",
+        type=float,
+        default=PROMPT_SECONDS,
+        help=f"give up after this long, default {PROMPT_SECONDS}",
+    )
+    prompt.set_defaults(func=cmd_hook_prompt)
 
     return parser
 

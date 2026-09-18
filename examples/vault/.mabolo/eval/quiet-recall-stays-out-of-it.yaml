@@ -1,0 +1,9 @@
+id: quiet-recall-stays-out-of-it
+note: >
+  Silence is the normal answer at this tier. It runs ahead of every prompt and
+  nobody asked for it, so a merely plausible line is noise, and noise on every
+  prompt teaches the reader to stop looking at the block.
+query: what should I cook tonight
+expect:
+  silence: true
+tier: recall

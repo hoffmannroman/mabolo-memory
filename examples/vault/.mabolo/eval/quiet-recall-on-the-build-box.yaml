@@ -1,0 +1,9 @@
+id: quiet-recall-on-the-build-box
+note: >
+  The tier as it works today: the prompt names what the entry is about, so the
+  floor is cleared without meaning having to be understood.
+query: I am about to raise the job count on the build server
+expect:
+  entries: [build-server]
+  rank_within: 3
+tier: recall

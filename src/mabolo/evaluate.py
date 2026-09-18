@@ -35,7 +35,7 @@ from typing import Any, Iterable, Sequence
 
 import yaml
 
-from . import context, frontmatter, journal
+from . import context, frontmatter, journal, recall
 from .errors import MaboloError
 from .index import DEFAULT_LIMIT, Hit, Index
 from .schema import PROJECT_PREFIX, parse_time
@@ -54,7 +54,6 @@ MAX_CASE_BYTES = 200_000
 #: nobody has to guess whether a missing number is a pass, a bug or an unbuilt
 #: feature.
 DEFERRED = {
-    "recall": "quiet recall needs the session hook, which is not built yet",
     "design": "applies_to as a load trigger is not built yet",
 }
 #: The tiers this harness can decide on its own, without a model in the loop.
@@ -63,7 +62,7 @@ DEFERRED = {
 #: entry is in the payload a session starts with. That is where a memory goes
 #: quiet without failing anything, because the curation drops the oldest line
 #: first and nobody is told.
-MEASURED_TIERS = ("search", "hint")
+MEASURED_TIERS = ("search", "hint", "recall")
 #: What a case can be about. Everything beyond the measured ones is exactly the
 #: keys of DEFERRED, so a new tier cannot be accepted while the sentence
 #: explaining why it is deferred is still missing.
@@ -80,14 +79,32 @@ TIER_ALIASES = {"index": "search"}
 #: both tables, so a new shape cannot be half defined. Listing what is allowed,
 #: rather than each shape listing what the others own, is what keeps a fourth
 #: shape from having to be mentioned in the three that came before it.
-TRIGGER_KEYS = {"search": {"query"}, "hint": {"state"}}
+TRIGGER_KEYS = {"search": {"query"}, "hint": {"state"}, "recall": {"query"}}
 EXPECT_KEYS = {
     "search": {"entries", "rank_within", "must_cite", "silence"},
     "hint": {"in_payload", "not_in_payload", "budget_tokens"},
+    # Search shaped, and one field narrower: a recall case cannot ask for a
+    # citation, because the block it measures is one line per entry and has
+    # nowhere to put one.
+    "recall": {"entries", "rank_within", "silence"},
 }
-COMMON_KEYS = {"id", "tier", "note", "expect"}
+COMMON_KEYS = {"id", "tier", "note", "expect", "needs"}
 
 DEFERRED_CITE = "must_cite needs a model in the loop, which the harness does not run"
+
+#: What a single case can be waiting for, as opposed to a whole tier. A tier is
+#: deferred because nothing was built; a case is blocked because the thing it
+#: asks for is a decision that was made and has not been taken back.
+#:
+#: Keeping the case in the vault, red or not, is the point. Deleting it would
+#: delete the evidence that the gap exists, and rewriting it into something the
+#: current search can answer would turn a known limit into a green tick.
+NEEDS = {
+    "meaning": (
+        "this case needs meaning rather than words: the entry shares no term with the "
+        "prompt, and embeddings are designed in but ship switched off"
+    ),
+}
 
 #: What a deferred tier is measured as, until it is built. They are search
 #: shaped: a prompt goes in and entries are expected back.
@@ -127,11 +144,13 @@ class Case:
     in_payload: tuple[str, ...] = ()
     not_in_payload: tuple[str, ...] = ()
     budget_tokens: int | None = None
+    #: What this one case is waiting for, a key of `NEEDS`, or None.
+    needs: str | None = None
 
     @property
     def measurable(self) -> bool:
         """True when the harness alone can decide this case, with no model."""
-        return self.tier in MEASURED_TIERS
+        return self.tier in MEASURED_TIERS and self.needs is None
 
     @property
     def trigger(self) -> str:
@@ -244,6 +263,13 @@ def parse_case(data: Any, path: Path) -> Case:
     # What this shape may carry, named once. A key belonging to another shape is
     # refused rather than ignored: a `query` under `tier: hint` would look like
     # it measures a question and measure a session start.
+    needs = data.get("needs")
+    if needs is not None and needs not in NEEDS:
+        raise MaboloError(
+            f"{path}: needs {needs!r} is not something a case can wait for. "
+            f"It takes {', '.join(sorted(NEEDS))}."
+        )
+
     allowed = COMMON_KEYS | TRIGGER_KEYS[shape]
     unknown = sorted(set(data) - allowed)
     if unknown:
@@ -259,7 +285,7 @@ def parse_case(data: Any, path: Path) -> Case:
         )
 
     if shape == "hint":
-        return _parse_hint_case(data, expect, case_id, tier, path)
+        return _parse_hint_case(data, expect, case_id, tier, path, needs)
 
     query = data.get("query")
     if not isinstance(query, str) or not query.strip():
@@ -267,9 +293,17 @@ def parse_case(data: Any, path: Path) -> Case:
 
     entries = _as_names(expect.get("entries"), path)
     silence = _as_bool(expect.get("silence"), "expect.silence", path)
-    rank_within = expect.get("rank_within", DEFAULT_RANK_WITHIN)
+    rank_within = expect.get("rank_within", recall.LIMIT if tier == "recall" else DEFAULT_RANK_WITHIN)
     if not isinstance(rank_within, int) or isinstance(rank_within, bool) or rank_within < 1:
         raise MaboloError(f"{path}: expect.rank_within is a whole number of lines, at least 1")
+    if tier == "recall" and rank_within > recall.LIMIT:
+        # A quiet block shows three lines. A case allowed to ask for rank five
+        # would pass on an entry no prompt is ever shown, which is the quietest
+        # way there is to measure the wrong thing.
+        raise MaboloError(
+            f"{path}: a recall case cannot ask for rank {rank_within}, "
+            f"the block a prompt is shown holds {recall.LIMIT} lines"
+        )
 
     if silence and entries:
         raise MaboloError(f"{path}: a case asserts silence or names entries, not both")
@@ -287,10 +321,13 @@ def parse_case(data: Any, path: Path) -> Case:
         must_cite=_as_bool(expect.get("must_cite"), "expect.must_cite", path),
         silence=silence,
         tier=tier,
+        needs=needs,
     )
 
 
-def _parse_hint_case(data: dict[str, Any], expect: Any, case_id: str, tier: str, path: Path) -> Case:
+def _parse_hint_case(
+    data: dict[str, Any], expect: Any, case_id: str, tier: str, path: Path, needs: str | None = None
+) -> Case:
     """A case about the session index, which has a state instead of a question.
 
     Every field is required to be explicit, `as_of` most of all. The selection
@@ -351,6 +388,7 @@ def _parse_hint_case(data: dict[str, Any], expect: Any, case_id: str, tier: str,
         in_payload=present,
         not_in_payload=absent,
         budget_tokens=budget,
+        needs=needs,
     )
 
 
@@ -490,9 +528,12 @@ def _as_day(moment: dt.datetime | dt.date | None) -> dt.date | None:
 def run_case(index: Index, case: Case, notes: Sequence[journal.Note] = ()) -> Result:
     """Run one case against one index."""
     if not case.measurable:
-        return Result(case=case, passed=False, measured=False, reasons=(DEFERRED[case.tier],))
+        why = NEEDS[case.needs] if case.needs else DEFERRED[case.tier]
+        return Result(case=case, passed=False, measured=False, reasons=(why,))
     if case.tier == "hint":
         return run_hint_case(index, case, notes)
+    if case.tier == "recall":
+        return run_recall_case(index, case)
 
     # Searched as deep as the case asks, but costed over what a preview would
     # actually send. Costing the deeper list made a case with `rank_within: 10`
@@ -509,6 +550,51 @@ def run_case(index: Index, case: Case, notes: Sequence[journal.Note] = ()) -> Re
                 hits=hits,
                 passed=False,
                 reasons=(f"expected silence, got {len(hits)} hit(s): {names}",),
+                cost=cost,
+                query=found.query,
+            )
+        return Result(case=case, hits=hits, passed=True, cost=cost, query=found.query)
+
+    reasons, rank = _judge(index, case, hits)
+    return Result(
+        case=case,
+        hits=hits,
+        passed=not reasons,
+        reasons=tuple(reasons),
+        rank=rank,
+        cost=cost,
+        query=found.query,
+    )
+
+
+def run_recall_case(index: Index, case: Case) -> Result:
+    """Run one recall case: what a prompt would quietly be shown, and nothing else.
+
+    The same search as a `search` case, cut to the lines a prompt actually
+    gets. That cut is the whole difference between the two tiers: a search
+    hands back a list somebody asked for and can scroll, while this interrupts
+    a sentence nobody addressed to the memory, so an entry below the third line
+    was never shown and must not count as recalled.
+
+    Silence is measured here as a result rather than as a failure to find
+    anything. On this tier it is the normal outcome, and a case that asserts it
+    is asserting the floor holds on a prompt that merely sounds relevant.
+    """
+    # The cut is the search's, not this function's: a recall case cannot ask
+    # for a rank beyond the block, so the limit below is already the block's.
+    # Slicing again afterwards looked like the guard and never removed a hit.
+    found = index.search(case.query, limit=recall.LIMIT)
+    hits = found.hits
+    cost = recall.cost(hits)
+
+    if case.silence:
+        if hits:
+            names = ", ".join(f"{h.name} ({h.rank})" for h in hits[: recall.LIMIT])
+            return Result(
+                case=case,
+                hits=hits,
+                passed=False,
+                reasons=(f"expected silence, got {len(hits)} line(s): {names}",),
                 cost=cost,
                 query=found.query,
             )
@@ -712,6 +798,20 @@ class Run:
         """The same for the session index, which is a different payload and is
         therefore never averaged together with a search preview."""
         return _average_and_worst([r.cost for r in self.hints])
+
+    @property
+    def recalls(self) -> list[Result]:
+        return self.in_tier("recall")
+
+    def recall_cost(self) -> tuple[int, int]:
+        """And again for the quiet block, a third payload with a third shape.
+
+        Averaged over the cases that expect a block, never over the silent
+        ones: a tier whose normal answer is nothing would otherwise report a
+        cost near zero and look cheap for being quiet, which says nothing about
+        what it costs on the prompts where it does speak.
+        """
+        return _average_and_worst([r.cost for r in self.recalls if not r.case.silence])
 
 
 def _average_and_worst(costs: list[int]) -> tuple[int, int]:
@@ -929,6 +1029,14 @@ def render(result: Run, changes: list[Change] | None = None) -> str:
         waiting = [r for r in result.deferred if r.case.tier == tier]
         if waiting:
             lines.append(f"{tier:8} {_plural(len(waiting), 'case')} not measured yet, {reason}")
+    # A case waiting on its own, inside a tier that is otherwise measured. It
+    # gets a line of its own because the tier's line counts only what ran: left
+    # out here, a case kept on purpose as evidence of a gap would have become
+    # invisible instead, which is the opposite of why it is kept.
+    for need, reason in NEEDS.items():
+        waiting = [r for r in result.deferred if r.case.needs == need]
+        if waiting:
+            lines.append(f"{'blocked':8} {_plural(len(waiting), 'case')} waiting on {need}: {reason}")
     lines.append("")
 
     positives, negatives = result.positives, result.negatives
@@ -951,6 +1059,19 @@ def render(result: Run, changes: list[Change] | None = None) -> str:
             f"the session index held what was asked in {held} of {len(result.hints)} cases "
             f"and costs about {average} tokens, {worst} at worst, estimated"
         )
+    if result.recalls:
+        speaking = [r for r in result.recalls if not r.case.silence]
+        quiet = [r for r in result.recalls if r.case.silence]
+        average, worst = result.recall_cost()
+        if speaking:
+            held = sum(1 for r in speaking if r.passed)
+            lines.append(
+                f"quiet recall reached the prompt in {held} of {len(speaking)} cases "
+                f"and costs about {average} tokens, {worst} at worst, estimated"
+            )
+        if quiet:
+            held = sum(1 for r in quiet if r.passed)
+            lines.append(f"quiet recall stayed out of {held} of {len(quiet)} prompts it should not join")
     if result.uncited:
         count = len(result.uncited)
         asks = "case asks" if count == 1 else "cases ask"

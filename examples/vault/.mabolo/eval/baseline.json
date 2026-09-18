@@ -60,6 +60,16 @@
       "rank": 1,
       "tier": "search"
     },
+    "quiet-recall-on-the-build-box": {
+      "passed": true,
+      "rank": 1,
+      "tier": "recall"
+    },
+    "quiet-recall-stays-out-of-it": {
+      "passed": true,
+      "rank": null,
+      "tier": "recall"
+    },
     "resume-work": {
       "passed": true,
       "rank": null,
