@@ -35,7 +35,7 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-from .index import CHARS_PER_TOKEN, Document, estimate_tokens
+from .index import CHARS_PER_TOKEN, Document, entry_line, estimate_tokens, one_line
 from .schema import PROJECT_PREFIX, as_utc
 
 #: What the session index is meant to cost. A target rather than a limit: the
@@ -57,21 +57,30 @@ FRESH = "fresh"
 REASONS = (PINNED, PROJECT, FRESH)
 
 
-def one_line(text: str) -> str:
-    """Text reduced to a single printable line.
+def project_for(folder: str, areas: Iterable[str]) -> str | None:
+    """The project a folder name points at, or None when it points at nothing.
 
-    The payload has a structure a reader is meant to trust: a heading per area,
-    one line per entry, and a last line saying how many were left out. All three
-    come from an entry, and an entry is a file a person or an agent wrote. A
-    description holding a newline can therefore forge a heading and the closing
-    line, in a payload built to be injected into a prompt automatically. The
-    validator calls a multi line description an error, but `mabolo context`
-    renders whatever is on disk, so the structure is defended here rather than
-    upstream. Control characters go the same way: they cannot be seen, and what
-    cannot be seen cannot be checked.
+    Exact, never a guess. A folder is a project when the vault already holds
+    `project/<that name>`, and otherwise this session is simply not about a
+    project. Matching loosely would be worse than matching nothing: a session in
+    the wrong folder would be handed somebody else's decisions and never say so.
+
+    Case matters, because a project name may carry capitals and a folder on
+    Linux is case sensitive. Two folders cannot point at one project and one
+    folder cannot point at two, so there is no tie to break.
     """
-    collapsed = " ".join(text.split())
-    return "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in collapsed)
+    return folder if f"{PROJECT_PREFIX}{folder}" in set(areas) else None
+
+
+def header(project: str | None) -> str:
+    """The first line, which names the project this payload was built for.
+
+    Without it the reader cannot tell why an entry is in the list. A line about
+    a release checklist looks the same whether it arrived because the session is
+    in that project or because somebody pinned it, and those are two different
+    reasons to trust it.
+    """
+    return f"Active project: {one_line(project)}" if project else "No active project"
 
 
 def heading(area: str, count: int) -> str:
@@ -104,7 +113,7 @@ class Line:
     at: dt.datetime | None = None
 
     def render(self) -> str:
-        return f"- {one_line(self.name)}: {self.summary}"
+        return entry_line(self.name, self.summary, self.summary)
 
 
 @dataclass(frozen=True)
@@ -147,7 +156,7 @@ class SessionIndex:
         shown: dict[str, list[Line]] = {}
         for line in self.lines:
             shown.setdefault(line.area, []).append(line)
-        out: list[str] = []
+        out: list[str] = [header(self.project), ""]
         for area, total in self.counts:
             out.append(heading(area, total))
             # Sorted by name inside an area: this is the part a person reads,
@@ -167,7 +176,7 @@ def _plural(count: int, one: str, many: str) -> str:
 
 def _summary(document: Document) -> str:
     """The one line that has to make a model go and look for the rest."""
-    return one_line(document.description or document.title or document.name)
+    return document.description or document.title or document.name
 
 
 def _reason(
@@ -234,7 +243,7 @@ def build(
         )
     chosen.sort(key=_cut_key)
 
-    kept = _fit(chosen, counts, len(documents), target_tokens)
+    kept = _fit(chosen, counts, len(documents), target_tokens, project)
     return SessionIndex(
         lines=tuple(kept),
         counts=tuple(sorted(counts.items())),
@@ -271,7 +280,11 @@ def _cut_key(line: Line) -> tuple[int, dt.timedelta, str]:
 
 
 def _fit(
-    chosen: Sequence[Line], counts: dict[str, int], total: int, target_tokens: int
+    chosen: Sequence[Line],
+    counts: dict[str, int],
+    total: int,
+    target_tokens: int,
+    project: str | None,
 ) -> list[Line]:
     """As many lines as the budget holds, taken in cut order.
 
@@ -291,7 +304,8 @@ def _fit(
     does not even hold those yields a payload with no entries in it, which is a
     true statement about a budget that small.
     """
-    fixed = sum(len(heading(area, count)) + 1 for area, count in sorted(counts.items()))
+    fixed = len(header(project)) + 2  # the line, its newline, and the blank one
+    fixed += sum(len(heading(area, count)) + 1 for area, count in sorted(counts.items()))
     fixed += len(counts)  # the blank line after each area
     longest_footer = max(len(footer(0)), len(footer(total)))
     budget = target_tokens * CHARS_PER_TOKEN - fixed - longest_footer

@@ -359,3 +359,93 @@ def test_context_says_when_the_named_project_does_not_exist(vault, capsys):
     context_vault(vault)
     assert main(["context", str(vault.root), "--project", "atlsa", "--as-of", "2026-09-18"]) == 0
     assert "there is no project/atlsa in this vault" in capsys.readouterr().out
+
+
+# Which project a session is about, when nobody says
+
+
+def test_context_takes_the_project_from_the_folder_you_are_in(vault, tmp_path, monkeypatch, capsys):
+    """The repository root, not the folder you happen to stand in: a session in
+    a subfolder of a project is about that project."""
+    context_vault(vault)
+    folder = vault.area_dir("project/atlas")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "atlas-tone.md").write_text(
+        entry_text(area="project/atlas", title="Tone", description="Flat and factual"),
+        encoding="utf-8",
+    )
+    work = tmp_path / "atlas" / "backend" / "src"
+    work.mkdir(parents=True)
+    (tmp_path / "atlas" / ".git").mkdir()
+    monkeypatch.chdir(work)
+
+    assert main(["context", str(vault.root), "--as-of", "2026-09-18"]) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines()[0] == "Active project: atlas"
+    assert "- atlas-tone: Flat and factual" in out
+    assert "project atlas, from the folder atlas," in out
+
+
+def test_a_folder_that_is_no_project_is_said_out_loud(vault, tmp_path, monkeypatch, capsys):
+    context_vault(vault)
+    work = tmp_path / "scratch"
+    work.mkdir()
+    (work / ".git").mkdir()
+    monkeypatch.chdir(work)
+
+    assert main(["context", str(vault.root), "--as-of", "2026-09-18"]) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines()[0] == "No active project"
+    assert "the folder scratch is not a project in this vault" in out
+
+
+def test_a_project_given_by_hand_beats_the_folder(vault, tmp_path, monkeypatch, capsys):
+    context_vault(vault)
+    work = tmp_path / "atlas"
+    work.mkdir()
+    (work / ".git").mkdir()
+    monkeypatch.chdir(work)
+
+    assert main(["context", str(vault.root), "--project", "beacon", "--as-of", "2026-09-18"]) == 0
+    assert "project beacon, as given," in capsys.readouterr().out
+
+
+def test_no_project_can_be_asked_for(vault, tmp_path, monkeypatch, capsys):
+    context_vault(vault)
+    work = tmp_path / "atlas"
+    work.mkdir()
+    (work / ".git").mkdir()
+    monkeypatch.chdir(work)
+
+    assert main(["context", str(vault.root), "--no-project", "--as-of", "2026-09-18"]) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines()[0] == "No active project"
+    assert "asked for no project" in out
+
+
+def test_a_worktree_marker_counts_as_a_repository(vault, tmp_path, monkeypatch, capsys):
+    """Inside a worktree or a submodule `.git` is a file, not a folder."""
+    from mabolo.cli import repo_root
+
+    work = tmp_path / "atlas" / "deep"
+    work.mkdir(parents=True)
+    (tmp_path / "atlas" / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+    assert repo_root(work).name == "atlas"
+
+
+def test_the_nearest_repository_wins(tmp_path):
+    from mabolo.cli import repo_root
+
+    inner = tmp_path / "outer" / "inner"
+    inner.mkdir(parents=True)
+    (tmp_path / "outer" / ".git").mkdir()
+    (inner / ".git").mkdir()
+    assert repo_root(inner).name == "inner"
+
+
+def test_a_folder_in_no_repository_at_all_is_its_own_answer(tmp_path):
+    from mabolo.cli import repo_root
+
+    lonely = tmp_path / "nowhere"
+    lonely.mkdir()
+    assert repo_root(lonely) == lonely

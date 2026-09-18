@@ -91,6 +91,35 @@ def estimate_tokens(text: str) -> int:
     return math.ceil(len(text) / CHARS_PER_TOKEN) if text else 0
 
 
+def one_line(text: str) -> str:
+    """Text reduced to a single printable line.
+
+    Every payload built from entries has a structure a reader is meant to trust,
+    and every part of that structure comes from a file a person or an agent
+    wrote. A description holding a newline can therefore write its own heading
+    and its own closing line into the middle of a payload that is injected into
+    a prompt automatically. The validator calls a multi line description an
+    error, but the readers here render whatever is on disk, so the structure is
+    defended at the point of rendering rather than upstream. Control characters
+    go the same way: they cannot be seen, and what cannot be seen cannot be
+    checked.
+    """
+    collapsed = " ".join(text.split())
+    return "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in collapsed)
+
+
+def entry_line(name: str, description: str, title: str) -> str:
+    """The one line that stands for an entry, wherever one is listed.
+
+    Both readers of a vault show an entry the same way, so they say it in one
+    place. They were two copies for exactly one commit, and the copies were
+    already apart: the session index put every value through `one_line` and the
+    search preview did not, which made the second one a way back in for the
+    forged heading the first one had just been taught to refuse.
+    """
+    return f"- {one_line(name)}: {one_line(description or title or name)}"
+
+
 @dataclass(frozen=True)
 class Document:
     """One entry, reduced to what the search and the session index need.
@@ -160,15 +189,8 @@ class Hit:
         return self.document.path
 
     def line(self) -> str:
-        """The one line a preview of a search result would show for this entry.
-
-        Only used to estimate what a preview costs. It looks like a line of the
-        session index and is not one: that payload is built in `context`, from
-        its own rule, and the two are free to diverge the day a search preview
-        needs to say something a session index does not.
-        """
-        shown = self.description or self.title or self.name
-        return f"- {self.name}: {shown}"
+        """The one line a preview of a search result would show for this entry."""
+        return entry_line(self.name, self.description, self.title)
 
 
 @dataclass(frozen=True)
@@ -202,6 +224,38 @@ class SearchResult:
 def _searchable(text: str) -> str:
     """Text as the index stores it: the words of `query.words_of`, and nothing else."""
     return " ".join(q.words_of(text))
+
+
+def documents_of(entries: Iterable[Entry]) -> list[Document]:
+    """A vault's entries as everything downstream sees them.
+
+    The one projection from files to what is read: the search builds its index
+    from this, and the session index picks its lines from the same list. A
+    second way in would be a second opinion about what is in the vault.
+
+    Two entries that answer to one name are refused rather than returned. One of
+    them could never be reached by that name, and which one that is would depend
+    on the order the files came back in. The comparison is on the folded name,
+    because folded is what a question is compared against: the validator's own
+    duplicate rule looks at the spelling as written and would let `Foo` and
+    `foo` through.
+    """
+    documents = [_document(e) for e in entries]
+    claims: dict[str, list[str]] = {}
+    for doc in documents:
+        for name in (doc.key, *doc.aliases):
+            claims.setdefault(name, []).append(doc.name)
+    clashes = sorted(
+        f"{name} ({', '.join(sorted(set(owners)))})"
+        for name, owners in claims.items()
+        if len(owners) > 1
+    )
+    if clashes:
+        raise MaboloError(
+            "these names belong to more than one entry, so reading this vault "
+            f"cannot be trusted: {'; '.join(clashes)}. Run `mabolo validate`."
+        )
+    return documents
 
 
 def _document(entry: Entry) -> Document:
@@ -246,31 +300,8 @@ class Index:
 
     @classmethod
     def build(cls, entries: list[Entry], language: str = "en") -> Index:
-        """The index for a list of entries.
-
-        Two entries that answer to one name are refused rather than ranked. One
-        of them could never be reached by that name, and which one that is would
-        depend on the order the files came back in. The comparison is on the
-        folded name, because folded is what a question is compared against: the
-        validator's own duplicate rule looks at the spelling as written and
-        would let `Foo` and `foo` through.
-        """
-        documents = [_document(e) for e in entries]
-        claims: dict[str, list[str]] = {}
-        for doc in documents:
-            for name in (doc.key, *doc.aliases):
-                claims.setdefault(name, []).append(doc.name)
-        clashes = sorted(
-            f"{name} ({', '.join(sorted(set(owners)))})"
-            for name, owners in claims.items()
-            if len(owners) > 1
-        )
-        if clashes:
-            raise MaboloError(
-                "these names belong to more than one entry, so an index over this vault "
-                f"cannot be trusted: {'; '.join(clashes)}. Run `mabolo validate`."
-            )
-        return cls(documents, language=language)
+        """The index for a list of entries."""
+        return cls(documents_of(entries), language=language)
 
     def _name_targets(self) -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
         """Every name a question could use, and the entries it points at.

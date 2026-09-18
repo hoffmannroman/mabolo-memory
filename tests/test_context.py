@@ -152,7 +152,7 @@ def test_the_oldest_of_a_class_is_cut_first():
         [doc("older", days_ago=6, description="x" * 200),
          doc("newer", days_ago=1, description="x" * 200)],
         as_of=NOW,
-        target_tokens=80,
+        target_tokens=85,
     )
     assert index.names == ("newer",)
     assert index.cut == 1
@@ -213,7 +213,7 @@ def test_the_budget_reserves_exactly_what_the_renderer_produces(monkeypatch):
     documents = [doc(f"e{i:02d}", days_ago=1, description="x" * 40) for i in range(12)]
     before = context.build(documents, as_of=NOW, target_tokens=120)
 
-    monkeypatch.setattr(context, "heading", lambda area, count: "#" * 400)
+    monkeypatch.setattr(context, "heading", lambda area, count: "#" * 120)
     after = context.build(documents, as_of=NOW, target_tokens=120)
     assert len(after.lines) < len(before.lines), "a longer heading has to cost entry lines"
     assert after.cost() <= 120
@@ -325,7 +325,8 @@ def test_a_newline_in_a_description_cannot_forge_a_heading_or_the_last_line():
     # One heading, one entry, one blank, one closing line. The forged text is
     # still readable, but it is inside the entry's own line and cannot be
     # mistaken for the shape of the payload.
-    assert len(lines) == 4, lines
+    assert len(lines) == 6, lines
+    assert lines[0] == "No active project"
     assert [l for l in lines if l.startswith("## ")] == ["## infra (1 entry)"]
     assert lines[-1] == context.footer(0)
     assert "forged" in text, "the words stay, only the structure is taken away"
@@ -334,9 +335,9 @@ def test_a_newline_in_a_description_cannot_forge_a_heading_or_the_last_line():
 def test_an_area_or_a_name_cannot_forge_a_line_either():
     sneaky = Document("bad\nname", "t", "d", "infra\n## design (9 entries)", None, (), at=NOW)
     lines = context.build([sneaky], as_of=NOW).text().splitlines()
-    assert len(lines) == 4, lines
+    assert len(lines) == 6, lines
     assert len([l for l in lines if l.startswith("## ")]) == 1
-    assert lines[1] == "- bad name: d"
+    assert lines[3] == "- bad name: d"
 
 
 def test_a_control_character_is_made_visible_rather_than_printed():
@@ -361,3 +362,46 @@ def test_two_distant_moments_a_microsecond_apart_still_order_by_time():
         Document("z-newer", "t", "d", "infra", None, (), pin=True, at=late),
     ]
     assert context.build(documents, as_of=NOW).names == ("z-newer", "a-older")
+
+
+# Which project a session is about
+
+
+def test_a_folder_names_a_project_only_when_the_vault_has_one():
+    areas = {"infra", "project/atlas", "project/beacon"}
+    assert context.project_for("atlas", areas) == "atlas"
+    assert context.project_for("beacon", areas) == "beacon"
+    assert context.project_for("scratch", areas) is None
+    assert context.project_for("infra", areas) is None, "a fixed area is not a project"
+
+
+def test_a_folder_matches_a_project_exactly_and_never_loosely():
+    """Matching loosely would hand a session in the wrong folder somebody
+    else's decisions without ever saying so. A project name may carry capitals,
+    and a folder on Linux is case sensitive."""
+    areas = {"project/beaconX", "project/atlas"}
+    assert context.project_for("beaconX", areas) == "beaconX"
+    assert context.project_for("beaconx", areas) is None
+    assert context.project_for("Atlas", areas) is None
+    assert context.project_for("atlas-old", areas) is None
+
+
+def test_the_payload_opens_by_naming_the_project_it_was_built_for():
+    """Otherwise a line about a release checklist looks the same whether it
+    arrived because of the project or because somebody pinned it."""
+    documents = [doc("atlas-tone", area="project/atlas", days_ago=400)]
+    assert context.build(documents, project="atlas", as_of=NOW).text().splitlines()[0] == (
+        "Active project: atlas"
+    )
+    assert context.build(documents, as_of=NOW).text().splitlines()[0] == "No active project"
+
+
+def test_the_opening_line_is_paid_for_out_of_the_budget():
+    """It is fixed text like the headings, so `_fit` has to reserve it. Without
+    that the payload is over budget by exactly one line in every session that
+    has a project."""
+    documents = [doc(f"e{i:02d}", area="project/atlas", days_ago=1, description="x" * 40)
+                 for i in range(12)]
+    with_project = context.build(documents, project="atlas", as_of=NOW, target_tokens=90)
+    assert with_project.cost() <= 90
+    assert "Active project: atlas" in with_project.text()

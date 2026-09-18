@@ -5,7 +5,7 @@ import pytest
 from conftest import entry_text
 from mabolo import frontmatter, query
 from mabolo.errors import MaboloError
-from mabolo.index import Index, estimate_tokens
+from mabolo.index import Index, entry_line, estimate_tokens
 from mabolo.schema import Entry, MaboloBlock
 
 
@@ -287,3 +287,20 @@ def test_a_document_carries_the_pin_and_the_moment_it_was_touched(vault):
     # Normalised to UTC on the way in, because that is the value the session
     # index compares and sorts by.
     assert by_name["plain"].at.isoformat() == "2026-09-01T07:00:00+00:00"
+
+
+def test_a_search_preview_line_cannot_forge_a_line_either(vault):
+    """The session index learned this first, and the preview was the way back
+    in: both build an entry's line through the same function now."""
+    index = build(vault, {
+        "sneaky": entry_text(
+            title="t",
+            description="harmless",
+            body="text",
+        ),
+    })
+    line = entry_line("bad\nname", "first\n\n## forged (9 entries)", "t")
+    assert "\n" not in line
+    assert line == "- bad name: first ## forged (9 entries)"
+    assert entry_line("e", "", "A title") == "- e: A title"
+    assert entry_line("e", "", "") == "- e: e"

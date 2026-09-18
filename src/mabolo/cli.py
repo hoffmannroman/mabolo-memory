@@ -31,6 +31,7 @@ from dataclasses import replace
 from . import __version__, context, evaluate, git
 from .config import Config, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
+from . import index as index_module
 from .index import Index
 from .schema import FIXED_AREAS, PROJECT_PREFIX, now, parse_time
 from .validate import validate_vault
@@ -179,6 +180,44 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return EXIT_OK if args.errors_only or not report.warnings else EXIT_FINDINGS
 
 
+def repo_root(start: Path) -> Path:
+    """The repository a folder belongs to, or the folder itself.
+
+    The nearest `.git` walking upwards wins, so a session in a subfolder of a
+    project is about that project and not about the subfolder. `.git` is a file
+    rather than a folder inside a worktree or a submodule, so both count, and a
+    repository inside a repository resolves to the inner one, which is where the
+    work is actually happening.
+
+    This reads the filesystem, the way `now()` reads the clock, and that is the
+    caller's job. Nothing in `context` does either.
+    """
+    for folder in (start, *start.parents):
+        if (folder / ".git").exists():
+            return folder
+    return start
+
+
+def _project_for(
+    args: argparse.Namespace, documents: list[index_module.Document], folder: str
+) -> tuple[str | None, str]:
+    """Which project this run is about, and where that came from.
+
+    Given by hand beats derived, and derived beats nothing. The source travels
+    back with the answer rather than being worked out again for the message: a
+    line that says where a value came from has to come from the code that
+    decided it.
+    """
+    if args.no_project:
+        return None, "asked for no project"
+    if args.project:
+        return args.project, "as given"
+    found = context.project_for(folder, {d.area for d in documents})
+    if found:
+        return found, f"from the folder {folder}"
+    return None, f"the folder {folder} is not a project in this vault"
+
+
 def cmd_context(args: argparse.Namespace) -> int:
     """Print the session index: what a session would be handed at its start."""
     vault = _vault_from(args)
@@ -200,20 +239,20 @@ def cmd_context(args: argparse.Namespace) -> int:
     elif not args.no_clock:
         as_of = now()
 
-    with Index.build(vault.entries(), language=vault.declared_language()) as index:
-        payload = context.build(
-            index.documents,
-            project=args.project,
-            as_of=as_of,
-            target_tokens=args.budget,
-        )
+    # No search index here: this command does not search, and the projection
+    # from files to documents is what both readers of a vault share.
+    documents = index_module.documents_of(vault.entries())
+    project, source = _project_for(args, documents, repo_root(Path.cwd()).name)
+    payload = context.build(
+        documents, project=project, as_of=as_of, target_tokens=args.budget
+    )
     print(payload.text())
     print()
     when = "no moment given, so nothing counts as recent" if as_of is None else f"as of {as_of.isoformat()}"
     # From the payload rather than from the arguments, so the line describes
     # what was built and not what was asked for.
     where = f"project {payload.project}" if payload.project else "no active project"
-    print(f"{where}, {when}")
+    print(f"{where}, {source}, {when}")
     if payload.project and not any(a == f"{PROJECT_PREFIX}{payload.project}" for a, _ in payload.counts):
         print(f"there is no project/{payload.project} in this vault, so nothing was added for it")
     print(
@@ -396,7 +435,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     shown = sub.add_parser("context", help="print what a session would start with")
     shown.add_argument("path", nargs="?", help="the vault, default is the configured one")
-    shown.add_argument("--project", help="the project the session is about")
+    shown.add_argument(
+        "--project", help="the project the session is about, default is the folder you are in"
+    )
+    shown.add_argument(
+        "--no-project", action="store_true", help="build the payload for no project at all"
+    )
     shown.add_argument("--as-of", help="the moment the session starts at, default is now")
     shown.add_argument(
         "--no-clock",

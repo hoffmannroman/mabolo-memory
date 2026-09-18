@@ -138,9 +138,10 @@ This is early, and the README says only what exists:
   entries came back, in which order, whether the memory stayed quiet when it
   should, and what a preview would cost. It compares every run against a saved
   baseline and fails when an answer slips down the list, before it disappears.
-* `mabolo context` prints what a session would start with: every area that holds
-  entries and how many, the few entries this session is likely to need, and a
-  last line saying how many were left out. The eval measures that payload too,
+* `mabolo context` prints what a session would start with: the project you are
+  in, every area that holds entries and how many, the few entries this session
+  is likely to need, and a last line saying how many were left out. The project
+  is the repository you are standing in, so nobody has to type it. The eval measures that payload too,
   so an entry that stops being offered is a failing case rather than a silence.
   See [what a session starts with](docs/context.md).
 * The entry schema and its validator, with the example vault as the reference.
@@ -163,6 +164,7 @@ uv run mabolo validate examples/vault
 uv run mabolo eval examples/vault --explain
 
 # What a session would be handed, for a vault you are working in on that day.
+# Without --project it takes the project from the repository you are in.
 uv run mabolo context examples/vault --project atlas --as-of 2026-09-18
 
 # A throwaway vault and a throwaway configuration to go with it. Without

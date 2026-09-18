@@ -16,9 +16,12 @@ mabolo context                                  # the configured vault, as of no
 mabolo context path/to/vault --project atlas    # as a session in that project sees it
 mabolo context --as-of 2026-09-18               # what it looked like on that day
 mabolo context --no-clock                       # nothing counts as recent
+mabolo context --no-project                     # no project at all
 ```
 
 ```
+Active project: atlas
+
 ## design (3 entries)
 
 ## hosts (2 entries)
@@ -41,6 +44,11 @@ mabolo context --no-clock                       # nothing counts as recent
 11 entries not shown. Search the memory by name or topic to reach them.
 ```
 
+The first line says which project the payload was built for. Without it a line
+about a release checklist looks the same whether it arrived because the session
+is in that project or because somebody pinned it, and those are two different
+reasons to trust it.
+
 The two empty headings are the point. Nothing in `design` was picked for this
 session, and a reader can still see that three rules exist there and go and ask
 for them.
@@ -61,6 +69,32 @@ That order is also the order entries survive in. When the payload does not fit
 the budget the least safe line goes first, and inside one class the oldest goes
 before the newest. A pinned entry of the active project is held by the pin, so
 leaving a project never takes it away.
+
+## Which project a session is about
+
+Nobody types it. The project is the name of the repository you are in, and it
+counts as a project when the vault already holds `project/<that name>`.
+
+```
+~/work/atlas/backend/src   ->  the nearest .git upwards is ~/work/atlas
+                           ->  the vault has project/atlas
+                           ->  Active project: atlas
+```
+
+The match is exact. Matching loosely would be worse than matching nothing: a
+session in the wrong folder would be handed somebody else's decisions and never
+say so. A folder that names no project is simply a session without one, which is
+not an error, and the payload then holds what is pinned and what moved this
+week. `--project` overrides the folder and `--no-project` switches it off.
+
+Three properties fall out of taking the repository root rather than the working
+directory: a subfolder of a project is still that project, a repository inside a
+repository resolves to the inner one, where the work is happening, and a
+worktree or a submodule counts, because there `.git` is a file rather than a
+folder.
+
+Reading the filesystem for this is the caller's job, the way reading the clock
+is. The rule itself takes a name and a list of areas and returns a name.
 
 ## What is deliberately not in the rule
 
