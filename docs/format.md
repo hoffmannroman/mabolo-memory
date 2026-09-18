@@ -17,8 +17,11 @@ A filled in vault to read alongside this page is in [`examples/vault`](../exampl
 | `title` | recommended | One line, what the entry is called in a list |
 | `description` | yes, here | One line, and the line an index and a search are built from. Mabolo treats a missing one as an error even though the format allows it |
 | `generated` | optional | `by` and `at`: who produced the entry and when. `by` is `producer/version`, `human:<id>` or `process:<id>` |
-| `verified` | optional | A list of `by` and `at`. Mabolo only ever writes `human:<id>` here: a person is what verification means |
+| `verified` | optional | A list of `by` and `at`. A single mapping is read as a list of one and written back as a list. Mabolo only ever writes `human:<id>` here: a person is what verification means |
 | `sources` | optional | Where a claim came from. `resource` is required, `id` is what a footnote in the body cites |
+| `resource` | optional | What this entry is about, when it is about one thing: a path, a URL, an identifier |
+| `tags` | optional | A list of words a person searches for. Every one of them is text |
+| `usage_window` | optional | When the knowledge in the entry applies, as the format defines it |
 | `status` | optional | `draft`, `stable` or `deprecated`. Defaults to `stable` |
 | `stale_after` | optional | An ISO-8601 timestamp with an offset, after which the entry wants a look |
 | `mabolo.area` | yes | Which folder the entry belongs to, and it has to match the folder it is in |
@@ -73,10 +76,15 @@ Releases are cut from `main`.[^s1]
 
 | File | Rules |
 |---|---|
-| `index.md` | One per folder, derived from the entries and rewritten by Mabolo. Only the one in the vault root carries frontmatter, and only `okf_version` |
+| `index.md` | One per folder, derived from the entries and rewritten by Mabolo. Only the one in the vault root carries frontmatter, and only `okf_version`, which it has to carry: it is what says which version of the format the rest of the vault is read as |
 | `log.md` | The journal. No frontmatter, one ISO date heading per day, newest first |
 
 Both are generated, so an entry may not be called `index` or `log`.
+
+Mabolo only ever replaces an `index.md` it could have written itself: one with
+no frontmatter, or the root one with nothing but `okf_version`. Anything else in
+a file of that name is reported and left alone, because a file Mabolo did not
+write is a file somebody else did.
 
 ## Links
 
@@ -95,5 +103,13 @@ that invented them.
 * a **warning** means a person should look, for instance a description over the
   budget, a footnote without a source, or a link that points at nothing.
 
-Nothing is ever repaired. Findings are named with the file, the field and a code
-you can grep for.
+Nothing is ever repaired, and nothing is skipped in silence: a folder that
+cannot be read is an error of its own rather than a gap in the count, because a
+run over half a vault must not look like a clean one.
+
+Findings are named with the file, the field and a code you can grep for.
+
+An entry read from disk and written back keeps what the reader could not
+interpret. A malformed `generated` block is reported, not dropped, and writing
+an entry that has errors is refused: a read, a small change and a write must
+never turn into a silent repair of the rest of the file.

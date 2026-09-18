@@ -8,7 +8,6 @@ generated:
 status: stable
 mabolo:
   area: persona
-  pin: false
 ---
 
 Most of the building happens late in the evening. Reviews, replies and

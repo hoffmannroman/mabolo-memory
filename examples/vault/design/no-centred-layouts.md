@@ -8,7 +8,6 @@ generated:
 status: stable
 mabolo:
   area: design
-  pin: false
   applies_to:
   - '*.css'
   - '*.tsx'

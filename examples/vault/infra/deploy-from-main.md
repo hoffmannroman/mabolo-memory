@@ -14,7 +14,6 @@ verified:
 status: stable
 mabolo:
   area: infra
-  pin: false
 ---
 
 Releases are cut from `main`. Tags mark what shipped, they are never the

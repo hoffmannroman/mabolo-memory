@@ -84,3 +84,42 @@ def test_a_yaml_error_does_not_quote_the_line_it_found(tmp_path):
     with pytest.raises(MaboloError) as caught:
         frontmatter.parse('---\nsecret: "swordfish\n---\n\ntext\n')
     assert "swordfish" not in str(caught.value)
+
+
+def test_a_key_that_is_not_a_scalar_is_a_finding_and_not_a_crash():
+    """`key in mapping` with a list raised TypeError and took the whole run down."""
+    with pytest.raises(MaboloError, match="not valid YAML|plain value"):
+        frontmatter.parse("---\n? [a, b]\n: x\n---\n\ntext\n")
+
+
+def test_writing_never_touches_a_file_that_shares_its_inode(tmp_path):
+    """A hard link is the one way a checked path reaches outside the vault."""
+    outside = tmp_path / "payroll.txt"
+    outside.write_text("PAYROLL\n", encoding="utf-8")
+    inside = tmp_path / "entry.md"
+    inside.hardlink_to(outside)
+    with pytest.raises(MaboloError, match="hard link"):
+        frontmatter.write(inside, {"type": "reference"}, "body")
+    assert outside.read_text(encoding="utf-8") == "PAYROLL\n"
+
+
+def test_an_interrupted_write_leaves_the_old_file_alone(tmp_path, monkeypatch):
+    target = tmp_path / "entry.md"
+    frontmatter.write(target, {"type": "reference"}, "first")
+    before = target.read_bytes()
+
+    def explode(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("os.replace", explode)
+    with pytest.raises(KeyboardInterrupt):
+        frontmatter.write(target, {"type": "reference"}, "second")
+    assert target.read_bytes() == before
+    assert not list(tmp_path.glob(".*mabolo-tmp"))
+
+
+def test_a_body_with_crlf_is_written_as_lf_throughout():
+    """The warning says Mabolo writes LF, and it used to produce both."""
+    out = frontmatter.dump({"type": "reference"}, "a\r\nb\r\n")
+    assert "\r" not in out
+    assert out.endswith("a\nb\n")

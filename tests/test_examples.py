@@ -5,6 +5,7 @@ realistic material the tests have. An example that drifts out of the format
 teaches the wrong shape to every person who clones this.
 """
 
+import shutil
 from pathlib import Path
 
 from mabolo.validate import validate_vault
@@ -30,8 +31,16 @@ def test_the_example_vault_shows_every_shape_that_matters():
     assert any(e.area.startswith("project/") for e in entries.values())
 
 
-def test_the_generated_indexes_match_the_entries():
-    """The index is derived, so rebuilding it must change nothing."""
-    before = {p: p.read_bytes() for p in EXAMPLE.rglob("index.md")}
-    Vault(EXAMPLE).rebuild_indexes()
-    assert {p: p.read_bytes() for p in EXAMPLE.rglob("index.md")} == before
+def test_the_generated_indexes_match_the_entries(tmp_path):
+    """The index is derived, so rebuilding it must change nothing.
+
+    On a copy: rebuilding in the checkout means a failing test leaves the
+    tracked example already rewritten, and the next test reads that instead of
+    what the repository holds.
+    """
+    copy = tmp_path / "vault"
+    shutil.copytree(EXAMPLE, copy)
+    before = {p.relative_to(copy): p.read_bytes() for p in copy.rglob("index.md")}
+    Vault(copy).rebuild_indexes()
+    after = {p.relative_to(copy): p.read_bytes() for p in copy.rglob("index.md")}
+    assert after == before

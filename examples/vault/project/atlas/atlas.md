@@ -8,7 +8,6 @@ generated:
 status: stable
 mabolo:
   area: project/atlas
-  pin: false
 ---
 
 Atlas is the project everything in this folder is about.

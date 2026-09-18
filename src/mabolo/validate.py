@@ -49,7 +49,11 @@ MAX_DESCRIPTION = 200
 _MD_LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+?)(?:\s+\"[^\"]*\")?\)")
 _WIKILINK = re.compile(r"\[\[([^\]|#]+)")
 _FENCE = re.compile(r"^(```|~~~)", re.MULTILINE)
-_LOG_HEADING = re.compile(r"^#{1,6}\s+(\S+)\s*$", re.MULTILINE)
+#: A log heading is a day, written the one way that sorts correctly as text.
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+#: Every heading, not just a single word one: `## Two words` has to be caught by
+#: the date rule as well, or the rule only ever sees what already looks right.
+_LOG_HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -182,9 +186,15 @@ def _check_generated(meta: dict[str, Any], out: _Collector) -> None:
     if not isinstance(generated, dict):
         out.err("okf.generated.incomplete", "generated must be a mapping with by and at", "generated")
         return
-    if not generated.get("by"):
+    by = generated.get("by")
+    if not by:
         out.err("okf.generated.incomplete", "generated.by is missing", "generated.by")
-    elif not schema.is_actor(generated.get("by")):
+    elif not isinstance(by, str) or not by.strip():
+        # An unknown actor format stays a warning, because OKF allows any
+        # producer. A value that is not text at all is something else: the
+        # reader drops it, and then the field is gone rather than foreign.
+        out.err("okf.generated.by.invalid", "generated.by must be text", "generated.by")
+    elif not schema.is_actor(by):
         out.warn(
             "okf.generated.actor",
             "generated.by should be producer/version, human:<id> or process:<id>",
@@ -194,6 +204,27 @@ def _check_generated(meta: dict[str, Any], out: _Collector) -> None:
         out.err("okf.generated.incomplete", "generated.at is missing", "generated.at")
     elif schema.parse_time(generated.get("at")) is None:
         out.err("okf.generated.at.invalid", "generated.at is not an ISO-8601 timestamp", "generated.at")
+
+
+def _check_tags(meta: dict[str, Any], out: _Collector) -> None:
+    """A tag is a word a person searches for, so every one of them is text."""
+    if "tags" not in meta:
+        return
+    tags = meta.get("tags")
+    if isinstance(tags, str):
+        return
+    if not isinstance(tags, list):
+        out.warn("okf.tags.invalid", "tags should be a list of strings", "tags")
+        return
+    for i, tag in enumerate(tags):
+        if not isinstance(tag, str) or not tag.strip():
+            # The reader turns anything else into its Python repr, which is a
+            # value nobody typed and nobody will ever search for.
+            out.err(
+                "okf.tags.item.invalid",
+                f"tags[{i}] is not text, and a tag that is not text cannot be searched for",
+                "tags",
+            )
 
 
 def _check_verified(meta: dict[str, Any], out: _Collector) -> None:
@@ -396,8 +427,7 @@ def validate_meta(
     _check_generated(meta, out)
     _check_verified(meta, out)
     source_ids = _check_sources(meta, out)
-    if "tags" in meta and not isinstance(meta.get("tags"), (list, str)):
-        out.warn("okf.tags.invalid", "tags should be a list of strings", "tags")
+    _check_tags(meta, out)
     for key in [k for k in meta if k not in Entry.KNOWN]:
         out.warn("okf.field.unknown", f"unknown top level field {key!r}, Mabolo will not read it", key)
 
@@ -490,7 +520,9 @@ def _validate_reserved(doc: Document, root: Path | None) -> list[Problem]:
 
     at_root = root is not None and doc.path.parent == root
     if doc.meta is None:
-        return out
+        # A folder index carries no frontmatter, that is the rule. The root one
+        # is where the format is declared, so there its absence is the finding.
+        return out + (_check_okf_version(None, doc.path) if at_root else [])
     if not at_root:
         out.append(
             _problem(
@@ -511,59 +543,120 @@ def _validate_reserved(doc: Document, root: Path | None) -> list[Problem]:
                 doc.path,
             )
         )
-    version = doc.meta.get("okf_version")
-    if version is not None and str(version) != OKF_VERSION:
-        out.append(
-            _problem(
-                WARNING,
-                "okf.version.mismatch",
-                f"this vault declares OKF {version}, Mabolo targets {OKF_VERSION}",
-                doc.path,
-            )
-        )
+    out += _check_okf_version(doc.meta.get("okf_version"), doc.path)
     return out
+
+
+def _check_okf_version(version: Any, path: Path | None) -> list[Problem]:
+    """The root index declares the format, and every other rule reads it that way.
+
+    Without the declaration there is nothing that says the fields in this vault
+    mean what this validator assumes, so a missing version is an error and not a
+    detail. A version from a different line of the format is an error too: the
+    same field name meant something else in v0.1.
+    """
+    if version is None:
+        return [
+            _problem(
+                ERROR,
+                "okf.version.missing",
+                f"the root index.md declares no okf_version, and Mabolo reads this vault as OKF {OKF_VERSION}",
+                path,
+            )
+        ]
+    if not isinstance(version, (str, float, int)) or isinstance(version, bool):
+        return [_problem(ERROR, "okf.version.invalid", "okf_version must be text", path)]
+    if str(version) != OKF_VERSION:
+        return [
+            _problem(
+                ERROR,
+                "okf.version.mismatch",
+                f"this vault declares OKF {version}, Mabolo reads OKF {OKF_VERSION}",
+                path,
+            )
+        ]
+    return []
 
 
 def _validate_log_body(doc: Document) -> list[Problem]:
     """The spec wants ISO date headings, newest first, one group per day."""
     out: list[Problem] = []
-    days: list[str] = []
-    for match in _LOG_HEADING.finditer(doc.body):
+    days: list[dt.date] = []
+    for match in _LOG_HEADING.finditer(strip_code(doc.body)):
         heading = match.group(1)
+        # `date.fromisoformat` also accepts `20260814`, which sorts differently
+        # from the dashed form, so the shape is checked before the value.
+        if not _ISO_DAY.match(heading):
+            out.append(
+                _problem(
+                    ERROR,
+                    "okf.log.heading",
+                    f"{heading!r} is not an ISO date (YYYY-MM-DD), and log.md groups by date",
+                    doc.path,
+                )
+            )
+            continue
         try:
-            dt.date.fromisoformat(heading)
+            days.append(dt.date.fromisoformat(heading))
         except ValueError:
             out.append(
                 _problem(
                     ERROR,
                     "okf.log.heading",
-                    f"{heading!r} is not an ISO date, and log.md groups by date",
+                    f"{heading!r} is not a real date, and log.md groups by date",
                     doc.path,
                 )
             )
-            continue
-        days.append(heading)
     for day in sorted({d for d in days if days.count(d) > 1}):
-        out.append(_problem(ERROR, "okf.log.duplicate", f"{day} has more than one group", doc.path))
+        out.append(
+            _problem(ERROR, "okf.log.duplicate", f"{day.isoformat()} has more than one group", doc.path)
+        )
     if days != sorted(days, reverse=True):
         out.append(_problem(ERROR, "okf.log.order", "log.md has to run newest first", doc.path))
     return out
 
 
-def iter_markdown(root: Path) -> tuple[list[Path], list[Path]]:
-    """Every Markdown file of a vault, and separately every symlink found.
+@dataclass(frozen=True)
+class Inventory:
+    """Every Markdown file of a vault, and what could not be looked at.
+
+    One definition of "a file in this vault", used by the validator and by the
+    index builder alike. Two definitions produce a vault where an entry is valid
+    and missing from its own index at the same time.
 
     Symlinks are not followed: a vault that reads through a link reads whatever
     somebody else put at the other end.
     """
+
+    files: list[Path] = field(default_factory=list)
+    links: list[Path] = field(default_factory=list)
+    problems: list[Problem] = field(default_factory=list)
+
+    @property
+    def complete(self) -> bool:
+        return not self.problems
+
+
+def iter_markdown(root: Path) -> Inventory:
+    """Walk a vault. A folder that cannot be read becomes a finding, not a gap."""
     files: list[Path] = []
     links: list[Path] = []
+    problems: list[Problem] = []
     stack = [root]
     while stack:
         directory = stack.pop()
         try:
             children = sorted(directory.iterdir())
-        except OSError:
+        except OSError as exc:
+            # Skipping it quietly is how a run over half a vault reports success.
+            problems.append(
+                _problem(
+                    ERROR,
+                    "vault.dir.unreadable",
+                    f"this folder cannot be read ({exc.strerror}), so the run did not cover it",
+                    directory,
+                )
+            )
             continue
         for child in children:
             if child.name.startswith("."):
@@ -575,12 +668,20 @@ def iter_markdown(root: Path) -> tuple[list[Path], list[Path]]:
                 stack.append(child)
             elif child.suffix.lower() == ".md":
                 files.append(child)
-    return sorted(files), sorted(links)
+    return Inventory(files=sorted(files), links=sorted(links), problems=problems)
 
 
 def markdown_files(root: Path) -> list[Path]:
-    """Every Markdown file of a vault, hidden folders and symlinks left out."""
-    return iter_markdown(root)[0]
+    """Every Markdown file of a vault, or an error if any folder was unreadable.
+
+    A bare list means the list is complete. A caller that wants to carry on with
+    a partial answer has to say so by using `iter_markdown` and looking at what
+    it could not reach.
+    """
+    inventory = iter_markdown(root)
+    if not inventory.complete:
+        raise MaboloError(inventory.problems[0].message.replace("this folder", str(inventory.problems[0].path)))
+    return inventory.files
 
 
 def area_of(root: Path, path: Path) -> str | None:
@@ -598,7 +699,9 @@ def validate_vault(root: Path, areas: Iterable[str] = FIXED_AREAS) -> Report:
     report = Report()
     names: dict[str, Path] = {}
     aliases: dict[str, Path] = {}
-    files, links = iter_markdown(root)
+    inventory = iter_markdown(root)
+    files, links = inventory.files, inventory.links
+    report.extend(inventory.problems)
 
     for link in links:
         report.add(
@@ -667,7 +770,14 @@ def validate_vault(root: Path, areas: Iterable[str] = FIXED_AREAS) -> Report:
             )
 
     report.extend(_check_links(root, files))
-    if not (root / INDEX_FILE).exists():
+    try:
+        has_index = (root / INDEX_FILE).exists()
+    except OSError as exc:
+        report.add(
+            _problem(ERROR, "vault.dir.unreadable", f"the vault root cannot be read: {exc.strerror}", root)
+        )
+        has_index = True
+    if not has_index:
         report.add(
             _problem(WARNING, "vault.index.missing", "the vault has no root index.md", root / INDEX_FILE)
         )
@@ -711,7 +821,13 @@ def _check_links(root: Path, files: list[Path]) -> list[Problem]:
                     )
                 )
                 continue
-            if not destination.exists():
+            try:
+                missing = not destination.exists()
+            except OSError:
+                # Unreadable is not the same as absent, and the folder that
+                # cannot be read is already an error of its own.
+                continue
+            if missing:
                 out.append(
                     _problem(WARNING, "mabolo.link.broken", f"the link {target!r} points at nothing", path)
                 )

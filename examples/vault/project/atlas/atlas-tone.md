@@ -8,7 +8,6 @@ generated:
 status: stable
 mabolo:
   area: project/atlas
-  pin: false
 ---
 
 Copy says what the thing does. No exclamation marks, no superlatives,

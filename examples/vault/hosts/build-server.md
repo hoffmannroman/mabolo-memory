@@ -8,7 +8,6 @@ generated:
 status: stable
 mabolo:
   area: hosts
-  pin: false
 ---
 
 The build server is small on purpose: if a build needs more than four

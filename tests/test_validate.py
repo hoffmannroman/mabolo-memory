@@ -278,3 +278,102 @@ def test_an_example_in_a_code_block_is_not_treated_as_a_link():
     meta = {"type": "reference", "title": "t", "description": "d", "mabolo": {"area": "infra"}}
     body = "Here is how it looks:\n\n```\nsee [[an-example]]\n```\n"
     assert "mabolo.link.wikilink" not in codes(validate_meta(meta, body=body))
+
+
+def test_an_unreadable_folder_is_an_error_and_not_a_clean_run(tmp_path):
+    """Skipping it quietly reported success over half a vault."""
+    import os
+
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    locked = vault.root / "project" / "locked"
+    locked.mkdir(parents=True)
+    (locked / "x.md").write_text(
+        "---\ntype: project\ndescription: A description long enough.\n"
+        "mabolo:\n  area: project/locked\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    os.chmod(locked, 0)
+    try:
+        report = vault.validate()
+    finally:
+        os.chmod(locked, 0o755)
+    assert not report.ok
+    assert "vault.dir.unreadable" in codes(report.problems)
+
+
+def test_one_broken_file_does_not_stop_the_others_from_being_checked(tmp_path):
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    (vault.root / "infra" / "weird.md").write_text("---\n? [a, b]\n: x\n---\n\ntext\n", encoding="utf-8")
+    (vault.root / "infra" / "fine.md").write_text(
+        "---\ntype: reference\ndescription: A description long enough.\n"
+        "mabolo:\n  area: infra\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    report = vault.validate()
+    assert "okf.frontmatter.broken" in codes(report.problems)
+    assert report.checked >= 2
+
+
+def test_the_root_index_has_to_say_which_format_this_vault_is(tmp_path):
+    """Without it, nothing says the fields mean what this validator assumes."""
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    vault.index_file.write_text("# Vault\n\nNo frontmatter at all.\n", encoding="utf-8")
+    assert "okf.version.missing" in codes(vault.validate().problems)
+
+    vault.index_file.write_text("---\nokf_version: '0.1'\n---\n\n# Vault\n", encoding="utf-8")
+    report = vault.validate()
+    assert "okf.version.mismatch" in codes(report.problems)
+    assert not report.ok
+
+
+def test_a_value_of_the_wrong_type_is_an_error_not_a_foreign_format():
+    """An unknown actor stays a warning. Something that is not text is not that."""
+    problems = validate_meta(good_meta(generated={"by": 7, "at": "2026-01-01T00:00:00Z"}))
+    assert "okf.generated.by.invalid" in codes(problems)
+    assert any(p.is_error for p in problems if p.code == "okf.generated.by.invalid")
+
+    problems = validate_meta(good_meta(generated={"by": "some-tool", "at": "2026-01-01T00:00:00Z"}))
+    assert "okf.generated.actor" in codes(problems)
+    assert not any(p.is_error for p in problems)
+
+
+def test_a_tag_that_is_not_text_is_named(tmp_path):
+    """The reader turned it into a Python repr, which nobody typed or searches for."""
+    problems = validate_meta(good_meta(tags=[{"private": "value"}]))
+    assert "okf.tags.item.invalid" in codes(problems)
+
+
+def test_every_log_heading_is_checked_not_only_the_one_word_ones(tmp_path):
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    vault.log_file.write_text(
+        "## 2026-09-01\n\nz\n\n## Two words\n\ny\n\n## 2026-01-01\n\nx\n", encoding="utf-8"
+    )
+    assert "okf.log.heading" in codes(vault.validate().problems)
+
+
+def test_a_log_heading_in_a_code_block_is_not_a_heading(tmp_path):
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    vault.log_file.write_text(
+        "## 2026-09-01\n\n```\n## not a heading\n```\n", encoding="utf-8"
+    )
+    assert "okf.log.heading" not in codes(vault.validate().problems)
+
+
+def test_the_index_and_the_validator_agree_on_what_a_file_is(tmp_path):
+    """One counted `.MD` and hidden folders, the other did not."""
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    hidden = vault.root / "infra" / ".drafts"
+    hidden.mkdir()
+    (hidden / "x.md").write_text(
+        "---\ntype: reference\ndescription: A description long enough.\n"
+        "mabolo:\n  area: infra\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    vault.rebuild_indexes()
+    assert "infra/index.md) - 0 entries" in vault.index_file.read_text(encoding="utf-8")

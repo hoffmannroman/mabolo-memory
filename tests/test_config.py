@@ -137,3 +137,34 @@ def test_a_control_character_in_a_value_does_not_break_the_file(tmp_path):
     odd = tmp_path / "vault\x01name"
     Config(vault=odd, actor="human:x").save(path)
     assert Config.load(path).vault == odd
+
+
+def test_only_a_person_can_be_configured_as_the_approver(tmp_path):
+    """The general actor rule also allows a tool, and the validator then refuses it."""
+    for actor in ("process:robot", "some-tool/1.0", "someone"):
+        with pytest.raises(MaboloError, match="human:"):
+            Config.from_dict({"vault": str(tmp_path / "v"), "actor": actor})
+    assert Config.from_dict({"vault": str(tmp_path / "v"), "actor": "human:alex"}).actor == "human:alex"
+
+
+def test_a_setting_this_version_cannot_write_back_stops_the_rewrite(tmp_path):
+    """Falling back to str() turned a date into text and a table into a repr."""
+    path = tmp_path / "c.toml"
+    path.write_text(
+        'vault = "/tmp/v"\nactor = "human:alex"\nwhen = 2026-01-01T00:00:00Z\n',
+        encoding="utf-8",
+    )
+    config = Config.load(path)
+    with pytest.raises(MaboloError, match="newer Mabolo"):
+        config.save(path)
+    assert "2026-01-01T00:00:00Z" in path.read_text(encoding="utf-8")
+
+
+def test_an_unknown_key_under_remote_survives_a_rewrite(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text(
+        'vault = "/tmp/v"\nactor = "human:alex"\n\n[remote]\nbranch = "main"\nfuture_flag = true\n',
+        encoding="utf-8",
+    )
+    Config.load(path).save(path)
+    assert "future_flag = true" in path.read_text(encoding="utf-8")

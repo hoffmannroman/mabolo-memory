@@ -4,9 +4,13 @@ Two commands so far: `init` creates a vault and a configuration, `validate` says
 what is wrong with one. Everything else arrives with the part of the tool that
 gives it something to talk about.
 
-Everything prints its plan before it writes anything, `init` ends with a real
-check rather than a success message, and an exit code of 0 means the run found
-nothing to report.
+Everything prints its plan before it writes anything, and `init` ends with a
+real check rather than a success message.
+
+Exit codes: 0 when there is nothing to fix, 1 when the run found something in
+the vault, 2 when the command itself could not do its job. Warnings count as
+something found, because a script that cannot tell "clean" from "a person should
+look at this" will never show anybody the warnings.
 """
 
 from __future__ import annotations
@@ -15,10 +19,12 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__
-from .config import Config, default_config_path, default_vault_path
+from dataclasses import replace
+
+from . import __version__, git
+from .config import Config, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
-from .schema import FIXED_AREAS, is_actor
+from .schema import FIXED_AREAS
 from .validate import validate_vault
 from .vault import Vault
 
@@ -58,7 +64,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     # vault depending on where the next command is run from.
     vault_path = Path(_ask("Where should the vault live?", vault_default, interactive)).expanduser().resolve()
     actor = _ask("Who approves entries? (human:<id>)", actor_default, interactive)
-    if not is_actor(actor):
+    if not is_approver(actor):
         raise MaboloError(f"{actor!r} is not a usable actor. Use human:<id>, for instance human:alex.")
     remote = _ask(
         "Git remote for syncing between machines, empty for a local vault",
@@ -66,24 +72,29 @@ def cmd_init(args: argparse.Namespace) -> int:
         interactive,
     )
 
-    config = Config(
+    # Built from what the file already said, so that a key this version does not
+    # know survives, and so that "the vault came from the environment" is not
+    # lost on the way: without it, one run with MABOLO_VAULT set would write
+    # that path into the file for good.
+    base = existing or Config.default()
+    config = replace(
+        base,
         vault=vault_path,
         actor=actor,
-        areas=list(existing.areas) if existing else list(FIXED_AREAS),
         remote_url=remote or None,
-        remote_branch=existing.remote_branch if existing else "main",
-        version=existing.version if existing else 1,
         path=config_path,
-        unknown=dict(existing.unknown) if existing else {},
+        vault_from_environment=base.vault_from_environment and not args.vault and vault_path == base.vault,
     )
-    vault = Vault(config.vault, areas=config.known_areas())
+    vault = Vault(config.vault, areas=tuple(config.areas))
 
     print("\nPlan")
     for action in vault.plan():
         print(action.render(vault.root))
     print(f"  {'exists' if config_path.exists() else 'create':7} {config_path}  (configuration)")
     if remote and not args.no_git:
-        print(f"  {'set':7} remote origin -> {remote}")
+        # Through redact(), like every other place a URL is shown: this line
+        # used to print the password and the next one the redacted form.
+        print(f"  {'set':7} remote origin -> {git.redact(remote)}")
     if args.no_git:
         print("  skip    Git, because --no-git was passed")
     print("\nNothing outside these paths is touched. The vault keeps working if Mabolo is removed.")
@@ -107,9 +118,11 @@ def cmd_init(args: argparse.Namespace) -> int:
     # missing identity cannot leave a vault behind that nothing points at.
     saved = config.save(config_path)
     print(f"  create  {saved}  (configuration, mode 600)")
+    git_result = None
     if not args.no_git:
-        print(f"  git     {vault.git_initialise(branch=config.remote_branch)}")
-        if remote:
+        git_result = vault.git_initialise(branch=config.remote_branch)
+        print(f"  git     {git_result.message}")
+        if remote and git_result.completed:
             print(f"  git     {vault.git_set_remote(remote)}")
 
     # The functional check: read back what was written, and validate the vault.
@@ -120,18 +133,26 @@ def cmd_init(args: argparse.Namespace) -> int:
     print(f"  {report.render(vault.root)}")
     if not vault.is_initialised():
         raise MaboloError("the vault has no index.md after init, which should not happen")
-    if report.ok:
+    if report.ok and not report.warnings:
         count = len(report.entries)
         print(f"\nThe vault is valid and holds {count} entries." if count else "\nThe vault is empty and valid.")
+    elif report.ok:
+        print("\nThe vault was created. The warnings above are worth a look.")
     else:
         print("\nThe vault was created, but the files above need attention.")
+    if git_result is not None and not git_result.completed:
+        # Git was asked for and did not happen. Saying so in passing and exiting
+        # 0 is how a script concludes the vault is versioned when it is not.
+        print("Git was requested but the repository has no commit yet, see the line above.")
     print("Writing entries and wiring up an agent are not built yet.")
-    return EXIT_OK if report.ok else EXIT_FINDINGS
+    if not report.ok or (git_result is not None and not git_result.completed):
+        return EXIT_FINDINGS
+    return EXIT_OK if not report.warnings else EXIT_FINDINGS
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
     config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
-    areas = config.known_areas() if config else FIXED_AREAS
+    areas = tuple(config.areas) if config else FIXED_AREAS
     root = Path(args.path).expanduser() if args.path else (config.vault if config else None)
     if root is None:
         raise MaboloError("no vault given and no configuration found. Run `mabolo init` first.")
@@ -139,7 +160,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
         raise MaboloError(f"{root} is not a folder")
     report = validate_vault(root, areas)
     print(report.render(root, show_warnings=not args.errors_only))
-    return EXIT_OK if report.ok else EXIT_FINDINGS
+    if not report.ok:
+        return EXIT_FINDINGS
+    # With --errors-only the warnings were not shown, so they cannot be what the
+    # caller is being told about, and a clean exit is the honest answer.
+    return EXIT_OK if args.errors_only or not report.warnings else EXIT_FINDINGS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -175,6 +200,12 @@ def main(argv: list[str] | None = None) -> int:
         return int(args.func(args))
     except MaboloError as exc:
         print(f"mabolo: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except OSError as exc:
+        # A missing permission or a full disk is the user's situation, not a bug
+        # in this program, so it reads as a sentence and exits like one.
+        where = f"{exc.filename}: " if getattr(exc, "filename", None) else ""
+        print(f"mabolo: {where}{exc.strerror or exc}", file=sys.stderr)
         return EXIT_ERROR
     except KeyboardInterrupt:
         print("\nstopped", file=sys.stderr)

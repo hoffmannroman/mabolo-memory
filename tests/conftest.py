@@ -1,9 +1,7 @@
-import sys
-from pathlib import Path
-
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from mabolo import frontmatter
+from mabolo.vault import Vault
 
 
 @pytest.fixture(autouse=True)
@@ -24,3 +22,24 @@ def git_identity(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     return config
+
+
+@pytest.fixture
+def vault(tmp_path):
+    """An initialised, empty vault that no test shares with another."""
+    made = Vault(tmp_path / "v")
+    made.initialise()
+    return made
+
+
+def entry_text(area: str = "infra", body: str = "text", **meta) -> str:
+    """A valid entry the way a person would type it, for tests about something else.
+
+    Only well formed entries go through here. A test about a broken frontmatter
+    writes the broken frontmatter out in full, because there the raw file is the
+    thing being asserted about, and a helper that builds it through our own
+    writer could never produce what a hand written mistake looks like.
+    """
+    block = {"area": area, **meta.pop("mabolo", {})}
+    head = {"type": "reference", "title": "t", "description": "d", **meta, "mabolo": block}
+    return frontmatter.dump(head, body)

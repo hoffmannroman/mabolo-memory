@@ -268,7 +268,10 @@ class MaboloBlock:
         meta: dict[str, Any] = {"area": self.area}
         if self.anchor:
             meta["anchor"] = self.anchor
-        meta["pin"] = self.pin
+        # Optional in the format, so only a pinned entry says so. Writing
+        # `pin: false` into every entry is a line of noise in every file.
+        if self.pin:
+            meta["pin"] = self.pin
         if self.aliases:
             meta["aliases"] = list(self.aliases)
         if self.scope:
@@ -303,8 +306,10 @@ class Entry:
     path: Path | None = None
     revision: str = ""
     #: The mapping exactly as it was read, before any of the tidying above.
-    #: A mutation patches this field by field, so that fixing one line of an
-    #: entry never quietly repairs the rest of it.
+    #: Empty for an entry that was built rather than read. `to_meta` falls back
+    #: to it for every field the tolerant read dropped, and `Vault.write_entry`
+    #: validates it, so that fixing one line of an entry never quietly repairs
+    #: the rest of it.
     raw: dict[str, Any] = field(default_factory=dict)
 
     KNOWN = (
@@ -399,6 +404,15 @@ class Entry:
             meta["stale_after"] = self.stale_after
         meta["mabolo"] = self.mabolo.to_meta()
         meta.update(self.extra)
+        # Whatever the tolerant read refused to interpret stays as it was found.
+        # `from_meta` turns an incomplete `generated` into None and a `tags: 7`
+        # into an empty list; writing that back would delete the very thing the
+        # validator is about to complain about, and provenance is the first
+        # casualty. A malformed entry is refused by `Vault.write_entry`, not
+        # tidied up here.
+        for key in self.KNOWN:
+            if key not in meta and key in self.raw:
+                meta[key] = self.raw[key]
         return meta
 
     def footnote_ids(self) -> set[str]:

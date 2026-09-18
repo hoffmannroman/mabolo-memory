@@ -60,3 +60,52 @@ def test_validate_without_a_configuration_says_what_to_do(tmp_path, capsys):
 def test_an_unknown_command_is_refused():
     with pytest.raises(SystemExit):
         main(["nonsense"])
+
+
+def test_a_password_in_a_remote_url_is_never_printed(tmp_path, capsys):
+    """The plan printed it in full and the line below it redacted."""
+    main(["--config", str(tmp_path / "c.toml"), "init", "--vault", str(tmp_path / "v"),
+          "--actor", "human:someone", "--remote", "https://user:s3cret@example.invalid/r.git",
+          "--yes", "--dry-run"])
+    out = capsys.readouterr().out
+    assert "s3cret" not in out
+    assert "***@example.invalid" in out
+
+
+def test_an_override_for_one_run_is_not_written_into_the_file(tmp_path, monkeypatch):
+    config = tmp_path / "c.toml"
+    main(["--config", str(config), "init", "--vault", str(tmp_path / "a"),
+          "--actor", "human:someone", "--yes", "--no-git"])
+    monkeypatch.setenv("MABOLO_VAULT", str(tmp_path / "b"))
+    main(["--config", str(config), "init", "--actor", "human:someone", "--yes", "--no-git"])
+    assert str(tmp_path / "a") in config.read_text(encoding="utf-8")
+    assert str(tmp_path / "b") not in config.read_text(encoding="utf-8")
+
+
+def test_warnings_do_not_look_like_a_clean_run(tmp_path, capsys):
+    main(["--config", str(tmp_path / "c.toml"), "init", "--vault", str(tmp_path / "v"),
+          "--actor", "human:someone", "--yes", "--no-git"])
+    (tmp_path / "v" / "infra" / "no-title.md").write_text(
+        "---\ntype: reference\ndescription: A description long enough.\n"
+        "mabolo:\n  area: infra\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+    code = main(["--config", str(tmp_path / "c.toml"), "validate", str(tmp_path / "v")])
+    assert "mabolo.title.missing" in capsys.readouterr().out
+    assert code == 1
+    assert main(["--config", str(tmp_path / "c.toml"), "validate", str(tmp_path / "v"), "--errors-only"]) == 0
+
+
+def test_a_missing_permission_reads_as_a_sentence(tmp_path, capsys):
+    import os
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    os.chmod(locked, 0o500)
+    try:
+        code = main(["--config", str(tmp_path / "c.toml"), "init", "--vault", str(locked / "v"),
+                     "--actor", "human:someone", "--yes", "--no-git"])
+    finally:
+        os.chmod(locked, 0o755)
+    assert code == 2
+    assert "mabolo:" in capsys.readouterr().err

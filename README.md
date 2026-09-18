@@ -142,7 +142,10 @@ git clone https://github.com/hoffmannroman/mabolo-memory.git
 cd mabolo-memory
 uv sync
 uv run mabolo validate examples/vault
-uv run mabolo init --vault /tmp/my-vault --yes
+
+# A throwaway vault and a throwaway configuration to go with it. Without
+# --config, `init` writes the real one in your config directory.
+uv run mabolo --config /tmp/mabolo-demo.toml init --vault /tmp/my-vault --yes
 ```
 
 ## Limits

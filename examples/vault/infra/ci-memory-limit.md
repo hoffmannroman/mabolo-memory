@@ -9,7 +9,6 @@ status: stable
 stale_after: '2027-02-01T00:00:00+03:00'
 mabolo:
   area: infra
-  pin: false
   anchor: .github/workflows/ci.yml
 ---
 

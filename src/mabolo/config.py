@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import MaboloError
-from .schema import FIXED_AREAS, is_actor, is_project_area, is_safe_area
+from .schema import ACTOR_HUMAN, FIXED_AREAS, is_project_area, is_safe_area
 
 CONFIG_VERSION = 1
 DEFAULT_VAULT_DIRNAME = "mabolo-data"
@@ -65,6 +65,17 @@ def default_actor() -> str:
     return f"human:{_SAFE_ID.sub('-', login.strip().lower()) or 'me'}"
 
 
+def is_approver(value: str) -> bool:
+    """True only for `human:<id>`.
+
+    The general actor rule also allows `producer/version` and `process:<id>`,
+    which are fine for who *made* an entry. Who *approves* one is narrower: the
+    validator refuses any `verified.by` that is not a person, so accepting one
+    here would configure a vault whose every approval is rejected later.
+    """
+    return bool(ACTOR_HUMAN.match(str(value).strip()))
+
+
 def _toml_string(value: str) -> str:
     out: list[str] = []
     for char in value:
@@ -82,14 +93,41 @@ def _toml_string(value: str) -> str:
     return '"' + "".join(out) + '"'
 
 
+class UnwritableValue(MaboloError):
+    """A value this version cannot put back into TOML without changing it."""
+
+
 def _toml_value(value: Any) -> str:
+    """One TOML value, or an error rather than a value that reads back differently.
+
+    `str()` as a fallback looks harmless and is not: a date becomes text, a
+    float becomes text, a nested table becomes its Python repr. The file still
+    parses, so nothing complains, and a setting written by a newer version has
+    quietly changed type. Refusing is the honest answer, and the comment above
+    the unknown keys promises exactly that.
+    """
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
+    if isinstance(value, str):
+        return _toml_string(value)
     if isinstance(value, (list, tuple)):
         return "[" + ", ".join(_toml_value(v) for v in value) + "]"
-    return _toml_string(str(value))
+    raise UnwritableValue(
+        f"a value of type {type(value).__name__} cannot be written back without changing it"
+    )
+
+
+def _named(key: str, value: Any) -> str:
+    """A TOML value, with the key in the error when it cannot be written."""
+    try:
+        return _toml_value(value)
+    except UnwritableValue as exc:
+        raise MaboloError(
+            f"{key}: {exc}. It was written by a newer Mabolo, and this one will not "
+            "rewrite the file rather than change what that setting means."
+        ) from None
 
 
 @dataclass
@@ -106,6 +144,8 @@ class Config:
     #: Keys the file carried that this version does not know. Kept so that an
     #: older Mabolo cannot quietly delete a setting a newer one wrote.
     unknown: dict[str, Any] = field(default_factory=dict)
+    #: The same, for keys inside [remote].
+    unknown_remote: dict[str, Any] = field(default_factory=dict)
     #: True when the vault came from the environment, so `save` refuses to make
     #: a one-run override permanent.
     vault_from_environment: bool = False
@@ -145,7 +185,7 @@ class Config:
             )
 
         actor = str(data.get("actor") or default_actor())
-        if not is_actor(actor):
+        if not is_approver(actor):
             raise MaboloError(
                 f"{where}: actor {actor!r} has to look like human:<id>, "
                 "because a person is what approves an entry"
@@ -162,6 +202,7 @@ class Config:
 
         override = os.environ.get(ENV_VAULT)
         known = {"version", "vault", "actor", "areas", "remote"}
+        known_remote = {"url", "branch"}
         return cls(
             vault=Path(override or vault).expanduser(),
             actor=actor,
@@ -171,6 +212,7 @@ class Config:
             version=raw_version,
             path=path,
             unknown={k: v for k, v in data.items() if k not in known},
+            unknown_remote={k: v for k, v in remote.items() if k not in known_remote},
             vault_from_environment=bool(override),
         )
 
@@ -224,7 +266,7 @@ class Config:
                 "# Kept untouched rather than dropped.",
             ]
             lines += [
-                f"{key} = {_toml_value(value)}"
+                f"{key} = {_named(key, value)}"
                 for key, value in self.unknown.items()
                 if not isinstance(value, dict)
             ]
@@ -234,12 +276,13 @@ class Config:
             "# A bare Git repository over SSH, or empty for a vault that stays local.",
             f"url = {_toml_value(self.remote_url or '')}",
             f"branch = {_toml_value(self.remote_branch)}",
-            "",
         ]
+        lines += [f"{key} = {_named(key, value)}" for key, value in self.unknown_remote.items()]
+        lines.append("")
         for key, value in self.unknown.items():
             if isinstance(value, dict):
                 lines.append(f"[{key}]")
-                lines += [f"{k} = {_toml_value(v)}" for k, v in value.items()]
+                lines += [f"{k} = {_named(f'{key}.{k}', v)}" for k, v in value.items()]
                 lines.append("")
         return "\n".join(lines)
 
@@ -250,14 +293,26 @@ class Config:
                 "Unset it, or pass the path you want written."
             )
         target = Path(path).expanduser() if path else (self.path or default_config_path())
+        # Rendered before anything is opened. Building the text inside the open
+        # file meant that a value this version cannot write left the existing
+        # configuration truncated to nothing, which is a worse outcome than the
+        # rewrite it was refusing.
+        text = self.to_toml()
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.is_symlink():
             raise MaboloError(f"{target} is a symlink, and the configuration is not written through one")
-        # Create with tight permissions from the start, rather than fixing them
-        # after a moment in which the file was readable by everyone.
-        handle = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            stream.write(self.to_toml())
-        os.chmod(target, 0o600)
+        temporary = target.parent / f".{target.name}.mabolo-tmp"
+        try:
+            # Created with tight permissions from the start, rather than fixed
+            # afterwards, after a moment in which the file was world readable.
+            handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
         self.path = target
         return target
