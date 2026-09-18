@@ -59,6 +59,20 @@ RESERVED_STEMS = frozenset({"index", "log"})
 #: path in a configuration file is a way out of the vault.
 AREA_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
 
+#: The language the entries are written in. It belongs to the vault and not to
+#: the machine: the search drops stop words in it and cuts suffixes by its
+#: rules, so the same commit and the same question rank differently under
+#: another one. A vault that carried its language in a local configuration file
+#: would rank differently on two machines, and then no history could be replayed.
+DEFAULT_LANGUAGE = "en"
+LANGUAGE_RE = re.compile(r"^[a-z]{2,3}$")
+
+
+def is_language(value: Any) -> bool:
+    """True for a short language code. An unknown one is fine, it only means no
+    stop words beyond the English ones."""
+    return isinstance(value, str) and bool(LANGUAGE_RE.match(value))
+
 
 def now() -> dt.datetime:
     """The current local time, with its offset and without microseconds."""

@@ -3,15 +3,24 @@
 import pytest
 
 from conftest import entry_text
+from mabolo import frontmatter, query
 from mabolo.errors import MaboloError
 from mabolo.index import Index, estimate_tokens
 from mabolo.schema import Entry, MaboloBlock
 
 
 def build(vault, entries: dict[str, str], area: str = "infra") -> Index:
-    """Write entries into a vault and index it, the way a command would."""
+    """Write entries into a vault and index it, the way a command would.
+
+    Each entry lands in the folder its own frontmatter names, so a test about a
+    project area does not have to say where the file goes twice.
+    """
     for name, text in entries.items():
-        (vault.root / area / f"{name}.md").write_text(text, encoding="utf-8")
+        meta, _ = frontmatter.parse(text)
+        declared = (meta or {}).get("mabolo", {}).get("area", area)
+        folder = vault.area_dir(declared)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{name}.md").write_text(text, encoding="utf-8")
     assert vault.validate().ok, vault.validate().render(vault.root)
     return Index.build(vault.entries())
 
@@ -46,7 +55,7 @@ def test_one_matching_word_and_no_name_is_not_a_hit(vault):
     index = build(vault, {
         "backups": entry_text(title="Backups", body="A snapshot every night."),
     })
-    assert index.search("what does a snapshot cost in a database") == []
+    assert index.search("what does a snapshot cost in a database").hits == ()
 
 
 def test_one_matching_word_plus_a_known_name_is_a_hit(vault):
@@ -58,8 +67,8 @@ def test_one_matching_word_plus_a_known_name_is_a_hit(vault):
 
 def test_a_question_of_only_stop_words_returns_nothing(vault):
     index = build(vault, {"backups": entry_text(title="Backups", body="A snapshot every night.")})
-    assert index.search("what about that") == []
-    assert index.search("") == []
+    assert index.search("what about that").hits == ()
+    assert index.search("").hits == ()
 
 
 def test_an_alias_resolves_to_its_entry(vault):
@@ -90,8 +99,11 @@ def test_a_query_made_of_fts5_grammar_is_read_as_words(vault):
     # Unquoted, each of these is grammar rather than words: the first would be a
     # syntax error and the second a search for something the person did not ask
     # for. A question is words.
-    assert index.search('"(*)" AND -- OR ^') == []
+    assert index.search('"(*)" AND -- OR ^').hits == ()
     assert index.search('backups NEAR "snapshot*" (x)')[0].name == "backups"
+    # This one does reach SQLite: every word survives the pipeline, and the
+    # grammar around them has to arrive as words or not at all.
+    assert index.search('snapshot OR night NEAR backups')[0].name == "backups"
 
 
 def test_two_entries_with_one_name_are_refused(tmp_path):
@@ -99,21 +111,25 @@ def test_two_entries_with_one_name_are_refused(tmp_path):
         Entry(type="reference", title="One", mabolo=MaboloBlock(area="infra"), path=tmp_path / "a" / "x.md"),
         Entry(type="reference", title="Two", mabolo=MaboloBlock(area="infra"), path=tmp_path / "b" / "x.md"),
     ]
-    with pytest.raises(MaboloError, match="more than one entry called x"):
+    with pytest.raises(MaboloError, match="belong to more than one entry"):
         Index.build(entries)
 
 
-def test_the_same_files_always_produce_the_same_order(vault):
+def test_entries_that_score_the_same_are_ordered_by_name(vault):
+    """The tie break, proved by handing the index its documents out of order.
+
+    Building through `Index.build` cannot prove it: the rowids are handed out in
+    name order, so SQLite returns the rows already sorted and the test stays
+    green with the tie break removed. The documents go in backwards here.
+    """
     entries = {
-        "one": entry_text(title="Nightly snapshot", body="Identical body text."),
-        "two": entry_text(title="Nightly snapshot", body="Identical body text."),
-        "three": entry_text(title="Nightly snapshot", body="Identical body text."),
+        name: entry_text(title="Nightly snapshot", body="Identical body text.")
+        for name in ("one", "two", "three")
     }
-    first = [h.name for h in build(vault, entries).search("nightly snapshot")]
-    second = [h.name for h in Index.build(vault.entries()).search("nightly snapshot")]
-    # Three entries that cannot be told apart by score are still ordered, and
-    # ordered by name, or the eval would report a different rank every run.
-    assert first == second == ["one", "three", "two"]
+    index = build(vault, entries)
+    backwards = Index(list(reversed(index.documents)))
+    assert [h.name for h in backwards.search("nightly snapshot")] == ["one", "three", "two"]
+    assert [h.name for h in index.search("nightly snapshot")] == ["one", "three", "two"]
 
 
 def test_the_limit_is_what_comes_back(vault):
@@ -160,3 +176,95 @@ def test_an_alias_of_several_words_still_counts_as_naming_the_entry(vault):
         ),
     })
     assert [h.name for h in index.search("who is on call tonight?")] == ["who-answers-out-of-hours"]
+
+
+def test_a_named_entry_lowers_the_floor_for_itself_and_not_for_everything(vault):
+    """The name is evidence about the entry it names, and about nothing else.
+
+    A global "some name was mentioned" let a question about one project return
+    an unrelated entry that shared one common word with it.
+    """
+    index = build(vault, {
+        "atlas-uses-postgres": entry_text(
+            area="project/atlas", title="Atlas stores everything in Postgres",
+            body="One Postgres database, and no second store."),
+        "atlas-tone": entry_text(
+            area="project/atlas", title="Plain sentences", body="Copy says what the thing does."),
+        "reviews-need-a-diff": entry_text(
+            title="A review starts from a diff", body="A summary of a change does not."),
+    })
+    names = [h.name for h in index.search("which database does Atlas use?")]
+    assert "atlas-uses-postgres" in names
+    # `reviews-need-a-diff` contains `does` and nothing else of the question.
+    assert "reviews-need-a-diff" not in names
+
+
+def test_naming_a_project_is_a_statement_about_its_entries(vault):
+    index = build(vault, {
+        "atlas-uses-postgres": entry_text(
+            area="project/atlas", title="Postgres", body="One database."),
+    })
+    assert [h.name for h in index.search("atlas database")] == ["atlas-uses-postgres"]
+
+
+def test_an_entry_can_be_found_by_a_name_too_short_to_become_a_word(vault):
+    """`ci` is a legal entry name and shorter than the shortest searchable word."""
+    index = build(vault, {
+        "ci": entry_text(title="CI", description="The continuous integration host",
+                         body="Runs the pipeline."),
+    })
+    hit = index.search("ci")[0]
+    assert hit.name == "ci" and hit.matched == () and hit.named == ("ci",)
+
+
+def test_fts5_and_the_relevance_check_agree_on_what_a_word_is(vault):
+    """The two sides of the search have to spell a word the same way.
+
+    FTS5 strips diacritics unless told not to, and the relevance check never
+    did. A question spelled without the accents matched inside SQLite and was
+    then thrown away again by the floor, which is the one thing feeding FTS5 our
+    own tokens was supposed to make impossible. From the outside the result is
+    the same either way, because the floor is the stricter of the two; the
+    disagreement shows in what BM25 scored on the way. So this asserts the
+    invariant where it lives, on the candidates SQLite hands over.
+    """
+    index = build(vault, {
+        "hiring-notes": entry_text(
+            title="How we read a résumé", description="What matters in a résumé here",
+            body="A résumé is read for what it says."),
+    })
+    parsed = query.build("resume")
+    rows = index._db.execute(
+        "SELECT rowid FROM entries WHERE entries MATCH ?", (query.to_match(parsed),)
+    ).fetchall()
+    assert rows == [], "SQLite matched a word the relevance check cannot see"
+    assert [h.name for h in index.search("résumé matters")] == ["hiring-notes"]
+    assert index.search("resume matters").hits == ()
+
+
+def test_two_entries_that_answer_to_one_name_are_refused(vault):
+    """Folded, because folded is the spelling a question is compared against."""
+    for name, alias in (("one", "Kestrel"), ("two", "kestrel")):
+        (vault.root / "infra" / f"{name}.md").write_text(
+            entry_text(title="T", body="text", mabolo={"aliases": [alias]}), encoding="utf-8")
+    with pytest.raises(MaboloError, match="kestrel"):
+        Index.build(vault.entries())
+
+
+def test_a_search_says_what_it_parsed_and_what_it_recognised(vault):
+    """One object, so that an explanation cannot describe a different search."""
+    index = build(vault, {
+        "backups": entry_text(title="Backups", body="A snapshot every night."),
+    })
+    found = index.search("backups snapshot")
+    assert found.query.stems == ("backup", "snapshot")
+    assert found.named == ("backups",)
+    assert found[0].named == ("backups",)
+
+
+def test_an_index_can_be_closed(vault):
+    index = build(vault, {"backups": entry_text(title="Backups", body="Text.")})
+    with index:
+        assert len(index) == 1
+    with pytest.raises(Exception):
+        index.search("backups")

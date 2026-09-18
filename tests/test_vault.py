@@ -407,3 +407,20 @@ def test_a_vault_without_a_commit_is_not_reported_as_a_success(tmp_path, monkeyp
                  "--actor", "human:someone", "--yes"])
     assert code != 0
     assert "no commit" in capsys.readouterr().out
+
+
+def test_rebuilding_an_index_keeps_what_the_vault_says_about_itself(tmp_path):
+    """Every command but `init` leaves the declaration alone."""
+    vault = Vault(tmp_path / "v", language="de")
+    vault.initialise()
+    Vault(tmp_path / "v").rebuild_indexes()
+    assert Vault(tmp_path / "v").declared_language() == "de"
+
+
+def test_a_root_index_with_a_foreign_frontmatter_is_still_refused(tmp_path):
+    """The block that was allowed in is `mabolo`, not anything a person wrote."""
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    vault.index_file.write_text("---\ntitle: my own landing page\n---\n\nmine\n", encoding="utf-8")
+    with pytest.raises(MaboloError, match="does not write"):
+        vault.rebuild_indexes()

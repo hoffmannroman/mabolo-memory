@@ -56,17 +56,24 @@ def test_the_shipped_cases_pass_against_the_shipped_baseline():
     cloning the repository inherits a gate that is already armed.
     """
     vault = Vault(EXAMPLE)
-    cases = evaluate.load_cases(vault.eval_dir)
-    result = evaluate.run(Index.build(vault.entries()), cases)
+    store = evaluate.EvalStore(vault)
+    language = vault.declared_language()
+    result = evaluate.run(Index.build(vault.entries(), language=language), store.cases())
     assert result.ok, evaluate.render(result)
-    baseline = evaluate.read_baseline(vault.eval_dir / evaluate.BASELINE_FILE)
+    baseline = store.read_baseline()
     assert baseline is not None, "the example vault ships a baseline"
+    baseline.check_language(language)
     assert evaluate.compare(baseline, result) == [], evaluate.render(result)
 
 
 def test_the_cases_cover_both_what_is_measured_and_what_is_not():
     vault = Vault(EXAMPLE)
-    cases = evaluate.load_cases(vault.eval_dir)
+    cases = evaluate.EvalStore(vault).cases()
     assert sum(1 for c in cases if c.silence) >= 3, "a search that always finds something is a slot machine"
     assert {c.tier for c in cases} == set(evaluate.TIERS), "every tier has an example, measured or not"
     assert any(c.must_cite for c in cases)
+
+
+def test_the_example_vault_declares_its_language():
+    """The search reads it from here, so it travels with the entries through Git."""
+    assert Vault(EXAMPLE).declared_language() == "en"

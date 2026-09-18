@@ -89,6 +89,11 @@ class Query:
     tokens: tuple[str, ...] = ()
     #: Hyphenated or dotted names, as the phrase their parts form.
     phrases: tuple[str, ...] = ()
+    #: Every word of the question in order, with names broken into their parts.
+    #: A name is recognised as a run of words in here rather than as a substring
+    #: of the text, so `password store` is named in "the password store" and not
+    #: in "keypassword storefront".
+    words: tuple[str, ...] = ()
 
     @property
     def is_empty(self) -> bool:
@@ -137,6 +142,16 @@ def is_stopword(word: str, language: str = "en") -> bool:
     return any(word in STOPWORDS.get(code, frozenset()) for code in _languages(language))
 
 
+def words_of(text: str) -> list[str]:
+    """Every word of a text in order, with names broken into their parts.
+
+    One definition of "the words of this text", used for the query and for a
+    name alike. Comparing a name against the text itself instead would make
+    `password store` a name that was mentioned in `keypassword storefront`.
+    """
+    return [part for token in tokenise(text) for part in parts(token)]
+
+
 def stems_of(text: str, language: str = "en") -> list[str]:
     """Every stem of a text, deduplicated, in order.
 
@@ -144,9 +159,13 @@ def stems_of(text: str, language: str = "en") -> list[str]:
     same on both sides. Two spellings is how a search stops finding the entry
     that contains the very word that was typed.
     """
+    return _stems(tokenise(text), language)
+
+
+def _stems(tokens: list[str], language: str) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
-    for token in tokenise(text):
+    for token in tokens:
         for part in parts(token):
             if len(part) < MIN_TOKEN or is_stopword(part, language):
                 continue
@@ -158,20 +177,28 @@ def stems_of(text: str, language: str = "en") -> list[str]:
 
 
 def build(text: str, language: str = "en") -> Query:
-    """The query pipeline, end to end."""
+    """The query pipeline, end to end.
+
+    The text is tokenised once and everything else is derived from that one
+    list. Tokenising twice is how `tokens` and `stems` come to disagree about
+    what a word is after somebody changes the tokeniser.
+    """
     tokens = tokenise(text)
     phrases: list[str] = []
+    words: list[str] = []
     for token in tokens:
         pieces = parts(token)
+        words.extend(pieces)
         if len(pieces) > 1:
             phrase = " ".join(pieces)
             if phrase not in phrases:
                 phrases.append(phrase)
     return Query(
         text=str(text),
-        stems=tuple(stems_of(text, language)),
+        stems=tuple(_stems(tokens, language)),
         tokens=tuple(dict.fromkeys(tokens)),
         phrases=tuple(phrases),
+        words=tuple(words),
     )
 
 

@@ -5,8 +5,9 @@ says what is wrong with one, and `eval` measures whether the memory actually
 hands over the entry that answers a question. Everything else arrives with the
 part of the tool that gives it something to talk about.
 
-Everything prints its plan before it writes anything, and `init` ends with a
-real check rather than a success message.
+`init` prints its plan before it writes anything and ends with a real check
+rather than a success message. The other commands report; the one place they
+write is `eval --save-baseline`, and only because it was asked for by name.
 
 Exit codes: 0 when there is nothing to fix, 1 when the run found something in
 the vault, 2 when the command itself could not do its job. Warnings count as
@@ -22,7 +23,7 @@ from pathlib import Path
 
 from dataclasses import replace
 
-from . import __version__, evaluate, git, query
+from . import __version__, evaluate, git
 from .config import Config, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
 from .index import Index
@@ -87,7 +88,16 @@ def cmd_init(args: argparse.Namespace) -> int:
         path=config_path,
         vault_from_environment=base.vault_from_environment and not args.vault and vault_path == base.vault,
     )
-    vault = Vault(config.vault, areas=tuple(config.areas))
+    # The language is written into a vault that is being created, and left
+    # alone in one that already declares its own. `init` is safe to run twice,
+    # and a second run must not quietly restate what the vault says about
+    # itself from a file on this machine.
+    fresh = not Vault(config.vault).is_initialised()
+    vault = Vault(
+        config.vault,
+        areas=tuple(config.areas),
+        language=config.language if fresh else None,
+    )
 
     print("\nPlan")
     for action in vault.plan():
@@ -131,6 +141,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     print("\nCheck")
     reread = Config.load(saved)
     print(f"  configuration reads back, vault {reread.vault}, approver {reread.actor}")
+    print(f"  the vault declares its language as {vault.declared_language()} in index.md")
     report = vault.validate()
     print(f"  {report.render(vault.root)}")
     if not vault.is_initialised():
@@ -153,7 +164,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    vault, _ = _vault_from(args)
+    vault = _vault_from(args)
     report = validate_vault(vault.root, vault.areas)
     print(report.render(vault.root, show_warnings=not args.errors_only))
     if not report.ok:
@@ -163,17 +174,16 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return EXIT_OK if args.errors_only or not report.warnings else EXIT_FINDINGS
 
 
-def _vault_from(args: argparse.Namespace) -> tuple[Vault, str]:
-    """The vault a command was pointed at, and the language its entries are in."""
+def _vault_from(args: argparse.Namespace) -> Vault:
+    """The vault a command was pointed at, from the argument or the configuration."""
     config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
     areas = tuple(config.areas) if config else FIXED_AREAS
-    language = config.language if config else "en"
     root = Path(args.path).expanduser() if args.path else (config.vault if config else None)
     if root is None:
         raise MaboloError("no vault given and no configuration found. Run `mabolo init` first.")
     if not root.is_dir():
         raise MaboloError(f"{root} is not a folder")
-    return Vault(root, areas=areas), language
+    return Vault(root, areas=areas)
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
@@ -185,52 +195,62 @@ def cmd_eval(args: argparse.Namespace) -> int:
     folder: "measured nothing" printed above a green exit code is exactly the
     kind of quiet success this whole tool exists to prevent.
     """
-    vault, language = _vault_from(args)
-    cases = evaluate.load_cases(vault.eval_dir)
+    vault = _vault_from(args)
+    if args.save_baseline and args.case:
+        # The baseline is written from the run, so a run over a subset would
+        # replace the whole file with that subset. Every other case would then
+        # be "new" on the next run, which is not a failure, and the gate would
+        # be disarmed by the most natural way to accept one change.
+        raise MaboloError(
+            "--save-baseline writes the whole set, so it cannot be combined with --case. "
+            "Run it once without --case when the full run is the line you want to hold."
+        )
+    store = evaluate.EvalStore(vault)
+    cases = store.cases()
     if args.case:
-        wanted = set(args.case)
-        missing = sorted(wanted - {c.id for c in cases})
-        if missing:
-            raise MaboloError(f"no case called {', '.join(missing)} in {vault.eval_dir}")
-        cases = [c for c in cases if c.id in wanted]
-    index = Index.build(vault.entries(), language=language)
+        cases = evaluate.select(cases, args.case)
+    language = vault.declared_language()
 
-    if not cases:
-        print(f"no cases in {vault.eval_dir}, so nothing was measured")
-        print(f"The vault holds {len(index)} entries. A case is one YAML file, see docs/eval.md.")
-        return EXIT_FINDINGS
+    with Index.build(vault.entries(), language=language) as index:
+        if not cases:
+            print(f"no cases in {vault.eval_dir}, so nothing was measured")
+            print(f"The vault holds {len(index)} entries. A case is one YAML file, see docs/eval.md.")
+            return EXIT_FINDINGS
 
-    result = evaluate.run(index, cases)
-    baseline_path = vault.eval_dir / evaluate.BASELINE_FILE
-    baseline = None if args.no_baseline else evaluate.read_baseline(baseline_path)
-    changes = evaluate.compare(baseline, result)
-    if args.case:
-        # Every case the baseline knows and this run left out would otherwise be
-        # reported as missing, which is true and useless: leaving them out is
-        # what --case means.
-        changes = [c for c in changes if c.kind != "gone"]
-    print(evaluate.render(result, changes))
+        result = evaluate.run(index, cases)
+        # Not read when it is about to be replaced. `--save-baseline` is the way
+        # out of a baseline this version cannot read or that was measured in
+        # another language, so it must not be the command that trips over one.
+        baseline = None if args.no_baseline or args.save_baseline else store.read_baseline()
+        if baseline is not None:
+            baseline.check_language(language)
+        changes = evaluate.compare(baseline, result, subset=bool(args.case))
+        print(evaluate.render(result, changes))
 
-    if args.explain:
-        print()
-        for item in result.results:
-            _explain(index, item, language)
+        if args.explain:
+            print()
+            for item in result.results:
+                _explain(index, item)
 
-    if args.save_baseline:
-        saved = evaluate.write_baseline(baseline_path, result)
-        print(f"\nbaseline written to {saved}, {len(result.measured)} cases")
-        return EXIT_OK if result.ok else EXIT_FINDINGS
+        if args.save_baseline:
+            saved = store.write_baseline(result, language)
+            print(f"\nbaseline written to {saved}, {len(result.measured)} cases, language {language}")
+            return EXIT_OK if result.ok else EXIT_FINDINGS
 
-    worse = [c for c in changes if c.is_worse]
-    if baseline is None and not args.no_baseline:
-        print(f"\nno baseline yet. `mabolo eval --save-baseline` writes {baseline_path}.")
-    if not result.ok or worse:
-        return EXIT_FINDINGS
-    return EXIT_OK
+        if baseline is None and not args.no_baseline:
+            print(f"\nno baseline yet. `mabolo eval --save-baseline` writes {store.baseline_path}.")
+        if not result.ok or any(c.is_worse for c in changes):
+            return EXIT_FINDINGS
+        return EXIT_OK
 
 
-def _explain(index: Index, result: evaluate.Result, language: str) -> None:
-    """Everything the ranking used for one case, so a number can be argued with."""
+def _explain(index: Index, result: evaluate.Result) -> None:
+    """Everything the ranking used for one case, so a number can be argued with.
+
+    Every line comes from what the search itself produced. Rebuilding the query
+    here and re-deriving the name evidence was a second copy of the rule, and a
+    second copy explains something other than what happened.
+    """
     case = result.case
     print(f"{case.id}  ({case.tier})")
     print(f"  query   {case.query}")
@@ -238,22 +258,20 @@ def _explain(index: Index, result: evaluate.Result, language: str) -> None:
         print(f"  skipped {result.reasons[0] if result.reasons else 'not measured'}")
         print()
         return
-    parsed = query.build(case.query, language)
+    parsed = result.query
     print(f"  stems   {', '.join(parsed.stems) or 'none'}")
     if parsed.phrases:
         print(f"  phrases {', '.join(parsed.phrases)}")
-    named = [t for t in parsed.tokens if t in index.names]
-    named += [n for n in index.phrase_names if n in query.fold(case.query)]
+    named = sorted(index.names_in(parsed))
     print(f"  names   {', '.join(named) or 'none of the query is a name this vault knows'}")
+    expected = {d.name for d in (index.resolve(w) for w in case.entries) if d is not None}
     if not result.hits:
         print("  result  nothing, the relevance floor turned every candidate away")
     for hit in result.hits:
-        wanted = " <-- expected" if hit.name in case.entries else ""
-        print(
-            f"  {hit.rank}.      {hit.name}  score {hit.score:.3f}  "
-            f"matched {', '.join(hit.matched)}{wanted}"
-        )
-    print(f"  cost    about {result.cost} tokens for those lines, estimated")
+        wanted = " <-- expected" if hit.name in expected else ""
+        evidence = ", ".join(hit.matched) or f"named as {', '.join(hit.named)}"
+        print(f"  {hit.rank}.      {hit.name}  score {hit.score:.3f}  matched {evidence}{wanted}")
+    print(f"  cost    about {result.cost} tokens for a preview of those, estimated")
     print()
 
 

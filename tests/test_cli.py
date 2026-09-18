@@ -3,6 +3,7 @@ import pytest
 from conftest import entry_text
 from mabolo.cli import main
 from mabolo.config import Config
+from mabolo.vault import Vault
 
 
 def test_init_creates_vault_and_configuration(tmp_path, capsys):
@@ -179,3 +180,62 @@ def test_eval_names_a_case_that_does_not_exist(tmp_path, capsys):
     eval_vault(tmp_path, config)
     assert main(["--config", config, "eval", "--case", "nothing-like-this"]) == 2
     assert "no case called nothing-like-this" in capsys.readouterr().err
+
+
+def test_eval_refuses_to_save_a_baseline_from_a_subset(tmp_path, capsys):
+    """The most natural way to accept one change used to disarm the whole gate.
+
+    A run over one case wrote a baseline holding that one case. Every other case
+    was then "new" on the next run, which is not a failure, so nothing fired.
+    """
+    config = str(tmp_path / "c.toml")
+    eval_vault(tmp_path, config)
+    assert main(["--config", config, "eval", "--save-baseline"]) == 0
+    before = (tmp_path / "v" / ".mabolo" / "eval" / "baseline.json").read_bytes()
+    assert main(["--config", config, "eval", "--case", "deploy-source", "--save-baseline"]) == 2
+    assert "cannot be combined with --case" in capsys.readouterr().err
+    assert (tmp_path / "v" / ".mabolo" / "eval" / "baseline.json").read_bytes() == before
+
+
+def test_eval_can_replace_a_baseline_it_cannot_read(tmp_path, capsys):
+    """`--save-baseline` is the way out, so it must not trip over the old file."""
+    config = str(tmp_path / "c.toml")
+    eval_vault(tmp_path, config)
+    baseline = tmp_path / "v" / ".mabolo" / "eval" / "baseline.json"
+    baseline.write_text('{"version": 1, "cases": {}}', encoding="utf-8")
+    assert main(["--config", config, "eval"]) == 2
+    assert main(["--config", config, "eval", "--save-baseline"]) == 0
+    assert main(["--config", config, "eval"]) == 0
+
+
+def test_the_search_reads_the_language_from_the_vault(tmp_path, capsys):
+    """Not from this machine's configuration, or two clones would rank differently."""
+    config = str(tmp_path / "c.toml")
+    eval_vault(tmp_path, config)
+    assert Vault(tmp_path / "v").declared_language() == "en"
+    main(["--config", config, "eval", "--save-baseline"])
+    capsys.readouterr()
+
+    index = tmp_path / "v" / "index.md"
+    index.write_text(index.read_text(encoding="utf-8").replace("language: en", "language: de"),
+                     encoding="utf-8")
+    assert main(["--config", config, "eval"]) == 2
+    assert "cannot be compared" in capsys.readouterr().err
+
+
+def test_init_writes_the_language_into_the_vault_it_creates(tmp_path, capsys):
+    config = str(tmp_path / "c.toml")
+    main(["--config", config, "init", "--vault", str(tmp_path / "v"), "--yes", "--no-git"])
+    assert "declares its language as en" in capsys.readouterr().out
+    assert Vault(tmp_path / "v").declared_language() == "en"
+
+
+def test_init_run_twice_does_not_restate_the_language_of_an_existing_vault(tmp_path):
+    """A file on this machine must not quietly change what the vault says."""
+    config = str(tmp_path / "c.toml")
+    main(["--config", config, "init", "--vault", str(tmp_path / "v"), "--yes", "--no-git"])
+    index = tmp_path / "v" / "index.md"
+    index.write_text(index.read_text(encoding="utf-8").replace("language: en", "language: de"),
+                     encoding="utf-8")
+    main(["--config", config, "init", "--yes", "--no-git"])
+    assert Vault(tmp_path / "v").declared_language() == "de"

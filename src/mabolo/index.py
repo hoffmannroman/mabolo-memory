@@ -9,8 +9,17 @@ can be replayed exactly.
 FTS5 ships with the standard library's `sqlite3`, so this costs no dependency.
 What it does cost is a second tokeniser, and two tokenisers that disagree are a
 search that cannot find the word that was typed. So FTS5 never sees prose: it
-sees the output of `query.tokenise`, one word per token, and its own tokeniser
-has nothing left to do. Both sides of the search are then spelled the same way.
+sees the output of `query.tokenise`, one word per token, and `remove_diacritics`
+is switched off so that a word keeps its accents on both sides. That last part
+was missed once: FTS5 folded the accents away, the relevance check did not, and
+a question spelled without them matched inside SQLite and was thrown away again
+by the floor.
+
+**Relevance is absolute, and the evidence belongs to one entry.** A question
+gets an entry back when it names that entry, or when two of the question's words
+are in it. Naming counts for the entry that was named and for nothing else: a
+global "some name was mentioned somewhere" let a question about one project drag
+in an unrelated entry that happened to share a single common word.
 
 Two things are deliberately not here yet:
 
@@ -29,14 +38,25 @@ import sqlite3
 from bisect import bisect_left
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable
 
 from . import query as q
 from .errors import MaboloError
-from .schema import Entry, PROJECT_PREFIX
+from .schema import PROJECT_PREFIX, Entry
 
-#: Field weights for BM25, in the column order of the table below. A name and a
-#: title are what a person would type; the body is context and counts least.
-WEIGHTS = (8.0, 6.0, 5.0, 3.0, 1.0)
+#: The searchable fields and their BM25 weight, in one place. The column list,
+#: the insert statement and the weight arguments are all built from this, so a
+#: field cannot end up carrying the weight of its neighbour. A name and a title
+#: are what a person would type; the body is context and counts least.
+FIELDS: tuple[tuple[str, float], ...] = (
+    ("name", 8.0),
+    ("title", 6.0),
+    ("aliases", 5.0),
+    ("description", 3.0),
+    ("body", 1.0),
+)
+COLUMNS = tuple(name for name, _ in FIELDS)
+WEIGHTS = tuple(weight for _, weight in FIELDS)
 
 #: How many lines a search returns unless the caller says otherwise. The number
 #: is the one the eval measures against, and five lines is what fits in a
@@ -48,41 +68,26 @@ DEFAULT_LIMIT = 5
 #: every number this produces is presented as an estimate.
 CHARS_PER_TOKEN = 4
 
-_SCHEMA = """
-CREATE VIRTUAL TABLE entries USING fts5(
-    name, title, aliases, description, body, tokenize = 'unicode61'
-);
-"""
+#: The score of an entry that was named and matched no word. Worse than any
+#: BM25 score, which is negative, so a named entry never pushes a real match
+#: down; it exists so that `ci` finds the entry called `ci`.
+NAMED_ONLY_SCORE = 0.0
+
+_SCHEMA = (
+    f"CREATE VIRTUAL TABLE entries USING fts5({', '.join(COLUMNS)}, "
+    # Accents stay. The relevance check below compares Python's folded words,
+    # and Python does not strip them either.
+    "tokenize = 'unicode61 remove_diacritics 0');"
+)
+_INSERT = (
+    f"INSERT INTO entries(rowid, {', '.join(COLUMNS)}) "
+    f"VALUES ({', '.join('?' * (len(COLUMNS) + 1))})"
+)
 
 
 def estimate_tokens(text: str) -> int:
     """A rough token count for a piece of text. Always called an estimate."""
     return math.ceil(len(text) / CHARS_PER_TOKEN) if text else 0
-
-
-@dataclass(frozen=True)
-class Hit:
-    """One entry the search returned, with where it landed and why."""
-
-    name: str
-    title: str
-    description: str
-    area: str
-    path: Path | None
-    rank: int
-    score: float
-    #: The query stems this entry actually contains. Empty is impossible: an
-    #: entry with no matching stem cannot pass the relevance floor.
-    matched: tuple[str, ...] = ()
-
-    def line(self) -> str:
-        """The one line a preview would show for this entry.
-
-        Provisional, and only used to estimate what a preview costs. What the
-        reading tier actually sends is decided where the reading tier is built.
-        """
-        shown = self.description or self.title or self.name
-        return f"- {self.name}: {shown}"
 
 
 @dataclass(frozen=True)
@@ -100,29 +105,101 @@ class Document:
     words: tuple[str, ...] = field(default_factory=tuple)
     fields: tuple[str, ...] = field(default_factory=tuple)
 
+    @property
+    def key(self) -> str:
+        """The folded name, which is the spelling a question is compared against."""
+        return q.fold(self.name)
+
     def has_prefix(self, stem: str) -> bool:
         position = bisect_left(self.words, stem)
         return position < len(self.words) and self.words[position].startswith(stem)
 
 
+@dataclass(frozen=True)
+class Hit:
+    """One entry the search returned, with where it landed and why."""
+
+    document: Document
+    rank: int
+    score: float
+    #: The query stems this entry actually contains.
+    matched: tuple[str, ...] = ()
+    #: The names of this entry that the question used, if it used any.
+    named: tuple[str, ...] = ()
+
+    @property
+    def name(self) -> str:
+        return self.document.name
+
+    @property
+    def title(self) -> str:
+        return self.document.title
+
+    @property
+    def description(self) -> str:
+        return self.document.description
+
+    @property
+    def area(self) -> str:
+        return self.document.area
+
+    @property
+    def path(self) -> Path | None:
+        return self.document.path
+
+    def line(self) -> str:
+        """The one line a preview would show for this entry.
+
+        Provisional, and only used to estimate what a preview costs. What the
+        reading tier actually sends is decided where the reading tier is built.
+        """
+        shown = self.description or self.title or self.name
+        return f"- {self.name}: {shown}"
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """What one search did: the question as parsed, and what came back.
+
+    One object rather than a bare list, because `--explain` used to rebuild the
+    query and re-derive the name evidence from a second copy of the rule. Two
+    copies of a rule produce a tool that explains something other than what it
+    did.
+    """
+
+    query: q.Query
+    hits: tuple[Hit, ...] = ()
+    #: Every name the question used that this vault knows, sorted.
+    named: tuple[str, ...] = ()
+
+    def __iter__(self):
+        return iter(self.hits)
+
+    def __len__(self) -> int:
+        return len(self.hits)
+
+    def __getitem__(self, item):
+        return self.hits[item]
+
+    def __bool__(self) -> bool:
+        return bool(self.hits)
+
+
 def _searchable(text: str) -> str:
-    """Text as the index stores it: the words of `query.tokenise`, and nothing else."""
-    words: list[str] = []
-    for token in q.tokenise(text):
-        words.extend(q.parts(token))
-    return " ".join(words)
+    """Text as the index stores it: the words of `query.words_of`, and nothing else."""
+    return " ".join(q.words_of(text))
 
 
 def _document(entry: Entry) -> Document:
     """One entry as the index sees it."""
-    aliases = tuple(q.fold(a) for a in entry.mabolo.aliases)
-    fields = (
-        _searchable(entry.name),
-        _searchable(entry.title or ""),
-        _searchable(" ".join(entry.mabolo.aliases)),
-        _searchable(entry.description or ""),
-        _searchable(entry.body),
-    )
+    values = {
+        "name": entry.name,
+        "title": entry.title or "",
+        "aliases": " ".join(entry.mabolo.aliases),
+        "description": entry.description or "",
+        "body": entry.body,
+    }
+    fields = tuple(_searchable(values[column]) for column in COLUMNS)
     words = sorted({word for text in fields for word in text.split()})
     return Document(
         name=entry.name,
@@ -130,7 +207,7 @@ def _document(entry: Entry) -> Document:
         description=entry.description or "",
         area=entry.area,
         path=entry.path,
-        aliases=aliases,
+        aliases=tuple(q.fold(a) for a in entry.mabolo.aliases),
         words=tuple(words),
         fields=fields,
     )
@@ -139,140 +216,168 @@ def _document(entry: Entry) -> Document:
 class Index:
     """A searchable view of a vault. Built from entries, never from a database file."""
 
-    def __init__(self, documents: list[Document], language: str = "en") -> None:
+    def __init__(self, documents: Iterable[Document], language: str = "en") -> None:
         # Sorted by name so that two machines with the same files build the same
         # index, down to the rowids that break a tie in the ranking.
-        self.documents = sorted(documents, key=lambda d: d.name)
+        self.documents = tuple(sorted(documents, key=lambda d: d.name))
         self.language = language
-        self.names = self._known_names()
-        #: The names made of more than one word. A token can never equal one, so
-        #: an alias like `password store` would otherwise be a name nobody can
-        #: name, which is the opposite of what an alias is for.
-        self.phrase_names = tuple(sorted(n for n in self.names if " " in n))
+        self.targets = self._name_targets()
+        self.names = frozenset(self.targets)
+        self._by_key = {doc.key: doc for doc in self.documents}
         self._db = sqlite3.connect(":memory:")
         self._db.executescript(_SCHEMA)
-        self._db.executemany(
-            "INSERT INTO entries(rowid, name, title, aliases, description, body) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            [(i, *doc.fields) for i, doc in enumerate(self.documents)],
-        )
+        self._db.executemany(_INSERT, [(i, *doc.fields) for i, doc in enumerate(self.documents)])
 
     @classmethod
     def build(cls, entries: list[Entry], language: str = "en") -> Index:
         """The index for a list of entries.
 
-        Duplicate names are refused rather than ranked. Two entries with one
-        name mean one of them can never be reached by name, and a search that
-        silently drops an entry is the failure this whole project is about.
+        Two entries that answer to one name are refused rather than ranked. One
+        of them could never be reached by that name, and which one that is would
+        depend on the order the files came back in. The comparison is on the
+        folded name, because folded is what a question is compared against: the
+        validator's own duplicate rule looks at the spelling as written and
+        would let `Foo` and `foo` through.
         """
         documents = [_document(e) for e in entries]
-        seen: dict[str, int] = {}
+        claims: dict[str, list[str]] = {}
         for doc in documents:
-            seen[doc.name] = seen.get(doc.name, 0) + 1
-        duplicates = sorted(name for name, count in seen.items() if count > 1)
-        if duplicates:
+            for name in (doc.key, *doc.aliases):
+                claims.setdefault(name, []).append(doc.name)
+        clashes = sorted(
+            f"{name} ({', '.join(sorted(set(owners)))})"
+            for name, owners in claims.items()
+            if len(owners) > 1
+        )
+        if clashes:
             raise MaboloError(
-                f"the vault has more than one entry called {', '.join(duplicates)}, "
-                "so an index over it cannot be trusted. Run `mabolo validate`."
+                "these names belong to more than one entry, so an index over this vault "
+                f"cannot be trusted: {'; '.join(clashes)}. Run `mabolo validate`."
             )
         return cls(documents, language=language)
 
-    def _known_names(self) -> frozenset[str]:
-        """Every name a person could reasonably type and mean one entry.
+    def _name_targets(self) -> dict[str, frozenset[str]]:
+        """Every name a question could use, and the entries it points at.
 
-        Entry names, their aliases, and the project a project area is named
-        after. The relevance floor treats one of these as worth as much as a
-        second matching word, because naming a thing is not a coincidence.
+        An entry name and an alias point at one entry. A project name points at
+        every entry of that project, because naming the project is a statement
+        about all of them.
         """
-        names: set[str] = set()
+        targets: dict[str, set[str]] = {}
         for doc in self.documents:
-            names.add(q.fold(doc.name))
-            names.update(doc.aliases)
+            for name in (doc.key, *doc.aliases):
+                targets.setdefault(name, set()).add(doc.name)
             if doc.area.startswith(PROJECT_PREFIX):
-                names.add(q.fold(doc.area[len(PROJECT_PREFIX) :]))
-        return frozenset(names)
+                project = q.fold(doc.area[len(PROJECT_PREFIX) :])
+                targets.setdefault(project, set()).add(doc.name)
+        return {name: frozenset(owners) for name, owners in targets.items()}
 
     def resolve(self, name: str) -> Document | None:
         """The entry a name or an alias points at, or None."""
         wanted = q.fold(name)
-        for doc in self.documents:
-            if q.fold(doc.name) == wanted:
-                return doc
-        for doc in self.documents:
-            if wanted in doc.aliases:
-                return doc
+        found = self._by_key.get(wanted)
+        if found is not None:
+            return found
+        owners = self.targets.get(wanted) or frozenset()
+        if len(owners) == 1:
+            return self._by_key.get(q.fold(next(iter(owners))))
         return None
 
-    def search(self, text: str, limit: int = DEFAULT_LIMIT) -> list[Hit]:
+    def names_in(self, parsed: q.Query) -> dict[str, frozenset[str]]:
+        """The names this question uses, and the entries each one points at.
+
+        A name is a run of words in the question, not a substring of its text.
+        As a substring, the alias `password store` counted as named inside
+        `keypassword storefront`.
+        """
+        found: dict[str, frozenset[str]] = {}
+        words = list(parsed.words)
+        for name, owners in self.targets.items():
+            wanted = q.words_of(name)
+            span = len(wanted)
+            if not span:
+                continue
+            if any(words[i : i + span] == wanted for i in range(len(words) - span + 1)):
+                found[name] = owners
+        return found
+
+    def search(self, text: str | q.Query, limit: int = DEFAULT_LIMIT) -> SearchResult:
         """The entries that answer a question, best first, or nothing at all.
 
         Nothing at all is a real answer here and the reason for the relevance
-        floor below. The MATCH expression joins its terms with OR, so almost any
+        floor. The MATCH expression joins its terms with OR, so almost any
         question matches almost any vault somewhere in a body. Returning that is
         worse than returning nothing when the result is injected into a prompt
         automatically: it teaches the reader that the memory is noise.
         """
-        parsed = q.build(text, self.language)
-        if parsed.is_empty:
-            return []
+        parsed = text if isinstance(text, q.Query) else q.build(text, self.language)
+        named = self.names_in(parsed)
+        named_documents = {name for owners in named.values() for name in owners}
+
+        scores: dict[int, float] = {}
         match = q.to_match(parsed)
-        rows = self._db.execute(
-            f"SELECT rowid, bm25(entries, {', '.join(str(w) for w in WEIGHTS)}) "
-            "FROM entries WHERE entries MATCH ?",
-            (match,),
-        ).fetchall()
-        named = self.names_something(parsed)
-        scored: list[tuple[float, str, Document, tuple[str, ...]]] = []
-        for rowid, score in rows:
+        if match:
+            scores = dict(
+                self._db.execute(
+                    f"SELECT rowid, bm25(entries, {', '.join(str(w) for w in WEIGHTS)}) "
+                    "FROM entries WHERE entries MATCH ?",
+                    (match,),
+                ).fetchall()
+            )
+        # A named entry is a candidate even when no word of the question is in
+        # it, or the entry called `ci` could be named outright and still not be
+        # found: its name is too short to become a stem.
+        for position, doc in enumerate(self.documents):
+            if doc.name in named_documents:
+                scores.setdefault(position, NAMED_ONLY_SCORE)
+
+        scored = []
+        for rowid, score in scores.items():
             doc = self.documents[rowid]
             matched = tuple(s for s in parsed.stems if doc.has_prefix(s))
-            if not self._is_relevant(matched, named):
+            mentions = tuple(sorted(n for n, owners in named.items() if doc.name in owners))
+            if not self._is_relevant(matched, bool(mentions)):
                 continue
-            scored.append((score, doc.name, doc, matched))
+            scored.append((score, doc.name, doc, matched, mentions))
         # BM25 in SQLite is negative and better the smaller it is. The name
         # breaks a tie, so the order does not depend on how SQLite happened to
         # walk the table.
         scored.sort(key=lambda row: (row[0], row[1]))
-        return [
-            Hit(
-                name=doc.name,
-                title=doc.title,
-                description=doc.description,
-                area=doc.area,
-                path=doc.path,
-                rank=position,
-                score=score,
-                matched=matched,
-            )
-            for position, (score, _, doc, matched) in enumerate(scored[:limit], start=1)
-        ]
-
-    def names_something(self, parsed: q.Query) -> bool:
-        """True when the question names an entry, an alias or a project."""
-        if any(token in self.names for token in parsed.tokens):
-            return True
-        folded = q.fold(parsed.text)
-        return any(name in folded for name in self.phrase_names)
+        hits = tuple(
+            Hit(document=doc, rank=position, score=score, matched=matched, named=mentions)
+            for position, (score, _, doc, matched, mentions) in enumerate(scored[:limit], start=1)
+        )
+        return SearchResult(query=parsed, hits=hits, named=tuple(sorted(named)))
 
     @staticmethod
     def _is_relevant(matched: tuple[str, ...], named: bool) -> bool:
         """Relevance is absolute, not relative.
 
-        Two matching words, or one matching word in a question that named
-        something this vault knows. Without this rule a search always returns
-        its best of a bad lot, and "the best of nothing" reads exactly like an
-        answer.
+        This entry was named, or two of the question's words are in it. Without
+        a rule of this shape a search always returns its best of a bad lot, and
+        "the best of nothing" reads exactly like an answer. The name has to name
+        *this* entry: counting any name anywhere in the question let a question
+        about one project return an unrelated entry that only shared the word
+        "does".
         """
-        if named and len(matched) >= 1:
-            return True
-        return len(matched) >= 2
+        return named or len(matched) >= 2
 
-    def preview(self, hits: list[Hit]) -> str:
+    def preview(self, hits: Iterable[Hit]) -> str:
         """The lines a preview would consist of, for measuring what it costs."""
         return "\n".join(hit.line() for hit in hits)
 
-    def preview_cost(self, hits: list[Hit]) -> int:
+    def preview_cost(self, hits: Iterable[Hit]) -> int:
         return estimate_tokens(self.preview(hits))
+
+    def close(self) -> None:
+        """Let go of the database. An index is disposable, so saying so is cheap."""
+        self._db.close()
+
+    def __enter__(self) -> Index:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
     def __len__(self) -> int:
         return len(self.documents)

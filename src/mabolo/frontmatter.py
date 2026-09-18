@@ -91,6 +91,16 @@ def _no_duplicates(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool =
 _StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicates)
 
 
+def load_strict(text: str) -> Any:
+    """Parse YAML, refusing a mapping that sets the same key twice.
+
+    Public because an entry is not the only YAML this tool reads. Plain
+    `yaml.safe_load` keeps the last of two identical keys without a word, which
+    is how a file can say one thing to a reader and another to the program.
+    """
+    return yaml.load(text, Loader=_StrictLoader)
+
+
 @dataclass(frozen=True)
 class Document:
     """A Markdown file split into its frontmatter and its body."""

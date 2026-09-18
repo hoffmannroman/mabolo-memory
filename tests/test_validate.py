@@ -377,3 +377,40 @@ def test_the_index_and_the_validator_agree_on_what_a_file_is(tmp_path):
     )
     vault.rebuild_indexes()
     assert "infra/index.md) - 0 entries" in vault.index_file.read_text(encoding="utf-8")
+
+
+def test_the_root_index_may_declare_the_vault_language(tmp_path):
+    vault = Vault(tmp_path / "v", language="de")
+    vault.initialise()
+    assert vault.validate().ok, vault.validate().render(vault.root)
+    assert vault.declared_language() == "de"
+
+
+def test_the_root_index_carries_nothing_else_under_mabolo(tmp_path):
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    vault.index_file.write_text(
+        "---\nokf_version: '0.2'\nmabolo:\n  language: en\n  area: infra\n---\n\n# Vault\n",
+        encoding="utf-8",
+    )
+    codes = {p.code for p in vault.validate().errors}
+    assert "mabolo.index.block" in codes
+
+
+def test_a_language_that_is_not_a_code_is_an_error(tmp_path):
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    vault.index_file.write_text(
+        "---\nokf_version: '0.2'\nmabolo:\n  language: Deutsch\n---\n\n# Vault\n",
+        encoding="utf-8",
+    )
+    codes = {p.code for p in vault.validate().errors}
+    assert "mabolo.index.language" in codes
+
+
+def test_a_vault_that_declares_no_language_is_read_as_english(tmp_path):
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    vault.index_file.write_text("---\nokf_version: '0.2'\n---\n\n# Vault\n", encoding="utf-8")
+    assert vault.validate().ok
+    assert vault.declared_language() == "en"

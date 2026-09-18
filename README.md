@@ -165,8 +165,9 @@ uv run mabolo --config /tmp/mabolo-demo.toml init --vault /tmp/my-vault --yes
   files, built in memory and never stored, so there is nothing to delete and
   nothing that can disagree with what is on disk.
 * **The search is words, not meaning.** A question asked with synonyms, or in a
-  different language from the entry, falls through. Measuring that honestly is
-  what `mabolo eval` is for.
+  different language from the entry, falls through. So does a question that
+  spells a word differently: `résumé` and `resume` are two words. Measuring that
+  honestly is what `mabolo eval` is for.
 
 ## It stays yours
 

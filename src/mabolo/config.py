@@ -1,8 +1,10 @@
 """Configuration: one small TOML file, read with the standard library.
 
-It holds the four things `init` asks for and nothing else. Anything that can be
-derived from the vault is not configuration, because two places that can
-disagree eventually do.
+It holds the four things `init` asks for, plus the answers it does not ask for
+and has to write somewhere. Anything that can be derived from the vault is not
+configuration, because two places that can disagree eventually do: the vault's
+language lives in the vault, and what is here is only the value a new one starts
+with.
 
 Three rules that are not obvious:
 
@@ -28,16 +30,18 @@ from pathlib import Path
 from typing import Any
 
 from .errors import MaboloError
-from .schema import ACTOR_HUMAN, FIXED_AREAS, is_project_area, is_safe_area
+from .schema import (
+    ACTOR_HUMAN,
+    DEFAULT_LANGUAGE,
+    FIXED_AREAS,
+    is_language,
+    is_project_area,
+    is_safe_area,
+)
 
 CONFIG_VERSION = 1
 DEFAULT_VAULT_DIRNAME = "mabolo-data"
 DEFAULT_BRANCH = "main"
-#: The language the entries are written in. The search drops stop words in this
-#: language and in English, because the entries are one and the code around them
-#: is the other. `init` does not ask: a wrong guess costs a few stop words, and
-#: a fifth question costs everybody who only wanted a vault.
-DEFAULT_LANGUAGE = "en"
 
 #: Environment overrides, so a second vault can be driven without touching the file.
 ENV_CONFIG = "MABOLO_CONFIG"
@@ -45,7 +49,6 @@ ENV_VAULT = "MABOLO_VAULT"
 
 _SAFE_ID = re.compile(r"[^a-z0-9._-]+")
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
-_LANGUAGE_RE = re.compile(r"^[a-z]{2,3}$")
 
 
 def config_home() -> Path:
@@ -143,6 +146,10 @@ class Config:
     vault: Path
     actor: str
     areas: list[str] = field(default_factory=lambda: list(FIXED_AREAS))
+    #: The language `init` writes into a new vault. The vault itself is what
+    #: the search reads, in its root index.md; this is only the answer given
+    #: when one is created, so that a second vault on this machine starts the
+    #: same way. `init` does not ask for it: four questions are the budget.
     language: str = DEFAULT_LANGUAGE
     remote_url: str | None = None
     remote_branch: str = DEFAULT_BRANCH
@@ -192,7 +199,7 @@ class Config:
             )
 
         language = str(data.get("language") or DEFAULT_LANGUAGE).strip().lower()
-        if not _LANGUAGE_RE.match(language):
+        if not is_language(language):
             raise MaboloError(
                 f"{where}: language {language!r} is a short code such as en or de. "
                 "An unknown code is fine, it simply means no stop words beyond the English ones."
@@ -274,8 +281,8 @@ class Config:
             "# not listed here.",
             f"areas = {_toml_value(self.areas)}",
             "",
-            "# The language the entries are written in, as a short code. The search",
-            "# drops stop words in this language and in English.",
+            "# The language a vault created from here is written in, as a short",
+            "# code. What the search reads is the vault's own root index.md.",
             f"language = {_toml_value(self.language)}",
             "",
         ]

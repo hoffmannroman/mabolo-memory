@@ -533,17 +533,57 @@ def _validate_reserved(doc: Document, root: Path | None) -> list[Problem]:
             )
         )
         return out
-    extra = [k for k in doc.meta if k != "okf_version"]
+    extra = [k for k in doc.meta if k not in ("okf_version", "mabolo")]
     if extra:
         out.append(
             _problem(
                 ERROR,
                 "okf.index.frontmatter",
-                "index.md may only carry okf_version",
+                "index.md may only carry okf_version and the mabolo block",
                 doc.path,
             )
         )
+    out += _check_root_block(doc.meta.get("mabolo"), doc.path)
     out += _check_okf_version(doc.meta.get("okf_version"), doc.path)
+    return out
+
+
+def _check_root_block(block: Any, path: Path | None) -> list[Problem]:
+    """The root index declares the vault, and `language` is the one thing it says.
+
+    The language belongs here rather than in a configuration file because the
+    search reads it: stop words and suffixes differ, so the same question ranks
+    differently under another one. In a machine's configuration it would make
+    two clones of one vault answer differently, and then no commit could be
+    replayed. A vault that says nothing is read as English.
+    """
+    if block is None:
+        return []
+    if not isinstance(block, dict):
+        return [_problem(ERROR, "mabolo.index.block", "mabolo must be a mapping", path)]
+    unknown = sorted(k for k in block if k != "language")
+    out: list[Problem] = []
+    if unknown:
+        out.append(
+            _problem(
+                ERROR,
+                "mabolo.index.block",
+                f"the root index.md carries {', '.join(unknown)} under mabolo, and only "
+                "language belongs there",
+                path,
+            )
+        )
+    language = block.get("language")
+    if language is not None and not schema.is_language(language):
+        out.append(
+            _problem(
+                ERROR,
+                "mabolo.index.language",
+                f"{language!r} is not a language code, use two or three lower case letters",
+                path,
+                field="mabolo.language",
+            )
+        )
     return out
 
 

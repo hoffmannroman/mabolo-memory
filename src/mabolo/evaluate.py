@@ -6,7 +6,7 @@ set comes before the reading tier rather than after it: it is the only thing
 that can show that an index replaced preloaded text instead of quietly losing
 it.
 
-Three rules hold this together, and each one was a decision:
+Four rules hold this together, and each one was a decision:
 
 * **Cases live in the vault**, under `.mabolo/eval/`, versioned beside the
   entries they query. A case and its entries have to move through history
@@ -15,9 +15,14 @@ Three rules hold this together, and each one was a decision:
   model in the loop is reported as unmeasured and never counted as a success.
   A harness that quietly scores the easy half is the same failure as a memory
   that quietly forgets.
-* **The baseline stores ranks, not scores.** A rank is ordinal and survives a
-  new SQLite; a BM25 score is a float that moves when anything about the corpus
-  moves. A gate built on scores fires on noise and gets switched off.
+* **The baseline stores ranks, not scores.** A rank is ordinal and a BM25 score
+  is a float that moves whenever anything about the corpus moves. A gate built
+  on scores fires on noise and gets switched off.
+* **A file is read through `EvalStore` or not at all.** The vault refuses to
+  read or write through a symlink and never touches anything outside its root.
+  An audit found that the eval folder had been quietly exempt from both: a
+  linked `.mabolo/eval` was read straight through, and `--save-baseline` wrote
+  the file outside the vault.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import yaml
 
@@ -35,17 +40,26 @@ from .index import DEFAULT_LIMIT, Hit, Index
 
 #: The file the gate compares against, beside the cases and versioned with them.
 BASELINE_FILE = "baseline.json"
-BASELINE_VERSION = 1
+#: Bumped when the shape of that file changes. An older Mabolo refuses a newer
+#: baseline rather than comparing against fields it does not understand.
+BASELINE_VERSION = 2
 
-#: What a case can be about. Only the first is measurable without a model.
-TIERS = ("index", "recall", "design")
+#: A case file is small. A larger one is a mistake worth naming rather than
+#: parsing, and the entry reader has the same kind of limit.
+MAX_CASE_BYTES = 200_000
 
-#: Why the other two are not measured yet. Printed verbatim, so that nobody has
-#: to guess whether a missing number is a pass, a bug or an unbuilt feature.
+#: Why the tiers below `index` are not measured yet. Printed verbatim, so that
+#: nobody has to guess whether a missing number is a pass, a bug or an unbuilt
+#: feature.
 DEFERRED = {
     "recall": "quiet recall needs the session hook, which is not built yet",
     "design": "applies_to as a load trigger is not built yet",
 }
+#: What a case can be about. Only the first is measurable without a model, and
+#: the rest are exactly the keys of DEFERRED, so a new tier cannot be accepted
+#: while the sentence explaining why it is deferred is still missing.
+TIERS = ("index", *DEFERRED)
+
 DEFERRED_CITE = "must_cite needs a model in the loop, which the harness does not run"
 
 DEFAULT_RANK_WITHIN = DEFAULT_LIMIT
@@ -81,11 +95,15 @@ class Result:
     #: Why it failed, or why it was not measured. Never empty when `passed` is
     #: false, because a failure a person cannot read is a failure twice.
     reasons: tuple[str, ...] = ()
-    #: The worst rank among the entries this case expects, or None if one of
-    #: them was missing. The worst one, because that is the one that will fail
-    #: first, and a gate should fire before the failure, not with it.
+    #: The worst rank among the entries this case expects, or None as soon as
+    #: one of them is missing or came back too low. The worst one, because that
+    #: is the rank that will fail first, and a gate should fire before the
+    #: failure rather than with it.
     rank: int | None = None
     cost: int = 0
+    #: The question as the search parsed it, kept so that an explanation shows
+    #: what the search used rather than what a second code path reconstructs.
+    query: Any = None
 
 
 def _as_bool(value: Any, field_name: str, where: Path) -> bool:
@@ -164,36 +182,125 @@ def parse_case(data: Any, path: Path) -> Case:
     )
 
 
-def case_files(directory: Path) -> list[Path]:
-    """Every case file, sorted, so two machines run them in the same order."""
-    if not directory.is_dir():
-        return []
-    return sorted(p for p in directory.iterdir() if p.suffix in (".yaml", ".yml") and p.is_file())
+#: What a file in the eval folder may be called. Anything else is named rather
+#: than skipped: a case nobody notices is a question nobody asked.
+CASE_SUFFIXES = (".yaml", ".yml")
+KNOWN_FILES = (BASELINE_FILE, ".gitkeep")
 
 
-def load_cases(directory: Path) -> list[Case]:
-    """Every case in a folder, or an error naming the first file that is wrong.
+@dataclass(frozen=True)
+class EvalStore:
+    """The eval folder of one vault, and the only way into or out of it.
 
-    A case file that cannot be read is an error and not a skipped file. The
-    whole point of the run is a number, and a number over an unknown subset of
-    the questions is not one.
+    Every read and every write goes through the vault's own containment check,
+    which refuses a path outside the root and refuses to follow a symlink on the
+    way there. Before this existed the eval folder was exempt from both rules
+    without anybody deciding that: a linked `.mabolo/eval` was read straight
+    through, and `--save-baseline` wrote its file wherever the link pointed.
     """
-    cases: list[Case] = []
-    for path in case_files(directory):
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
-            raise MaboloError(f"{path} cannot be read as a case: {exc}") from None
-        cases.append(parse_case(data, path))
-    seen: dict[str, Path] = {}
-    for case in cases:
-        if case.id in seen:
+
+    vault: Any
+
+    @property
+    def directory(self) -> Path:
+        return self.vault.eval_dir
+
+    @property
+    def baseline_path(self) -> Path:
+        return self.directory / BASELINE_FILE
+
+    def case_files(self) -> list[Path]:
+        """Every case file, sorted, so two machines run them in the same order.
+
+        A file that is not a case is an error and not a file to step over. The
+        suffix is compared in lower case, because `case.YAML` is a case somebody
+        wrote and silently ignoring it means measuring a smaller set than the
+        folder shows.
+        """
+        directory = self.vault.ensure_inside(self.directory)
+        if not directory.is_dir():
+            return []
+        files: list[Path] = []
+        strays: list[str] = []
+        for child in sorted(directory.iterdir()):
+            if child.is_symlink():
+                strays.append(f"{child.name} is a symlink, and the vault does not read through those")
+            elif child.name in KNOWN_FILES:
+                continue
+            elif child.is_dir():
+                strays.append(f"{child.name} is a folder, and a case is one file")
+            elif child.suffix.lower() in CASE_SUFFIXES:
+                files.append(child)
+            else:
+                strays.append(f"{child.name} is not a case file")
+        if strays:
             raise MaboloError(
-                f"{case.path} and {seen[case.id]} both call themselves {case.id!r}, "
-                "and the baseline is keyed by that id"
+                f"{directory} holds something that is not a case: {'; '.join(strays)}. "
+                "Move it aside, so that the run covers what the folder shows."
             )
-        seen[case.id] = case.path
-    return cases
+        return files
+
+    def cases(self) -> list[Case]:
+        """Every case in the folder, or an error naming the first one that is wrong.
+
+        A case file that cannot be read is an error and not a skipped file. The
+        whole point of the run is a number, and a number over an unknown subset
+        of the questions is not one.
+        """
+        cases: list[Case] = []
+        for path in self.case_files():
+            self.vault.ensure_inside(path)
+            size = path.stat().st_size
+            if size > MAX_CASE_BYTES:
+                raise MaboloError(
+                    f"{path} is {size} bytes, above the {MAX_CASE_BYTES} byte limit for a case"
+                )
+            try:
+                # Strict: `yaml.safe_load` keeps the last of two identical keys
+                # without a word, so a case file could show one query and
+                # measure another.
+                data = frontmatter.load_strict(path.read_text(encoding="utf-8"))
+            except (yaml.YAMLError, MaboloError, OSError, UnicodeDecodeError) as exc:
+                raise MaboloError(f"{path} cannot be read as a case: {exc}") from None
+            cases.append(parse_case(data, path))
+        seen: dict[str, Path] = {}
+        for case in cases:
+            if case.id in seen:
+                raise MaboloError(
+                    f"{case.path} and {seen[case.id]} both call themselves {case.id!r}, "
+                    "and the baseline is keyed by that id"
+                )
+            seen[case.id] = case.path
+        return cases
+
+    def read_baseline(self) -> Baseline | None:
+        """The stored baseline, or None if there is none yet."""
+        path = self.vault.ensure_inside(self.baseline_path)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+            raise MaboloError(f"{path} is not a readable baseline: {exc}") from None
+        return Baseline.from_json(data, path)
+
+    def write_baseline(self, result: Run, language: str) -> Path:
+        """Write the baseline, atomically and with a stable byte order."""
+        path = self.vault.ensure_inside(self.baseline_path)
+        text = Baseline.from_run(result, language).to_text()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.vault.ensure_inside(path.parent)
+        frontmatter.write_bytes(path, text.encode("utf-8"))
+        return path
+
+
+def select(cases: list[Case], wanted: Iterable[str]) -> list[Case]:
+    """The named subset of the cases, or an error naming what does not exist."""
+    wanted = set(wanted)
+    missing = sorted(wanted - {c.id for c in cases})
+    if missing:
+        raise MaboloError(f"no case called {', '.join(missing)} in this vault")
+    return [c for c in cases if c.id in wanted]
 
 
 def run_case(index: Index, case: Case) -> Result:
@@ -201,9 +308,12 @@ def run_case(index: Index, case: Case) -> Result:
     if not case.measurable:
         return Result(case=case, passed=False, measured=False, reasons=(DEFERRED[case.tier],))
 
-    limit = max(case.rank_within, DEFAULT_LIMIT)
-    hits = tuple(index.search(case.query, limit=limit))
-    cost = index.preview_cost(list(hits))
+    # Searched as deep as the case asks, but costed over what a preview would
+    # actually send. Costing the deeper list made a case with `rank_within: 10`
+    # report a preview nobody would ever be given.
+    found = index.search(case.query, limit=max(case.rank_within, DEFAULT_LIMIT))
+    hits = found.hits
+    cost = index.preview_cost(hits[:DEFAULT_LIMIT])
 
     if case.silence:
         if hits:
@@ -214,9 +324,30 @@ def run_case(index: Index, case: Case) -> Result:
                 passed=False,
                 reasons=(f"expected silence, got {len(hits)} hit(s): {names}",),
                 cost=cost,
+                query=found.query,
             )
-        return Result(case=case, hits=hits, passed=True, cost=cost)
+        return Result(case=case, hits=hits, passed=True, cost=cost, query=found.query)
 
+    reasons, rank = _judge(index, case, hits)
+    return Result(
+        case=case,
+        hits=hits,
+        passed=not reasons,
+        reasons=tuple(reasons),
+        rank=rank,
+        cost=cost,
+        query=found.query,
+    )
+
+
+def _judge(index: Index, case: Case, hits: tuple[Hit, ...]) -> tuple[list[str], int | None]:
+    """Did the expected entries come back, and at what worst rank.
+
+    The rank is what the baseline stores, so its rule has to be one sentence: it
+    is the worst rank of the expected entries, and it is None as soon as one of
+    them is missing or came back too low. Anything else and a still failing case
+    reports that it improved.
+    """
     reasons: list[str] = []
     ranks: list[int] = []
     by_name = {hit.name: hit for hit in hits}
@@ -233,18 +364,13 @@ def run_case(index: Index, case: Case) -> Result:
             reasons.append(f"{wanted} was not returned at all")
             continue
         if hit.rank > case.rank_within:
-            reasons.append(f"{wanted} came back at rank {hit.rank}, wanted {case.rank_within} or better")
+            reasons.append(
+                f"{wanted} came back at rank {hit.rank}, wanted {case.rank_within} or better"
+            )
+            continue
         ranks.append(hit.rank)
-
-    passed = not reasons
-    return Result(
-        case=case,
-        hits=hits,
-        passed=passed,
-        reasons=tuple(reasons),
-        rank=max(ranks) if ranks and len(ranks) == len(case.entries) else None,
-        cost=cost,
-    )
+    rank = max(ranks) if not reasons and len(ranks) == len(case.entries) else None
+    return reasons, rank
 
 
 @dataclass
@@ -317,102 +443,144 @@ class Change:
         return self.kind in ("regressed", "slipped")
 
 
-def snapshot(result: Run) -> dict[str, Any]:
-    """The run as the baseline stores it: what passed, and at which rank.
+@dataclass(frozen=True)
+class BaselineCase:
+    """What the baseline remembers about one case: whether it passed, and where."""
 
-    Deliberately thin. Every number in here is one the gate compares, and a
-    baseline that also carries scores, timings or counts invites a comparison
-    that fires on noise.
+    passed: bool
+    rank: int | None = None
+
+    @classmethod
+    def from_json(cls, data: Any, case_id: str, where: Path) -> BaselineCase:
+        if not isinstance(data, dict):
+            raise MaboloError(f"{where}: the record for {case_id!r} is not a mapping")
+        passed = data.get("passed")
+        rank = data.get("rank")
+        # `isinstance(True, int)` is true in Python, so a rank of `true` would
+        # sail through a plain int check and then be compared against a number.
+        if not isinstance(passed, bool):
+            raise MaboloError(f"{where}: {case_id!r} says passed is {passed!r}, which is not yes or no")
+        if rank is not None and (not isinstance(rank, int) or isinstance(rank, bool) or rank < 1):
+            raise MaboloError(f"{where}: {case_id!r} says rank is {rank!r}, which is not a position")
+        return cls(passed=passed, rank=rank)
+
+    def to_json(self) -> dict[str, Any]:
+        return {"passed": self.passed, "rank": self.rank}
+
+
+@dataclass(frozen=True)
+class Baseline:
+    """The line a run is held against, as it is stored beside the cases.
+
+    Deliberately thin. Every field in here is one the gate compares, and a
+    baseline that also carried scores, timings or counts would invite a
+    comparison that fires on noise.
+
+    The language is in it because the search reads it: stop words and suffixes
+    differ, so the same commit and the same question can rank differently under
+    another one. A baseline written in one language says nothing about a run in
+    another, and saying so out loud beats comparing the two anyway.
     """
-    return {
-        "version": BASELINE_VERSION,
-        "cases": {
-            r.case.id: {"passed": r.passed, "rank": r.rank}
-            for r in sorted(result.measured, key=lambda r: r.case.id)
-        },
-    }
 
+    language: str
+    cases: dict[str, BaselineCase] = field(default_factory=dict)
+    version: int = BASELINE_VERSION
 
-def read_baseline(path: Path) -> dict[str, Any] | None:
-    """The stored baseline, or None if there is none yet."""
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
-        raise MaboloError(f"{path} is not a readable baseline: {exc}") from None
-    if not isinstance(data, dict) or not isinstance(data.get("cases"), dict):
-        raise MaboloError(f"{path} is not a baseline written by mabolo")
-    version = data.get("version")
-    if version != BASELINE_VERSION:
-        raise MaboloError(
-            f"{path} was written for baseline version {version}, and this Mabolo speaks "
-            f"{BASELINE_VERSION}. Run `mabolo eval --save-baseline` to write a new one."
+    @classmethod
+    def from_run(cls, result: Run, language: str) -> Baseline:
+        return cls(
+            language=language,
+            cases={
+                r.case.id: BaselineCase(passed=r.passed, rank=r.rank)
+                for r in sorted(result.measured, key=lambda r: r.case.id)
+            },
         )
-    return data
+
+    @classmethod
+    def from_json(cls, data: Any, where: Path) -> Baseline:
+        if not isinstance(data, dict) or not isinstance(data.get("cases"), dict):
+            raise MaboloError(f"{where} is not a baseline written by mabolo")
+        version = data.get("version")
+        if version != BASELINE_VERSION:
+            raise MaboloError(
+                f"{where} was written for baseline version {version}, and this Mabolo speaks "
+                f"{BASELINE_VERSION}. Run `mabolo eval --save-baseline` to write a new one."
+            )
+        language = data.get("language")
+        if not isinstance(language, str) or not language:
+            raise MaboloError(f"{where} does not say which language it was measured in")
+        return cls(
+            language=language,
+            cases={
+                case_id: BaselineCase.from_json(record, case_id, where)
+                for case_id, record in sorted(data["cases"].items())
+            },
+            version=version,
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "language": self.language,
+            "cases": {case_id: case.to_json() for case_id, case in sorted(self.cases.items())},
+        }
+
+    def to_text(self) -> str:
+        return json.dumps(self.to_json(), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+    def check_language(self, language: str) -> None:
+        """Refuse to compare a run against a baseline measured in another language."""
+        if language != self.language:
+            raise MaboloError(
+                f"the baseline was measured with language {self.language!r} and this vault "
+                f"says {language!r}, so the two cannot be compared. Run "
+                "`mabolo eval --save-baseline` once you are sure the vault is right."
+            )
 
 
-def write_baseline(path: Path, result: Run) -> Path:
-    """Write the baseline, atomically and with a stable byte order."""
-    text = json.dumps(snapshot(result), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    frontmatter.write_bytes(path, text.encode("utf-8"))
-    return path
+def compare(baseline: Baseline | None, result: Run, *, subset: bool = False) -> list[Change]:
+    """What moved since the baseline, in the order a person wants to read it.
 
-
-def compare(baseline: dict[str, Any] | None, result: Run) -> list[Change]:
-    """What moved since the baseline, in the order a person wants to read it."""
+    `subset` says that this run covered only some of the cases, which is what
+    `--case` does. A case the baseline knows and this run left out is then
+    expected rather than missing, so it is not reported at all.
+    """
     if baseline is None:
         return []
-    stored: dict[str, Any] = baseline["cases"]
+    stored = baseline.cases
     changes: list[Change] = []
     for current in sorted(result.measured, key=lambda r: r.case.id):
         was = stored.get(current.case.id)
         if was is None:
             changes.append(Change("new", current.case.id, "is new and not in the baseline"))
             continue
-        before_passed = bool(was.get("passed"))
-        before_rank = was.get("rank")
-        if before_passed and not current.passed:
+        if was.passed and not current.passed:
             changes.append(Change("regressed", current.case.id, "passed in the baseline and fails now"))
             continue
-        if not before_passed and current.passed:
+        if not was.passed and current.passed:
             changes.append(Change("improved", current.case.id, "failed in the baseline and passes now"))
             continue
-        if (
-            isinstance(before_rank, int)
-            and isinstance(current.rank, int)
-            and current.rank > before_rank
-        ):
-            # Still passing, and already worse. This is the whole reason the
-            # gate stores a rank: by the time it fails, the change that caused
-            # it is several commits back.
-            changes.append(
-                Change(
-                    "slipped",
-                    current.case.id,
-                    f"slipped from rank {before_rank} to rank {current.rank}",
+        # Both passed, or both failed. A rank only means the same thing on both
+        # sides when both passed: a failing case has no rank at all.
+        if not (was.passed and current.passed):
+            continue
+        if isinstance(was.rank, int) and isinstance(current.rank, int):
+            if current.rank > was.rank:
+                # Still passing, and already worse. This is the whole reason the
+                # gate stores a rank: by the time it fails, the change that
+                # caused it is several commits back.
+                changes.append(
+                    Change("slipped", current.case.id, f"slipped from rank {was.rank} to rank {current.rank}")
                 )
-            )
-        elif (
-            isinstance(before_rank, int)
-            and isinstance(current.rank, int)
-            and current.rank < before_rank
-        ):
-            changes.append(
-                Change(
-                    "improved",
-                    current.case.id,
-                    f"improved from rank {before_rank} to rank {current.rank}",
+            elif current.rank < was.rank:
+                changes.append(
+                    Change("improved", current.case.id, f"improved from rank {was.rank} to rank {current.rank}")
                 )
-            )
-    present = {r.case.id for r in result.measured}
-    for case_id in sorted(set(stored) - present):
-        changes.append(Change("gone", case_id, "is in the baseline and was not run"))
+    if not subset:
+        present = {r.case.id for r in result.measured}
+        for case_id in sorted(set(stored) - present):
+            changes.append(Change("gone", case_id, "is in the baseline and was not run"))
     return changes
-
-
-# Rendering, so that a run reads as sentences rather than as a table of numbers
 
 
 def _plural(count: int, thing: str) -> str:

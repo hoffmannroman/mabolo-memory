@@ -20,7 +20,7 @@ A filled in vault to read alongside this page is in [`examples/vault`](../exampl
 | `verified` | optional | A list of `by` and `at`. A single mapping is read as a list of one and written back as a list. Mabolo only ever writes `human:<id>` here: a person is what verification means |
 | `sources` | optional | Where a claim came from. `resource` is required, `id` is what a footnote in the body cites |
 | `resource` | optional | What this entry is about, when it is about one thing: a path, a URL, an identifier |
-| `tags` | optional | A list of words a person searches for. Every one of them is text |
+| `tags` | optional | A list of words that group entries. Every one of them is text. The search does not read them today: it looks at the name, the title, the aliases, the description and the body |
 | `usage_window` | optional | When the knowledge in the entry applies, as the format defines it |
 | `status` | optional | `draft`, `stable` or `deprecated`. Defaults to `stable` |
 | `stale_after` | optional | An ISO-8601 timestamp with an offset, after which the entry wants a look |
@@ -76,7 +76,7 @@ Releases are cut from `main`.[^s1]
 
 | File | Rules |
 |---|---|
-| `index.md` | One per folder, derived from the entries and rewritten by Mabolo. Only the one in the vault root carries frontmatter, and only `okf_version`, which it has to carry: it is what says which version of the format the rest of the vault is read as |
+| `index.md` | One per folder, derived from the entries and rewritten by Mabolo. Only the one in the vault root carries frontmatter: `okf_version`, which it has to carry because it says which version of the format the rest of the vault is read as, and a `mabolo` block whose one key is `language` |
 | `log.md` | The journal. No frontmatter, one ISO date heading per day, newest first |
 
 Both are generated, so an entry may not be called `index` or `log`.
@@ -85,6 +85,20 @@ Mabolo only ever replaces an `index.md` it could have written itself: one with
 no frontmatter, or the root one with nothing but `okf_version`. Anything else in
 a file of that name is reported and left alone, because a file Mabolo did not
 write is a file somebody else did.
+
+```yaml
+---
+okf_version: '0.2'
+mabolo:
+  language: de
+---
+```
+
+`language` is the language the entries are written in, as a short code, and it
+belongs to the vault rather than to a machine: the search drops stop words in it
+and cuts suffixes by its rules, so a vault that carried its language in a local
+configuration file would answer differently on two clones of itself. A vault
+that says nothing is read as English.
 
 One folder in a vault is not made of entries. `.mabolo/` holds what is derived
 and disposable and is ignored by Git, with one exception: `.mabolo/eval/` holds

@@ -55,7 +55,10 @@ tier: index
 
 An unknown key is an error rather than something ignored. A case is a
 measurement instrument, and an instrument that silently drops a setting reports
-a number about something other than what was asked.
+a number about something other than what was asked. For the same reason a case
+file that sets the same key twice is refused instead of quietly keeping the
+last one, and a file in `.mabolo/eval/` that is not a case is named rather than
+stepped over.
 
 ## What is measured, and what is not
 
@@ -91,13 +94,26 @@ cases, and every later run is compared against it. Two things fail the run:
   the time a slip becomes a failure, the change that caused it is several
   commits back.
 
-Getting better is reported and does not fail anything; the run says the baseline
-is worth writing again.
+Getting better is reported as a note and fails nothing.
 
 The baseline stores whether a case passed and at which rank. Deliberately not
-the BM25 score: a rank is ordinal and survives a new SQLite, while a score is a
-float that moves whenever anything about the corpus moves. A gate built on
-scores fires on noise, and a gate that fires on noise gets switched off.
+the BM25 score: a rank is ordinal, while a score is a float that moves whenever
+anything about the corpus moves. A gate built on scores fires on noise, and a
+gate that fires on noise gets switched off. Ranks are not a promise that two
+different SQLite builds rank identically, only that the gate is not comparing
+floating point numbers across them.
+
+A failing case has no rank at all, so there is nothing to call better: a rank is
+only compared when the case passed on both sides.
+
+It also stores the language it was measured in, and refuses to be compared
+against a run in another one. Stop words and suffixes differ by language, so
+those are two measurements and not one.
+
+`--save-baseline` writes the whole set, so it cannot be combined with `--case`:
+a run over one case would replace the file with that one case, every other case
+would be "new" on the next run, and "new" is not a failure. It is also the way
+out of a baseline this version cannot read, so it never reads the old one.
 
 Exit codes follow the rest of the tool: 0 when there is nothing to fix, 1 when
 the run found something, 2 when the command could not do its job. An empty case
@@ -120,6 +136,11 @@ means rewriting history:
    yesterday.
 3. **The index rebuilds deterministically** from any commit, down to the order
    of two entries that score the same.
+
+The vault's language is part of that, which is why it lives in the root
+`index.md` and not in a configuration file on one machine. The search drops stop
+words in it and cuts suffixes by its rules, so a vault whose language sat
+outside it would rank differently on two clones and no commit could be replayed.
 
 Your own questions belong in your own vault, next to your own entries. The cases
 in [`examples/vault`](../examples/vault) are invented and query the invented

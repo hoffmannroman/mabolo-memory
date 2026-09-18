@@ -29,6 +29,7 @@ from pathlib import Path
 from . import frontmatter, git
 from .errors import MaboloError
 from .schema import (
+    DEFAULT_LANGUAGE,
     FIXED_AREAS,
     INDEX_FILE,
     LOG_FILE,
@@ -37,6 +38,7 @@ from .schema import (
     RESERVED_STEMS,
     Entry,
     area_to_dir,
+    is_language,
     is_project_area,
     is_safe_area,
     normalise_name,
@@ -123,10 +125,17 @@ class Vault:
 
     root: Path
     areas: tuple[str, ...] = field(default=FIXED_AREAS)
+    #: The language to declare when the root index is next written. None means
+    #: "keep whatever the vault already declares", which is what every command
+    #: but `init` wants: rebuilding an index must not change what the vault says
+    #: about itself.
+    language: str | None = None
 
     def __post_init__(self) -> None:
         self.root = Path(self.root).expanduser()
         self.areas = tuple(self.areas)
+        if self.language is not None and not is_language(self.language):
+            raise MaboloError(f"{self.language!r} is not a language code, use two or three letters")
         unusable = [a for a in self.areas if not is_safe_area(a)]
         if unusable:
             raise MaboloError(f"an area is one plain folder name, so {unusable} cannot be used")
@@ -180,6 +189,24 @@ class Vault:
 
     def is_initialised(self) -> bool:
         return self.index_file.exists()
+
+    def declared_language(self) -> str:
+        """The language this vault says its entries are written in.
+
+        It lives in the root `index.md`, the one file the format already
+        reserves for saying what this vault is, so it travels with the entries
+        through Git. The search reads it, and so does the baseline: stop words
+        and suffixes differ by language, so a vault whose language sat in a
+        machine's configuration file would rank differently on two machines and
+        no history could be replayed.
+        """
+        try:
+            doc = frontmatter.read(self.index_file)
+        except (MaboloError, OSError, UnicodeDecodeError):
+            return DEFAULT_LANGUAGE
+        block = (doc.meta or {}).get("mabolo")
+        value = block.get("language") if isinstance(block, dict) else None
+        return value.strip().lower() if is_language(value) else DEFAULT_LANGUAGE
 
     def is_git_repository(self) -> bool:
         """True only for a repository that writes inside this vault."""
@@ -471,11 +498,18 @@ class Vault:
         for path in self.entry_paths():
             by_folder[path.parent].append(path)
         directories = self._index_directories()
-        written = [self._write_index(d, by_folder, directories) for d in directories]
+        # Read before anything is written: the root index is both the file that
+        # declares the language and the file about to be replaced.
+        language = self.language or self.declared_language()
+        written = [self._write_index(d, by_folder, directories, language) for d in directories]
         return list(reversed(written))
 
     def _write_index(
-        self, directory: Path, by_folder: dict[Path, list[Path]], directories: list[Path]
+        self,
+        directory: Path,
+        by_folder: dict[Path, list[Path]],
+        directories: list[Path],
+        language: str = DEFAULT_LANGUAGE,
     ) -> Path:
         """One index.md, built from the same file list the validator walks.
 
@@ -530,7 +564,9 @@ class Vault:
         if not entries and not subdirs:
             lines += ["Nothing here yet.", ""]
 
-        meta = {"okf_version": OKF_VERSION} if is_root else None
+        meta = (
+            {"okf_version": OKF_VERSION, "mabolo": {"language": language}} if is_root else None
+        )
         frontmatter.write(target, meta, "\n".join(lines))
         return target
 
@@ -542,7 +578,7 @@ class Vault:
         one with a frontmatter Mabolo does not write, was replaced and its
         contents gone: exactly the files a person most likely wrote by hand.
         A generated index carries no frontmatter, except at the root where it
-        carries `okf_version` and nothing else.
+        carries `okf_version` and the `mabolo` block that declares the language.
         """
         if not target.exists():
             return
@@ -555,7 +591,7 @@ class Vault:
             ) from None
         if doc.meta is None:
             return
-        if set(doc.meta) <= {"okf_version"}:
+        if set(doc.meta) <= {"okf_version", "mabolo"}:
             return
         raise MaboloError(
             f"{target} carries a frontmatter that Mabolo does not write, so it was not made here. "

@@ -1,5 +1,7 @@
 ---
 okf_version: '0.2'
+mabolo:
+  language: en
 ---
 
 # Vault
