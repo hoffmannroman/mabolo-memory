@@ -140,21 +140,30 @@ This is early, and the README says only what exists:
   entries came back, in which order, whether the memory stayed quiet when it
   should, and what a preview would cost. It compares every run against a saved
   baseline and fails when an answer slips down the list, before it disappears.
-* `mabolo context` prints what a session would start with: the project you are
-  in, every area that holds entries and how many, the few entries this session
-  is likely to need, and a last line saying how many were left out. The project
-  is the repository you are standing in, so nobody has to type it. The eval measures that payload too,
-  so an entry that stops being offered is a failing case rather than a silence.
+* `mabolo context` prints what a session would start with: the standing rules,
+  what was decided lately in the project you are in, every area that holds
+  entries and how many, the few entries this session is likely to need, the
+  bare names of those there was no room to describe, and a last line accounting
+  for all three. The project is the repository you are standing in, so nobody
+  has to type it. `--why-not` says per entry why it has no line of its own. The
+  eval measures that payload too, so an entry that stops being offered is a
+  failing case rather than a silence.
   See [what a session starts with](docs/context.md).
+* `mabolo hook session-start` hands that same payload to a client, and
+  `mabolo hook prompt` offers the one entry a prompt should have known about,
+  or says nothing at all, which is what it does most of the time. Both exit 0
+  whatever happens and give up on a deadline: a memory that can stop a session
+  from starting is worse than no memory.
+  See [quiet recall](docs/recall.md).
 * The entry schema and its validator, with the example vault as the reference.
 * A Git remote, if you want one: `init` sets it, and the vault is an ordinary
   repository you can pull and push yourself.
 
-The MCP server and the hook that hands the payload to an agent are still being
-built. The budget it has to stay inside is already the point: a session should
-pay for a short index, not for everything you ever wrote down. The measurement
-came first on purpose, because it is the only thing that can show that a short
-index replaced the long text instead of quietly losing half of it.
+The MCP server, and with it reading an entry in full on demand, is still being
+built. The budget is already the point: a session should pay for a short index,
+not for everything you ever wrote down. The measurement came first on purpose,
+because it is the only thing that can show that a short index replaced the long
+text instead of quietly losing half of it.
 
 ## Try it
 
@@ -168,6 +177,14 @@ uv run mabolo eval examples/vault --explain
 # What a session would be handed, for a vault you are working in on that day.
 # Without --project it takes the project from the repository you are in.
 uv run mabolo context examples/vault --project atlas --as-of 2026-09-18
+
+# Why an entry has no line of its own, one reason each.
+uv run mabolo context examples/vault --project atlas --as-of 2026-09-18 --why-not
+
+# What a client's hook is handed, and what a prompt is quietly offered.
+echo '{}' | uv run mabolo hook session-start examples/vault
+echo '{"prompt": "raising the job count on the build server"}' \
+  | uv run mabolo hook prompt examples/vault
 
 # A throwaway vault and a throwaway configuration to go with it. Without
 # --config, `init` writes the real one in your config directory.
