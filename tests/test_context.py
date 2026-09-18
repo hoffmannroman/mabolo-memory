@@ -153,10 +153,11 @@ def test_the_oldest_of_a_class_is_cut_first():
         [doc("older", days_ago=6, description="x" * 200),
          doc("newer", days_ago=1, description="x" * 200)],
         as_of=NOW,
-        target_tokens=85,
+        target_tokens=95,
     )
     assert index.names == ("newer",)
     assert index.cut == 1
+    assert [line.name for line in index.named] == ["older"], "cut, and still named"
 
 
 def test_two_entries_of_the_same_moment_are_ordered_by_name():
@@ -184,7 +185,10 @@ def test_the_budget_cuts_from_the_unsafe_end_and_says_how_many():
     assert 0 < len(index.lines) < 20
     assert index.names == tuple(f"e{i:02d}" for i in range(len(index.lines))), "newest kept"
     assert index.cut == 20 - len(index.lines)
-    assert index.omitted == 20 - len(index.lines)
+    # `cut` and `omitted` are no longer the same number: what the budget cut
+    # keeps its bare name while there is room for one, and `omitted` is what
+    # lost even that.
+    assert index.omitted == 20 - len(index.lines) - len(index.named)
 
 
 def test_the_payload_stays_inside_the_budget_once_the_fixed_text_fits():
@@ -236,11 +240,23 @@ def test_a_budget_too_small_for_the_headings_yields_no_lines_rather_than_a_wrong
 
 
 def test_what_the_rule_skipped_and_what_the_budget_cut_are_counted_apart():
+    """Three fates, three counts, and they fix different problems. `cut` is
+    raised by a bigger budget; what the rule never chose is not, and no budget
+    will bring it back. Both can still end up named, which is a fourth thing
+    again and is why the counts are kept apart rather than added up."""
     index = context.build(
-        [doc("recent", days_ago=1), doc("ancient", days_ago=400)], as_of=NOW, target_tokens=40
+        [
+            doc("recent", days_ago=1, description="x" * 60),
+            doc("older", days_ago=6, description="x" * 60),
+            doc("ancient", days_ago=400),
+        ],
+        as_of=NOW,
+        target_tokens=60,
     )
-    assert index.cut == 0, "the rule never chose the ancient one, so nothing was cut"
-    assert index.omitted == 1
+    assert [line.name for line in index.lines] == ["recent"], "described"
+    assert [line.name for line in index.named] == ["older"], "cut, and still named"
+    assert index.cut == 1, "the budget took the older one"
+    assert index.omitted == 1, "and the ancient one did not even fit a name"
 
 
 # The text
@@ -255,21 +271,38 @@ def test_every_area_gets_a_heading_with_its_count_even_with_nothing_shown():
     assert "## infra (1 entry)" in text
     assert "## design (1 entry)" in text
     assert "- shown: a line" in text
-    assert "hidden" not in text
+    assert "- hidden:" not in text, "no line of its own"
+    assert "also here: hidden" in text, "but still a name to ask with"
 
 
 def test_the_last_line_names_how_many_were_left_out():
     index = context.build(
         [doc("shown", days_ago=1), doc("a", days_ago=400), doc("b", days_ago=400)], as_of=NOW
     )
-    assert index.text().rstrip().endswith("2 entries not shown. Search the memory by name or topic to reach them.")
+    assert index.text().rstrip().endswith(
+        "2 entries above are named only. Search the memory by name or topic to read them."
+    )
+
+
+def test_the_last_line_separates_a_bare_name_from_an_entry_left_out_entirely():
+    """Three things can happen to an entry, so the line that accounts for them
+    has three forms. "Every entry is listed above" with eleven bare names in it
+    would be the same quiet stop in a politer wording."""
+    documents = [doc("shown", days_ago=1), *(doc(f"e{i:02d}", days_ago=400) for i in range(40))]
+    index = context.build(documents, as_of=NOW, target_tokens=60)
+    assert index.named and index.omitted
+    assert index.text().rstrip().endswith(
+        f"{len(index.named)} entries above are named only, "
+        f"and {index.omitted} more not shown at all. "
+        "Search the memory by name or topic to read them."
+    )
 
 
 def test_the_last_line_is_written_even_when_nothing_was_left_out():
     """Its absence would have to be read as "nothing omitted", which is the
     quiet stop this tier exists against."""
     index = context.build([doc("shown", days_ago=1)], as_of=NOW)
-    assert index.text().rstrip().endswith("Every entry is listed above.")
+    assert index.text().rstrip().endswith("Every entry is described above.")
 
 
 def test_a_line_shows_the_description_and_falls_back_to_the_title():
@@ -478,7 +511,7 @@ def test_the_core_is_ordered_by_name_because_it_is_never_cut():
 def test_a_rule_counts_as_shown_and_not_as_omitted():
     index = context.build([doc("rule", pin=True), doc("old", days_ago=400)], as_of=NOW)
     assert index.total == 2
-    assert index.omitted == 1
+    assert index.omitted == 0 and len(index.named) == 1
     assert index.position("rule") == 1
 
 
@@ -637,3 +670,86 @@ def test_the_smaller_payload_keeps_the_rules_and_drops_the_map():
     assert "- rule: a line" in smaller
     assert "thing" not in smaller
     assert context.DEGRADED in smaller
+
+
+# The middle answer: a name where there was no room for a line
+
+
+def test_an_entry_no_rule_chose_still_gets_its_name():
+    """The whole point of the third state. A count cannot be searched with and
+    a name can, without the reader having to suspect the entry exists first."""
+    index = context.build([doc("shown", days_ago=1), doc("unchosen", days_ago=400)], as_of=NOW)
+    assert index.names == ("shown",)
+    assert [line.name for line in index.named] == ["unchosen"]
+    assert "also here: unchosen" in index.text()
+
+
+def test_a_name_costs_about_a_fifth_of_a_line():
+    """The trade the third state is built on, measured rather than assumed."""
+    line = context.Line(name="ci-memory-limit", area="infra", reason=context.FRESH,
+                        summary="The CI image caps at 4 GB, so more than -j4 gets the runner killed")
+    assert estimate_tokens(line.render()) > 4 * estimate_tokens(line.name)
+
+
+def test_the_budget_buys_names_with_what_the_lines_did_not_spend():
+    """A budget too small for one more line is not too small for four names."""
+    documents = [doc(f"e{i:02d}", days_ago=1, description="x" * 120) for i in range(12)]
+    index = context.build(documents, as_of=NOW, target_tokens=120)
+    assert len(index.named) > len(index.lines)
+    assert index.cost() <= 120
+
+
+def test_what_the_budget_cut_is_named_before_what_no_rule_wanted():
+    """The rule had already said the cut ones were worth showing, so they are
+    the last to lose their name as well."""
+    documents = [
+        *(doc(f"chosen-{i}", days_ago=1, description="x" * 90) for i in range(4)),
+        *(doc(f"stranger-{i}", days_ago=400) for i in range(4)),
+    ]
+    index = context.build(documents, as_of=NOW, target_tokens=100)
+    assert index.cut and index.omitted, "a budget tight enough for both to matter"
+    assert [line.name for line in index.named] == ["chosen-2", "chosen-3", "stranger-0"]
+
+
+def test_each_area_pays_for_its_own_introduction_and_only_if_it_gets_a_name():
+    index = context.build(
+        [doc("shown", area="infra", days_ago=1), doc("stranger", area="design", days_ago=400)],
+        as_of=NOW,
+    )
+    text = index.text()
+    assert text.count(context.ALSO_HERE) == 1
+    assert "## infra (1 entry)\n- shown: a line\n" in text
+
+
+def test_a_standing_rule_is_never_listed_as_a_bare_name():
+    """It is in the core, described. Naming it again below would read as a
+    second entry and charge the budget twice for one line."""
+    index = context.build([doc("rule", pin=True, days_ago=400)], as_of=NOW)
+    assert index.named == ()
+    assert index.text().count("rule") == 1
+
+
+# Why an entry is not a line
+
+
+def test_why_not_separates_the_two_levers():
+    """Raising the budget brings back what it cut. Nothing brings back what no
+    rule wanted, and a reader who cannot tell them apart turns the wrong dial."""
+    documents = [
+        doc("recent", days_ago=1, description="x" * 60),
+        doc("older", days_ago=6, description="x" * 60),
+        doc("ancient", days_ago=400),
+    ]
+    index = context.build(documents, as_of=NOW, target_tokens=60)
+    rows = dict(context.why_not(index, documents))
+    assert "recent" not in rows, "it has a line, so there is nothing to explain"
+    assert rows["older"].startswith(context.CUT_BY_BUDGET)
+    assert rows["ancient"].startswith(context.NOT_CHOSEN)
+
+
+def test_why_not_says_whether_the_name_survived():
+    documents = [doc("shown", days_ago=1), doc("stranger", days_ago=400)]
+    index = context.build(documents, as_of=NOW)
+    assert dict(context.why_not(index, documents))["stranger"].endswith(context.ALSO_NAMED)
+    tight = context.build(documents, as_of=NOW, target_tokens=45)
+    assert dict(context.why_not(tight, documents))["stranger"].endswith(context.NOT_EVEN_NAMED)

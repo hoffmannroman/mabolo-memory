@@ -276,9 +276,10 @@ def test_context_prints_the_payload_and_what_it_costs(vault, capsys):
     out = capsys.readouterr().out
     assert code == 0
     assert "- working-hours: Deep work after 20:00" in out
-    assert "old-news" not in out, "a year old, not pinned, no project"
-    assert "1 entry not shown" in out
-    assert "1 of 2 entries shown" in out
+    assert "- old-news:" not in out, "a year old, not pinned, no project, so no line"
+    assert "also here: old-news" in out, "and still a name to ask with"
+    assert "1 entry above is named only" in out
+    assert "1 of 2 entries described, 1 named only" in out
     assert "budget 800" in out
 
 
@@ -298,7 +299,7 @@ def test_context_can_be_told_not_to_read_the_clock(vault, capsys):
     out = capsys.readouterr().out
     assert "nothing counts as recent" in out
     assert "- working-hours" in out, "a pin does not depend on a moment"
-    assert "written-just-now" not in out, "no moment was given, so nothing is recent"
+    assert "- written-just-now:" not in out, "no moment was given, so nothing is recent"
 
 
 def test_context_refuses_a_date_it_cannot_read(vault, capsys):
@@ -350,7 +351,8 @@ def test_eval_explains_a_hint_case_with_the_payload_it_measured(vault, capsys):
     assert "hint     1 case, 1 pass, 0 fail" in out
     assert "state   session start, no active project, as of 2026-09-18" in out
     assert "1.      working-hours  (persona, pinned) <-- expected" in out
-    assert "omitted 1 of 2 entries, 0 cut by the budget" in out
+    assert "named   1 of 2 entries" in out
+    assert "omitted 0 of 2 entries, 0 cut by the budget" in out
 
 
 def test_context_refuses_a_budget_that_is_not_a_budget(vault, capsys):
@@ -641,3 +643,12 @@ def test_the_prompt_hook_gives_up_quietly_when_it_runs_out_of_time(tmp_path, cap
     code, out, err = prompt_hook(tmp_path, capsys, monkeypatch, event, extra=["--seconds", "0.05"])
     assert code == 0 and out is None
     assert "gave up" in err
+
+
+def test_context_can_say_why_an_entry_has_no_line(vault, capsys):
+    """A count says how much is missing. This says which lever moves it."""
+    context_vault(vault)
+    assert main(["context", str(vault.root), "--as-of", "2026-09-18", "--why-not"]) == 0
+    out = capsys.readouterr().out
+    assert "old-news  no rule chose it" in out
+    assert "working-hours" not in out.split("budget 800")[1], "it has a line, so nothing to explain"

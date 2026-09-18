@@ -895,11 +895,17 @@ class Baseline:
     language: str
     cases: dict[str, BaselineCase] = field(default_factory=dict)
     version: int = BASELINE_VERSION
+    #: The selection rule the session index was built by when this was written.
+    #: Stored so that a rule change reads as a rule change: the numbers below
+    #: move either because the memory got worse or because the question did,
+    #: and one of those is a regression while the other is the work.
+    policy: int = context.POLICY
 
     @classmethod
     def from_run(cls, result: Run, language: str) -> Baseline:
         return cls(
             language=language,
+            policy=context.POLICY,
             cases={
                 r.case.id: BaselineCase(tier=r.case.tier, passed=r.passed, rank=r.rank)
                 for r in sorted(result.measured, key=lambda r: r.case.id)
@@ -919,6 +925,9 @@ class Baseline:
         language = data.get("language")
         if not isinstance(language, str) or not language:
             raise MaboloError(f"{where} does not say which language it was measured in")
+        policy = data.get("policy", 1)
+        if not isinstance(policy, int) or isinstance(policy, bool) or policy < 1:
+            raise MaboloError(f"{where} states a selection policy that is not a version number")
         return cls(
             language=language,
             cases={
@@ -926,17 +935,35 @@ class Baseline:
                 for case_id, record in sorted(data["cases"].items())
             },
             version=version,
+            policy=policy,
         )
 
     def to_json(self) -> dict[str, Any]:
         return {
             "version": self.version,
             "language": self.language,
+            "policy": self.policy,
             "cases": {case_id: case.to_json() for case_id, case in sorted(self.cases.items())},
         }
 
     def to_text(self) -> str:
         return json.dumps(self.to_json(), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+    def policy_note(self) -> str | None:
+        """One sentence when the selection rule has moved since this was written.
+
+        A note and not a refusal, unlike the language. A different language
+        makes the numbers incomparable; a different policy makes them
+        comparable and *means something different*, which is exactly what a
+        person needs to be told rather than protected from.
+        """
+        if self.policy == context.POLICY:
+            return None
+        return (
+            f"the baseline was measured under selection policy {self.policy} and this run "
+            f"used {context.POLICY}, so what moved below may be the rule changing rather than "
+            "the memory getting worse"
+        )
 
     def check_language(self, language: str) -> None:
         """Refuse to compare a run against a baseline measured in another language."""

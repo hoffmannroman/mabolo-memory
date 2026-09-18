@@ -273,8 +273,9 @@ def cmd_context(args: argparse.Namespace) -> int:
     print(f"{where}, {source}, {when}")
     if payload.project and not any(a == f"{PROJECT_PREFIX}{payload.project}" for a, _ in payload.counts):
         print(f"there is no project/{payload.project} in this vault, so nothing was added for it")
+    named = f", {len(payload.named)} named only" if payload.named else ""
     print(
-        f"{len(payload.shown)} of {payload.total} entries shown, "
+        f"{len(payload.shown)} of {payload.total} entries described{named}, "
         f"about {payload.cost()} tokens, estimated, budget {payload.target_tokens}"
     )
     if payload.cut:
@@ -288,6 +289,15 @@ def cmd_context(args: argparse.Namespace) -> int:
             f"{'rule' if len(payload.core) == 1 else 'rules'} pinned, about "
             f"{payload.core_cost()} tokens of the {payload.core_tokens} the core is meant to cost"
         )
+    if args.why_not:
+        # After the counts rather than instead of them: the counts say how much
+        # is missing, and this says which lever moves each piece of it.
+        print()
+        rows = context.why_not(payload, documents)
+        if not rows:
+            print("every entry in this vault has a line of its own")
+        for name, reason in rows:
+            print(f"  {name}  {reason}")
     if payload.core_is_over_budget:
         # A finding, not a failure: nothing was dropped, and the vault still
         # works. But a person has to decide which rule stops being one, and
@@ -508,10 +518,16 @@ def cmd_eval(args: argparse.Namespace) -> int:
         # out of a baseline this version cannot read or that was measured in
         # another language, so it must not be the command that trips over one.
         baseline = None if args.no_baseline or args.save_baseline else store.read_baseline()
+        note = None
         if baseline is not None:
             baseline.check_language(language)
+            note = baseline.policy_note()
         changes = evaluate.compare(baseline, result, subset=bool(args.case))
         print(evaluate.render(result, changes))
+        if note:
+            # Above nothing and below everything: it qualifies the comparison
+            # that was just printed, so it is read after it and not instead.
+            print(f"note  {note}")
 
         if args.explain:
             print()
@@ -585,7 +601,11 @@ def _explain_hint(index: Index, result: evaluate.Result) -> None:
         mark = " <-- should not be here" if line.name in unwanted else mark
         print(f"  {position}.      {line.name}  ({line.area}, {line.reason}){mark}")
     for wanted in sorted(expected - set(payload.names)):
-        print(f"  --      {wanted}  is not in the index")
+        named = " (named only)" if wanted in {line.name for line in payload.named} else ""
+        print(f"  --      {wanted}  is not in the index{named}")
+    print(
+        f"  named   {len(payload.named)} of {payload.total} entries, by name and nothing more"
+    )
     print(f"  omitted {payload.omitted} of {payload.total} entries, {payload.cut} cut by the budget")
     print(f"  cost    about {result.cost} tokens for the whole payload, estimated")
     print()
@@ -651,6 +671,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=context.DEFAULT_CORE_TOKENS,
         help=f"what the standing rules may cost, default {context.DEFAULT_CORE_TOKENS}",
+    )
+    shown.add_argument(
+        "--why-not",
+        action="store_true",
+        help="for every entry without a line of its own, the first reason why",
     )
     shown.add_argument(
         "--project-budget",

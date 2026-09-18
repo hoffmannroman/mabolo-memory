@@ -930,3 +930,29 @@ def test_a_journal_line_of_another_project_costs_the_payload_nothing(tmp_path, v
     case = hint_case(tmp_path, {"in_payload": ["deploy-from-main"]}, project="atlas")
     elsewhere = [journal.Note(at=dt.date(2026, 9, 16), text="not here", project="beacon")]
     assert evaluate.run_hint_case(index, case, elsewhere).cost == evaluate.run_hint_case(index, case).cost
+
+
+def test_a_baseline_remembers_which_selection_rule_measured_it(vault):
+    index = small_vault(vault)
+    case = evaluate.parse_case(
+        {"id": "a", "query": "releases", "expect": {"entries": ["deploy-from-main"]}},
+        vault.eval_dir / "a.yaml",
+    )
+    baseline = evaluate.Baseline.from_run(evaluate.run(index, [case]), "en")
+    assert baseline.to_json()["policy"] == evaluate.context.POLICY
+    assert baseline.policy_note() is None
+
+
+def test_a_baseline_from_another_policy_is_compared_and_says_so(vault):
+    """A note, not a refusal. The numbers stay comparable; what changed is what
+    they mean, and that is something to be told rather than protected from."""
+    baseline = evaluate.Baseline(language="en", policy=evaluate.context.POLICY - 1)
+    note = baseline.policy_note()
+    assert note and "rather than the memory getting worse" in note
+
+
+def test_a_baseline_written_before_policies_existed_still_reads(vault):
+    """It has no policy field at all, and refusing to read it would throw away
+    a gate for a field that was added after it was written."""
+    data = {"version": evaluate.BASELINE_VERSION, "language": "en", "cases": {}}
+    assert evaluate.Baseline.from_json(data, vault.eval_dir / "baseline.json").policy == 1

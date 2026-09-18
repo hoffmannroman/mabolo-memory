@@ -73,6 +73,19 @@ DEFAULT_PROJECT_TOKENS = 500
 #: was decided since the last one is what a session is most likely to be about.
 FRESH_DAYS = 7
 
+#: Which version of the selection rule a payload was built by. Raised by hand,
+#: and only when a change would move which entries a session is handed or in
+#: which order: a new reason, a different cut order, a different window, a
+#: different meaning for one of the three states an entry can end in.
+#:
+#: **It is not a version of this file.** A comment, a rename or a faster loop
+#: leaves it alone. What it buys is one sentence in the eval: a baseline
+#: measured under another policy is not evidence that the memory got worse, it
+#: is evidence that the question changed, and those two deserve different
+#: reactions. Without it, the day the rule improves reads exactly like the day
+#: it regresses.
+POLICY = 2
+
 #: Why a line is in the index, strongest first. The order is the rule: it
 #: decides both what survives a tight budget and what the baseline compares.
 PINNED = "pinned"
@@ -149,18 +162,27 @@ def heading(area: str, count: int) -> str:
     return f"## {one_line(area)} ({_plural(count, 'entry', 'entries')})"
 
 
-def footer(omitted: int) -> str:
+def footer(omitted: int, named: int = 0) -> str:
     """The last line, which is written even when nothing was left out.
 
     Its absence would have to be read as "nothing omitted", and a list that
     quietly stops is the one failure this whole design is against.
+
+    Three states, not two, because there are now three things that can happen
+    to an entry. It gets a line, it gets its name under `also here`, or it gets
+    a number. Saying "every entry is listed above" when eleven of them are bare
+    names would be the same lie in a politer form: the session was told they
+    exist, not what they say, and only one of those is being listed.
     """
+    if not omitted and not named:
+        return "Every entry is described above."
+    reach = "Search the memory by name or topic to read them."
+    counted = f"{_plural(named, 'entry', 'entries')} above {'is' if named == 1 else 'are'} named only"
     if not omitted:
-        return "Every entry is listed above."
-    return (
-        f"{_plural(omitted, 'entry', 'entries')} not shown. "
-        "Search the memory by name or topic to reach them."
-    )
+        return f"{counted}. {reach}"
+    if not named:
+        return f"{_plural(omitted, 'entry', 'entries')} not shown at all. {reach}"
+    return f"{counted}, and {omitted} more not shown at all. {reach}"
 
 
 @dataclass(frozen=True)
@@ -189,6 +211,10 @@ class SessionIndex:
     notes: tuple[Note, ...] = ()
     #: How many journal lines of this project the block's budget cut.
     notes_cut: int = 0
+    #: Entries the budget could not describe but could still name. The middle
+    #: answer between a line and a number: a name is a search key and a count
+    #: is not, and a name costs about a fifth of a line.
+    named: tuple[Line, ...] = ()
     #: Chosen entries in cut order, safest first. Not the order they are shown.
     lines: tuple[Line, ...] = ()
     #: Every area in the vault and how many entries it holds, including the
@@ -196,6 +222,11 @@ class SessionIndex:
     counts: tuple[tuple[str, int], ...] = ()
     #: How many entries of the vault got no line.
     omitted: int = 0
+    #: Every name a rule chose, in cut order, whether or not the budget then
+    #: had room for it. Kept so that "the budget took this one" can be told
+    #: apart from "no rule wanted it", which are answered by different levers:
+    #: one by a bigger budget, the other never.
+    chosen: tuple[str, ...] = ()
     #: How many entries the budget cut, of those the rule had chosen. Separate
     #: from `omitted`, because "the rule did not pick it" and "there was no room
     #: for it" are different problems with different fixes.
@@ -218,13 +249,20 @@ class SessionIndex:
 
     @property
     def names(self) -> tuple[str, ...]:
-        """Every name in the payload, core first. What a case asks about."""
+        """Every entry the payload describes, core first. What a case asks about.
+
+        Deliberately not the bare names under `also here`. Those say an entry
+        exists and nothing about what it holds, and counting them here would
+        turn "the session was told what this entry says" into "the session
+        could have found out", which is the quiet slide this whole tier is
+        built to make visible rather than to make.
+        """
         return tuple(line.name for line in self.shown)
 
     @property
     def total(self) -> int:
-        """Every entry in the vault, shown or not."""
-        return len(self.shown) + self.omitted
+        """Every entry in the vault, described, named or neither."""
+        return len(self.shown) + len(self.named) + self.omitted
 
     def core_cost(self) -> int:
         """What the standing rules cost on their own."""
@@ -268,13 +306,18 @@ class SessionIndex:
             if self.notes_cut:
                 out.append(lately_footer(self.notes_cut))
             out.append("")
+        named: dict[str, list[str]] = {}
+        for line in self.named:
+            named.setdefault(line.area, []).append(line.name)
         for area, total in self.counts:
             out.append(heading(area, total))
             # Sorted by name inside an area: this is the part a person reads,
             # and cut order would look arbitrary to them.
             out.extend(line.render() for line in sorted(shown.get(area, ()), key=lambda l: l.name))
+            if area in named:
+                out.append(also_here(sorted(named[area])))
             out.append("")
-        out.append(footer(self.omitted))
+        out.append(footer(self.omitted, len(self.named)))
         if self.core_is_over_budget:
             out.append(over_core(len(self.core), self.core_cost(), self.core_tokens))
         return "\n".join(out)
@@ -340,6 +383,43 @@ def degraded(payload: SessionIndex) -> str:
         out.append("")
     out.append(DEGRADED)
     return "\n".join(out)
+
+
+#: Why one entry is not a line in the payload, first cause only. The order is
+#: the order the entry met them, so a reason always names the earliest gate it
+#: failed and never a later one it would also have failed.
+NOT_CHOSEN = "no rule chose it: not pinned, not in the active project, not touched this week"
+CUT_BY_BUDGET = "chosen, then cut: the budget ran out before this line"
+ALSO_NAMED = ", named"
+NOT_EVEN_NAMED = ", and no room left for the name either"
+
+
+def why_not(payload: SessionIndex, documents: Sequence[Document]) -> list[tuple[str, str]]:
+    """Every entry the payload does not describe, and the first reason why.
+
+    **A count is not a diagnosis.** "18 entries not shown" tells a person that
+    something is missing and nothing about which lever moves it, and the two
+    levers are different: an entry the rule never chose does not come back by
+    raising the budget, and an entry the budget cut does not come back by
+    pinning things. This separates them per entry rather than in total.
+
+    Reported, never rendered. The payload is what a session pays for, and this
+    is for whoever is asking why it looks the way it does.
+    """
+    described = set(payload.names)
+    named = {line.name for line in payload.named}
+    chosen = set(payload.chosen)
+    out: list[tuple[str, str]] = []
+    for document in sorted(documents, key=lambda d: (d.area, d.name)):
+        if document.name in described:
+            continue
+        # Two questions, not one. Whether a rule wanted it, and then whether
+        # there was room. Folding them into a single sentence per entry is what
+        # made the first version of this say "there was room for the name and
+        # not for the description" about entries no budget would have shown.
+        why = CUT_BY_BUDGET if document.name in chosen else NOT_CHOSEN
+        out.append((document.name, why + (ALSO_NAMED if document.name in named else NOT_EVEN_NAMED)))
+    return out
 
 
 def _plural(count: int, one: str, many: str) -> str:
@@ -451,18 +531,32 @@ def build(
     core_text = "\n".join([CORE_HEADING, *(l.render() for l in core)]) if core else ""
     left = target_tokens - estimate_tokens(core_text)
 
-    kept = _fit(rest, counts, len(documents), left, project)
+    kept, spare = _fit(rest, counts, len(documents), left, project)
+    # Whatever the lines did not spend buys bare names, and the entries the
+    # budget just cut are first in that queue: the rule had already said they
+    # were worth showing, so they are the last ones to lose their name too.
+    shown_names = {line.name for line in kept}
+    cut_first = [line for line in rest if line.name not in shown_names]
+    never_chosen = [
+        Line(name=d.name, area=d.area, summary=_summary(d), reason="", at=d.at)
+        for d in documents
+        if d.name not in shown_names and d.name not in {line.name for line in rest} and not d.pin
+    ]
+    never_chosen.sort(key=lambda line: (line.area, line.name))
+    named = _fit_names([*cut_first, *never_chosen], spare)
     # The journal lines arrive already picked for this project by the caller,
     # which is the only reader that knows where `log.md` lives. What is decided
     # here is how many of them the block's own budget holds.
     shown_notes, notes_cut = _fit_notes(list(notes), project_tokens)
     return SessionIndex(
         core=core,
+        chosen=tuple(line.name for line in chosen),
         notes=tuple(shown_notes),
         notes_cut=notes_cut,
         lines=tuple(kept),
+        named=tuple(named),
         counts=tuple(sorted(counts.items())),
-        omitted=len(documents) - len(core) - len(kept),
+        omitted=len(documents) - len(core) - len(kept) - len(named),
         cut=len(rest) - len(kept),
         project=project,
         target_tokens=target_tokens,
@@ -526,7 +620,7 @@ def _fit(
     # target. What is left here is the map.
     fixed += sum(len(heading(area, count)) + 1 for area, count in sorted(counts.items()))
     fixed += len(counts)  # the blank line after each area
-    longest_footer = max(len(footer(0)), len(footer(total)))
+    longest_footer = max(len(footer(0)), len(footer(total)), len(footer(total, total)))
     budget = target_tokens * CHARS_PER_TOKEN - fixed - longest_footer
 
     kept: list[Line] = []
@@ -536,5 +630,49 @@ def _fit(
         if used + cost > budget:
             break
         used += cost
+        kept.append(line)
+    return kept, budget - used
+
+
+#: What introduces the names an area holds that got no line of their own. Not a
+#: bullet: a reader must not mistake this for an entry called "also here".
+ALSO_HERE = "also here: "
+
+
+def also_here(names: Sequence[str]) -> str:
+    """The line that names what an area holds and could not describe."""
+    return ALSO_HERE + ", ".join(names)
+
+
+def _fit_names(candidates: Sequence[Line], budget: int) -> list[Line]:
+    """As many bare names as the leftover budget holds, in the order given.
+
+    **This is the middle answer, and the reason it exists.** A count is not a
+    search key. "18 entries not shown" cannot be acted on by a reader who does
+    not already know what is in there, while `dates-are-iso` can, without that
+    reader having to suspect it exists first. Measured against this project's
+    own entries, a full line costs about 39 tokens and a bare name about 8, so
+    the leftover of a budget buys roughly five times as many names as lines.
+
+    Each area pays for its own introduction, and only the areas that get a name
+    pay for one. Reserving all of them up front would be reserving for areas
+    that turn out to hold nothing, which in a vault with a folder per project
+    is most of them.
+    """
+    kept: list[Line] = []
+    used = 0
+    paid_for: set[str] = set()
+    for line in candidates:
+        cost = len(line.name)
+        if line.area not in paid_for:
+            cost += len(ALSO_HERE) + 1  # the introduction and the line break
+        else:
+            cost += 2  # ", "
+        if used + cost > budget:
+            # Not a break: a shorter name further down still fits, and stopping
+            # at the first long one would hide it for being in bad company.
+            continue
+        used += cost
+        paid_for.add(line.area)
         kept.append(line)
     return kept

@@ -31,14 +31,18 @@ Active project: atlas
 - 2026-08-14: Wrote down where releases are cut from, [atlas-release-checklist](project/atlas/atlas-release-checklist.md).
 
 ## design (3 entries)
+also here: dates-are-iso, errors-name-the-fix, no-centred-layouts
 
 ## hosts (2 entries)
 - build-server: Four cores, 4 GB of RAM, runs the nightly build
+also here: gateway
 
 ## infra (5 entries)
 - ci-memory-limit: The CI image caps at 4 GB, so more than -j4 gets the runner killed
+also here: backups-run-nightly, deploy-from-main, secrets-in-the-password-store, staging-mirrors-production
 
 ## persona (2 entries)
+also here: reviews-need-a-diff
 
 ## project/atlas (4 entries)
 - atlas: The example project this vault belongs to
@@ -48,7 +52,7 @@ Active project: atlas
 
 ## project/beacon (2 entries)
 
-11 entries not shown. Search the memory by name or topic to reach them.
+11 entries above are named only. Search the memory by name or topic to read them.
 ```
 
 `## Always` holds the standing rules, and they are the reason the rest of this
@@ -60,10 +64,47 @@ about a release checklist looks the same whether it arrived because the session
 is in that project or because somebody pinned it, and those are two different
 reasons to trust it.
 
-`persona` shows two entries and no lines: one of them is the rule above, which
-is listed where it belongs rather than twice. The empty headings are the point. Nothing in `design` was picked for this
-session, and a reader can still see that three rules exist there and go and ask
-for them.
+## Three things can happen to an entry
+
+It gets a line, it gets its name under `also here`, or it gets counted in the
+last line and nothing else.
+
+The middle one is where most of a vault ends up, and it exists because **a
+count is not a search key**. "Eleven entries not shown" cannot be acted on by a
+reader who does not already know what is in there. `no-centred-layouts` can,
+without that reader having to suspect it exists first. Measured against this
+project's own entries, a full line costs about 39 tokens and a bare name about
+8, so whatever the lines leave unspent buys roughly five times as many names.
+
+The order is the same order as everything else here: what the rule chose and
+the budget then cut is named first, because the rule had already said it was
+worth showing. What no rule wanted is named with what is left.
+
+`design` shows this at its clearest. Nothing in it was picked for this session,
+and the session is still told that three entries live there and what they are
+called. `persona` shows two entries and one bare name: the other is the rule
+above, listed where it belongs rather than twice.
+
+The last line accounts for all three, and it says which is which. "Every entry
+is listed above" with eleven bare names under it would be the quiet stop this
+tier exists against, in a politer wording.
+
+## Why an entry has no line
+
+```bash
+mabolo context --why-not
+```
+
+```
+  old-news  no rule chose it: not pinned, not in the active project, not touched this week, named
+  atlas-tone  chosen, then cut: the budget ran out before this line, named
+  beacon  no rule chose it: not pinned, not in the active project, not touched this week, and no room left for the name either
+```
+
+Two questions per entry, never folded into one: whether a rule wanted it, and
+then whether there was room. They are answered by different levers. Raising the
+budget brings back what it cut and will never bring back what no rule chose,
+and a reader who cannot tell the two apart turns the wrong dial.
 
 ## Lately: a pointer, never a copy
 
