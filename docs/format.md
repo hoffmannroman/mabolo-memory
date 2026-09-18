@@ -26,7 +26,7 @@ A filled in vault to read alongside this page is in [`examples/vault`](../exampl
 | `stale_after` | optional | An ISO-8601 timestamp with an offset, after which the entry wants a look |
 | `mabolo.area` | yes | Which folder the entry belongs to, and it has to match the folder it is in |
 | `mabolo.anchor` | optional | A path inside a project. When that path moves, the entry is worth checking |
-| `mabolo.pin` | optional | `true` keeps an entry in the short index a session starts with, ahead of the active project and of whatever changed this week, and it is the last thing a tight budget cuts |
+| `mabolo.pin` | optional | `true` makes the entry a standing rule: it goes into the core of every session, is never cut, and is paid for out of a budget of its own. Pin what has to hold before anybody knows they need it; a fact that can be looked up does not belong here |
 | `mabolo.aliases` | optional | Names an entry also answers to, for instance after a rename |
 
 ## Areas

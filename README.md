@@ -96,8 +96,10 @@ so the vault is readable by anything that speaks it, and everything specific to
 Mabolo lives in one namespaced block you can ignore.
 
 **A session gets a map, not a copy.** What arrives at the start of a session is
-every area that holds something, with a count, plus the entries you pinned, the
-project you are in, and whatever moved this week. The last line always says how many entries were left
+your standing rules, every area that holds something with a count, the project
+you are in, and whatever moved this week. The rules are kept apart from the rest
+and never trimmed: a fact can wait until you ask for it, a rule cannot, because
+nobody looks up a rule they have forgotten. The last line always says how many entries were left
 out, because a list that stops without saying so reads like a complete one. The
 selection is a rule you can read, not a model: it can be replayed at an old
 commit, and that is what makes a drop in recall traceable to the change that

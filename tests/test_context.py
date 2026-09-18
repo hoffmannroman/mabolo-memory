@@ -142,8 +142,9 @@ def test_a_pinned_entry_of_the_active_project_is_held_by_the_pin():
         project="atlas",
         as_of=NOW,
     )
-    assert index.lines[0].name == "pinned"
-    assert index.lines[0].reason == context.PINNED
+    assert [l.name for l in index.core] == ["pinned"]
+    assert index.core[0].reason == context.PINNED
+    assert index.names[0] == "pinned"
 
 
 def test_the_oldest_of_a_class_is_cut_first():
@@ -353,15 +354,17 @@ def test_a_control_character_is_made_visible_rather_than_printed():
 
 def test_two_distant_moments_a_microsecond_apart_still_order_by_time():
     """A float timestamp loses microseconds at distant dates, and then the name
-    quietly decides instead of the time."""
+    quietly decides instead of the time. Measured on the map, because the core
+    is ordered by name on purpose and would hide the difference."""
     late = dt.datetime(9999, 1, 1, 0, 0, 0, 2, tzinfo=dt.timezone.utc)
     early = dt.datetime(9999, 1, 1, 0, 0, 0, 1, tzinfo=dt.timezone.utc)
     # Named so that ordering by name alone would give the wrong answer.
     documents = [
-        Document("a-older", "t", "d", "infra", None, (), pin=True, at=early),
-        Document("z-newer", "t", "d", "infra", None, (), pin=True, at=late),
+        Document("a-older", "t", "d", "project/atlas", None, (), at=early),
+        Document("z-newer", "t", "d", "project/atlas", None, (), at=late),
     ]
-    assert context.build(documents, as_of=NOW).names == ("z-newer", "a-older")
+    index = context.build(documents, project="atlas", as_of=NOW)
+    assert tuple(l.name for l in index.lines) == ("z-newer", "a-older")
 
 
 # Which project a session is about
@@ -405,3 +408,102 @@ def test_the_opening_line_is_paid_for_out_of_the_budget():
     with_project = context.build(documents, project="atlas", as_of=NOW, target_tokens=90)
     assert with_project.cost() <= 90
     assert "Active project: atlas" in with_project.text()
+
+
+# The core: standing rules, which are never cut
+
+
+def test_a_pinned_entry_goes_into_the_core_and_under_its_own_heading():
+    """A reader has to be able to tell a rule that always holds from an entry
+    that happens to be relevant today, and the map cannot say that."""
+    index = context.build(
+        [doc("no-dashes", pin=True, description="No dashes in any text"),
+         doc("recent", days_ago=1)],
+        as_of=NOW,
+    )
+    lines = index.text().splitlines()
+    assert [l.name for l in index.core] == ["no-dashes"]
+    assert context.CORE_HEADING in lines
+    assert lines.index("- no-dashes: No dashes in any text") < lines.index("## infra (2 entries)")
+    assert "- recent" not in index.text().split("## infra")[0], "the core holds rules, not finds"
+
+
+def test_the_core_is_never_cut_however_small_the_budget():
+    """Everywhere else this tool refuses to trim a list quietly. The one list
+    where a silent trim does the most damage is this one: a rule that vanishes
+    is not missed, it is simply not followed."""
+    rules = [doc(f"rule-{i:02d}", pin=True, description="x" * 60) for i in range(20)]
+    index = context.build(rules, as_of=NOW, target_tokens=50)
+    assert len(index.core) == 20
+    assert index.cut == 0
+    assert index.omitted == 0
+
+
+def test_a_core_over_its_budget_says_so_in_the_payload():
+    rules = [doc(f"rule-{i:02d}", pin=True, description="x" * 60) for i in range(20)]
+    index = context.build(rules, as_of=NOW, core_tokens=100)
+    assert index.core_is_over_budget
+    assert index.text().rstrip().endswith("Unpin what is no longer a rule.")
+    assert "Nothing was dropped" in index.text()
+
+
+def test_a_core_inside_its_budget_says_nothing():
+    index = context.build([doc("one-rule", pin=True)], as_of=NOW, core_tokens=300)
+    assert not index.core_is_over_budget
+    assert "over its budget" not in index.text()
+
+
+def test_a_pinned_rule_costs_the_map_a_line_rather_than_another_rule():
+    """Pinning has a price, and the price is paid by the map, visibly."""
+    finds = [doc(f"e{i:02d}", days_ago=1, description="x" * 60) for i in range(20)]
+    without = context.build(finds, as_of=NOW, target_tokens=120)
+    with_rules = context.build(
+        [*finds, *(doc(f"rule-{i}", pin=True, description="x" * 60) for i in range(3))],
+        as_of=NOW,
+        target_tokens=120,
+    )
+    assert len(with_rules.core) == 3
+    assert len(with_rules.lines) < len(without.lines), "the rules took the room"
+
+
+def test_the_core_is_ordered_by_name_because_it_is_never_cut():
+    """Cut order says how close a line is to the edge. A rule is not near the
+    edge, so ordering it that way would say something untrue."""
+    index = context.build(
+        [doc("zulu", pin=True, days_ago=1), doc("alpha", pin=True, days_ago=400)], as_of=NOW
+    )
+    assert [l.name for l in index.core] == ["alpha", "zulu"]
+
+
+def test_a_rule_counts_as_shown_and_not_as_omitted():
+    index = context.build([doc("rule", pin=True), doc("old", days_ago=400)], as_of=NOW)
+    assert index.total == 2
+    assert index.omitted == 1
+    assert index.position("rule") == 1
+
+
+def test_the_core_heading_is_paid_for_out_of_the_target():
+    """It is fixed text like the area headings. Left unpaid, every session with
+    a rule in it would be over budget by the width of that heading."""
+    rules = [doc(f"rule-{i}", pin=True, description="x" * 40) for i in range(4)]
+    finds = [doc(f"e{i:02d}", days_ago=1, description="x" * 40) for i in range(12)]
+    index = context.build([*rules, *finds], as_of=NOW, target_tokens=200)
+    assert index.cost() <= 200
+
+
+def test_a_rule_appears_once_and_not_in_the_map_as_well():
+    """It is in the core, so the map must not list it again. Twice would pay
+    for the same line out of the budget two times and read as two rules."""
+    index = context.build(
+        [doc("no-dashes", area="infra", pin=True, days_ago=1)], project=None, as_of=NOW
+    )
+    assert index.text().count("- no-dashes:") == 1
+    assert [l.name for l in index.lines] == []
+    assert index.text().count("no-dashes") == 1
+
+
+def test_a_pinned_entry_of_the_active_project_appears_once_too():
+    index = context.build(
+        [doc("rule", area="project/atlas", pin=True, days_ago=1)], project="atlas", as_of=NOW
+    )
+    assert index.text().count("- rule:") == 1

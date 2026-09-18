@@ -22,6 +22,9 @@ mabolo context --no-project                     # no project at all
 ```
 Active project: atlas
 
+## Always
+- working-hours: Deep work after 20:00, reviews and replies before noon
+
 ## design (3 entries)
 
 ## hosts (2 entries)
@@ -31,7 +34,6 @@ Active project: atlas
 - ci-memory-limit: The CI image caps at 4 GB, so more than -j4 gets the runner killed
 
 ## persona (2 entries)
-- working-hours: Deep work after 20:00, reviews and replies before noon
 
 ## project/atlas (4 entries)
 - atlas: The example project this vault belongs to
@@ -44,31 +46,43 @@ Active project: atlas
 11 entries not shown. Search the memory by name or topic to reach them.
 ```
 
-The first line says which project the payload was built for. Without it a line
+`## Always` holds the standing rules, and they are the reason the rest of this
+page exists. The first line says which project the payload was built for. Without it a line
 about a release checklist looks the same whether it arrived because the session
 is in that project or because somebody pinned it, and those are two different
 reasons to trust it.
 
-The two empty headings are the point. Nothing in `design` was picked for this
+`persona` shows two entries and no lines: one of them is the rule above, which
+is listed where it belongs rather than twice. The empty headings are the point. Nothing in `design` was picked for this
 session, and a reader can still see that three rules exist there and go and ask
 for them.
+
+## Two kinds of entry, and only one of them is a rule
+
+A fact can wait until somebody asks for it: you notice that you need the port
+number, and you go and look. A rule cannot. Nobody looks up a rule they have
+forgotten, they simply do not follow it, and nothing about that looks like an
+error. So the payload keeps the two apart.
+
+**A pinned entry is a standing rule.** It goes into the core, under `## Always`,
+it is never cut, and it has a budget of its own. Everything else competes for
+what is left.
 
 ## What gets in
 
 An entry is offered when one of three things is true, and they are checked in
 this order:
 
-1. **It is pinned.** `mabolo.pin: true` in the entry.
+1. **It is pinned.** `mabolo.pin: true` in the entry. This one is the core.
 2. **It belongs to the active project.**
 3. **It was touched in the last seven days**, according to the entry itself: the
    later of `generated.at` and any `verified.at`. Both ends count: a timestamp
    in the future is not recent either, or one wrong clock would keep an entry at
    the front of every session for years.
 
-That order is also the order entries survive in. When the payload does not fit
-the budget the least safe line goes first, and inside one class the oldest goes
-before the newest. A pinned entry of the active project is held by the pin, so
-leaving a project never takes it away.
+That order is also the order entries survive in. When the map does not fit the
+budget the least safe line goes first, and inside one class the oldest goes
+before the newest. The core is not in that queue at all.
 
 ## Which project a session is about
 
@@ -122,7 +136,7 @@ newline would otherwise write its own heading and its own closing sentence into
 the middle of a payload that is injected into a prompt automatically. The words
 survive, the structure does not bend.
 
-## The budget
+## The budget, and the one it does not apply to
 
 The target is about 800 tokens, estimated, and it is a target rather than a
 limit: the hard ceiling belongs to whichever client receives the payload, and
@@ -132,6 +146,49 @@ quickest way to see what a smaller session would lose.
 An entry the budget cut is counted separately from one the rule never chose.
 They are different problems: the first is fixed by a larger budget, the second
 by a pin.
+
+**The core is never cut, so it has a target instead: about 300 tokens.** Written
+as one sentence each, that is roughly fifteen standing rules. Pin the sixteenth
+and nothing disappears; the payload says so at the end and `mabolo context`
+exits 1:
+
+```
+The core is over its budget: 18 rules, about 380 tokens, target 300.
+Nothing was dropped. Unpin what is no longer a rule.
+```
+
+That is deliberate. Trimming the core quietly would be the worst version of the
+failure this whole design is against: a rule that vanishes is not missed, it is
+simply not followed. So the tool refuses to make that decision and hands it
+back, with the number that makes it decidable.
+
+Pinning is therefore not free, and the price is visible: a rule takes its room
+out of the same target, so the map shows one line fewer.
+
+**Fifteen rules is the real ceiling on how many things can hold at all times.**
+A vault with fifty of them has a different problem, and no budget solves it: see
+[the limits](#the-limit-nobody-can-budget-their-way-out-of).
+
+## The limit nobody can budget their way out of
+
+Fifteen is not a technical number, it is the honest one. Measured against real
+rules written as one sentence: eleven cost 227 tokens, twenty five cost 493, and
+fifty cost 968, which is more than the whole payload is meant to be. Writing
+each rule as a sentence instead of an essay buys a factor of thirty. It does not
+buy an unlimited number of rules.
+
+So a vault that keeps growing rules has to do one of three things, and only the
+first exists today:
+
+1. **Say the rule in one line**, and leave the reasoning in the body where it is
+   read on demand. That is the format's job and it is built.
+2. **Give a rule a trigger instead of a permanent seat.** A rule about how dates
+   are written matters when a date is being written, not at every session start.
+   `applies_to` does this for design rules against file patterns; the general
+   case is not built.
+3. **Let a rule die.** Facts have `stale_after` and a file to watch. A rule has
+   neither, and a vault of fifty rules usually holds fifteen variations of the
+   same one and ten that stopped being true.
 
 ## It is measured
 

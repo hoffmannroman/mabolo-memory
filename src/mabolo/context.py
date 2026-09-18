@@ -45,6 +45,15 @@ from .schema import PROJECT_PREFIX, as_utc
 #: the smaller of the two is the only number that is right in both.
 DEFAULT_TARGET_TOKENS = 800
 
+#: What the core may cost. A pinned entry is a standing rule: it has to be there
+#: before anybody knows they need it, because nobody looks up a rule they have
+#: forgotten. So the core is never cut, and this number is the point at which
+#: the payload says so out loud instead of quietly dropping the oldest rule.
+#: Measured: a rule written as one sentence costs about 20 tokens, so fifteen
+#: fit. That is the real limit on how many standing rules a session can carry,
+#: and it is better said than discovered.
+DEFAULT_CORE_TOKENS = 300
+
 #: How long an entry counts as recent. Seven days is a working week: whatever
 #: was decided since the last one is what a session is most likely to be about.
 FRESH_DAYS = 7
@@ -81,6 +90,24 @@ def header(project: str | None) -> str:
     reasons to trust it.
     """
     return f"Active project: {one_line(project)}" if project else "No active project"
+
+
+#: The heading the standing rules sit under. They are not a part of the map:
+#: the map says what exists, these say what to do.
+CORE_HEADING = "## Always"
+
+
+def over_core(count: int, cost: int, target: int) -> str:
+    """The sentence a vault gets when it pins more than the core can hold.
+
+    A statement, not a cut. Everywhere else this tool refuses to trim a list
+    quietly, and the one list where a silent trim would do the most damage is
+    this one: a rule that vanishes is not missed, it is simply not followed.
+    """
+    return (
+        f"The core is over its budget: {_plural(count, 'rule', 'rules')}, about {cost} tokens, "
+        f"target {target}. Nothing was dropped. Unpin what is no longer a rule."
+    )
 
 
 def heading(area: str, count: int) -> str:
@@ -120,6 +147,8 @@ class Line:
 class SessionIndex:
     """The L1 payload: what was chosen, what it costs, and what was left out."""
 
+    #: The standing rules, always present, never cut, in name order.
+    core: tuple[Line, ...] = ()
     #: Chosen entries in cut order, safest first. Not the order they are shown.
     lines: tuple[Line, ...] = ()
     #: Every area in the vault and how many entries it holds, including the
@@ -133,30 +162,61 @@ class SessionIndex:
     cut: int = 0
     project: str | None = None
     target_tokens: int = DEFAULT_TARGET_TOKENS
+    core_tokens: int = DEFAULT_CORE_TOKENS
+
+    @property
+    def shown(self) -> tuple[Line, ...]:
+        """Every line the payload holds, core first.
+
+        Whoever asks what is in the payload asks this. Counting `lines` alone
+        answers a different question, and two of them were already being asked
+        by mistake: an explanation called the index empty while it held rules,
+        and a failing case reported a size that left them out.
+        """
+        return (*self.core, *self.lines)
 
     @property
     def names(self) -> tuple[str, ...]:
-        return tuple(line.name for line in self.lines)
+        """Every name in the payload, core first. What a case asks about."""
+        return tuple(line.name for line in self.shown)
 
     @property
     def total(self) -> int:
         """Every entry in the vault, shown or not."""
-        return len(self.lines) + self.omitted
+        return len(self.shown) + self.omitted
+
+    def core_cost(self) -> int:
+        """What the standing rules cost on their own."""
+        return estimate_tokens("\n".join([CORE_HEADING, *(l.render() for l in self.core)]))
+
+    @property
+    def core_is_over_budget(self) -> bool:
+        return bool(self.core) and self.core_cost() > self.core_tokens
 
     def position(self, name: str) -> int | None:
-        """Where a name sits in cut order, 1 being the safest, or None if it is
-        not in the index at all."""
-        for position, line in enumerate(self.lines, start=1):
+        """Where a name sits, 1 being the safest, or None if it is not there.
+
+        The core comes first and in its own order, because a standing rule is
+        never cut: its position says "safe", not "close to the edge".
+        """
+        for position, line in enumerate(self.shown, start=1):
             if line.name == name:
                 return position
         return None
 
     def text(self) -> str:
-        """The payload itself, grouped by area, with the omitted count last."""
+        """The payload: the standing rules, then the map, then what was left out."""
         shown: dict[str, list[Line]] = {}
         for line in self.lines:
             shown.setdefault(line.area, []).append(line)
         out: list[str] = [header(self.project), ""]
+        if self.core:
+            # Above the map and under their own heading. A reader has to be able
+            # to tell a rule that always holds from an entry that happens to be
+            # relevant today, and the map cannot say that.
+            out.append(CORE_HEADING)
+            out.extend(line.render() for line in self.core)
+            out.append("")
         for area, total in self.counts:
             out.append(heading(area, total))
             # Sorted by name inside an area: this is the part a person reads,
@@ -164,6 +224,8 @@ class SessionIndex:
             out.extend(line.render() for line in sorted(shown.get(area, ()), key=lambda l: l.name))
             out.append("")
         out.append(footer(self.omitted))
+        if self.core_is_over_budget:
+            out.append(over_core(len(self.core), self.core_cost(), self.core_tokens))
         return "\n".join(out)
 
     def cost(self) -> int:
@@ -213,6 +275,7 @@ def build(
     project: str | None = None,
     as_of: dt.datetime | dt.date | None = None,
     target_tokens: int = DEFAULT_TARGET_TOKENS,
+    core_tokens: int = DEFAULT_CORE_TOKENS,
 ) -> SessionIndex:
     """The session index for a vault, as a pure function of its arguments.
 
@@ -243,14 +306,25 @@ def build(
         )
     chosen.sort(key=_cut_key)
 
-    kept = _fit(chosen, counts, len(documents), target_tokens, project)
+    # The standing rules come out first and are never offered to the budget.
+    # Whatever is left of the target is what the map may spend, so pinning a
+    # rule costs the map a line, visibly, rather than costing another rule its
+    # place without saying so.
+    core = tuple(sorted((l for l in chosen if l.reason == PINNED), key=lambda l: l.name))
+    rest = [l for l in chosen if l.reason != PINNED]
+    core_text = "\n".join([CORE_HEADING, *(l.render() for l in core)]) if core else ""
+    left = target_tokens - estimate_tokens(core_text)
+
+    kept = _fit(rest, counts, len(documents), left, project)
     return SessionIndex(
+        core=core,
         lines=tuple(kept),
         counts=tuple(sorted(counts.items())),
-        omitted=len(documents) - len(kept),
-        cut=len(chosen) - len(kept),
+        omitted=len(documents) - len(core) - len(kept),
+        cut=len(rest) - len(kept),
         project=project,
         target_tokens=target_tokens,
+        core_tokens=core_tokens,
     )
 
 
@@ -305,6 +379,8 @@ def _fit(
     true statement about a budget that small.
     """
     fixed = len(header(project)) + 2  # the line, its newline, and the blank one
+    # The core is already paid for by the caller, which subtracted it from the
+    # target. What is left here is the map.
     fixed += sum(len(heading(area, count)) + 1 for area, count in sorted(counts.items()))
     fixed += len(counts)  # the blank line after each area
     longest_footer = max(len(footer(0)), len(footer(total)))

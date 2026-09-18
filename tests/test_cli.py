@@ -305,7 +305,17 @@ def test_context_refuses_a_date_it_cannot_read(vault, capsys):
 
 
 def test_context_says_when_the_budget_cut_something(vault, capsys):
+    """With an entry the rule picked and the budget took away again. A pinned
+    one would not do: the core is never cut."""
     context_vault(vault)
+    (vault.root / "infra" / "written-today.md").write_text(
+        entry_text(
+            title="Today",
+            description="Touched this week, so the rule picks it",
+            generated={"by": "mabolo/0.1.0", "at": "2026-09-17T10:00:00+03:00"},
+        ),
+        encoding="utf-8",
+    )
     assert main(["context", str(vault.root), "--as-of", "2026-09-18", "--budget", "1"]) == 0
     assert "1 chosen entry did not fit in the budget" in capsys.readouterr().out
 
@@ -449,3 +459,28 @@ def test_a_folder_in_no_repository_at_all_is_its_own_answer(tmp_path):
     lonely = tmp_path / "nowhere"
     lonely.mkdir()
     assert repo_root(lonely) == lonely
+
+
+def test_context_reports_a_core_over_its_budget_as_a_finding(vault, capsys):
+    """Nothing was dropped, so it is not a failure. But somebody has to decide
+    which rule stops being one, and nobody decides what nobody is told."""
+    context_vault(vault)
+    assert main(["context", str(vault.root), "--as-of", "2026-09-18", "--core-budget", "5"]) == 1
+    out = capsys.readouterr().out
+    assert "The core is over its budget" in out
+    assert "Nothing was dropped" in out
+    assert "1 standing rule pinned, about" in out
+
+
+def test_context_is_clean_when_the_core_fits(vault, capsys):
+    context_vault(vault)
+    assert main(["context", str(vault.root), "--as-of", "2026-09-18"]) == 0
+    out = capsys.readouterr().out
+    assert "over its budget" not in out
+    assert "of the 300 the core is meant to cost" in out
+
+
+def test_context_refuses_a_core_budget_that_is_not_one(vault, capsys):
+    context_vault(vault)
+    assert main(["context", str(vault.root), "--core-budget", "0"]) == 2
+    assert "at least 1" in capsys.readouterr().err

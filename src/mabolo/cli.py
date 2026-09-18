@@ -221,6 +221,8 @@ def _project_for(
 def cmd_context(args: argparse.Namespace) -> int:
     """Print the session index: what a session would be handed at its start."""
     vault = _vault_from(args)
+    if args.core_budget < 1:
+        raise MaboloError("--core-budget is a whole number of tokens, at least 1")
     if args.budget < 1:
         # The case format asks for at least one token, and a budget of zero or
         # less prints "budget -1" above an empty payload, which is arithmetic
@@ -244,7 +246,11 @@ def cmd_context(args: argparse.Namespace) -> int:
     documents = index_module.documents_of(vault.entries())
     project, source = _project_for(args, documents, repo_root(Path.cwd()).name)
     payload = context.build(
-        documents, project=project, as_of=as_of, target_tokens=args.budget
+        documents,
+        project=project,
+        as_of=as_of,
+        target_tokens=args.budget,
+        core_tokens=args.core_budget,
     )
     print(payload.text())
     print()
@@ -256,7 +262,7 @@ def cmd_context(args: argparse.Namespace) -> int:
     if payload.project and not any(a == f"{PROJECT_PREFIX}{payload.project}" for a, _ in payload.counts):
         print(f"there is no project/{payload.project} in this vault, so nothing was added for it")
     print(
-        f"{len(payload.lines)} of {payload.total} entries shown, "
+        f"{len(payload.shown)} of {payload.total} entries shown, "
         f"about {payload.cost()} tokens, estimated, budget {payload.target_tokens}"
     )
     if payload.cut:
@@ -264,6 +270,17 @@ def cmd_context(args: argparse.Namespace) -> int:
         # these and the budget took them away again, which is the one thing a
         # person may want to fix by raising the budget.
         print(f"{payload.cut} chosen {'entry' if payload.cut == 1 else 'entries'} did not fit in the budget")
+    if payload.core:
+        print(
+            f"{len(payload.core)} standing "
+            f"{'rule' if len(payload.core) == 1 else 'rules'} pinned, about "
+            f"{payload.core_cost()} tokens of the {payload.core_tokens} the core is meant to cost"
+        )
+    if payload.core_is_over_budget:
+        # A finding, not a failure: nothing was dropped, and the vault still
+        # works. But a person has to decide which rule stops being one, and
+        # nobody decides what nobody is told.
+        return EXIT_FINDINGS
     return EXIT_OK
 
 
@@ -385,9 +402,9 @@ def _explain_hint(index: Index, result: evaluate.Result) -> None:
         return
     expected = {n for n, _ in (evaluate.resolve_expected(index, w) for w in case.in_payload)}
     unwanted = {n for n, _ in (evaluate.resolve_expected(index, w) for w in case.not_in_payload)}
-    if not payload.lines:
+    if not payload.shown:
         print("  result  the session index is empty")
-    for position, line in enumerate(payload.lines, start=1):
+    for position, line in enumerate(payload.shown, start=1):
         mark = " <-- expected" if line.name in expected else ""
         mark = " <-- should not be here" if line.name in unwanted else mark
         print(f"  {position}.      {line.name}  ({line.area}, {line.reason}){mark}")
@@ -452,6 +469,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=context.DEFAULT_TARGET_TOKENS,
         help=f"what the payload should cost, in tokens, default {context.DEFAULT_TARGET_TOKENS}",
+    )
+    shown.add_argument(
+        "--core-budget",
+        type=int,
+        default=context.DEFAULT_CORE_TOKENS,
+        help=f"what the standing rules may cost, default {context.DEFAULT_CORE_TOKENS}",
     )
     shown.set_defaults(func=cmd_context)
 

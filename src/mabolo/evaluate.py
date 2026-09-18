@@ -543,7 +543,7 @@ def run_hint_case(index: Index, case: Case) -> Result:
         if position is None:
             reasons.append(
                 f"{wanted} is not in the session index, which holds "
-                f"{len(payload.lines)} of {len(index)} entries"
+                f"{len(payload.shown)} of {len(index)} entries"
             )
             continue
         positions.append(position)
