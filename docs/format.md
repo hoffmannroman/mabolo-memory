@@ -16,7 +16,7 @@ A filled in vault to read alongside this page is in [`examples/vault`](../exampl
 | `type` | yes | The only field the format requires. Mabolo uses `user`, `feedback`, `project`, `reference`; another value is allowed and only warned about |
 | `title` | recommended | One line, what the entry is called in a list |
 | `description` | yes, here | One line, and the line an index and a search are built from. Mabolo treats a missing one as an error even though the format allows it |
-| `generated` | optional | `by` and `at`: who produced the entry and when. `by` is `producer/version`, `human:<id>` or `process:<id>` |
+| `generated` | optional | `by` and `at`: who produced the entry and when. `by` is `producer/version`, `human:<id>` or `process:<id>`. The later of this `at` and any `verified.at` is what counts as when the entry was last touched |
 | `verified` | optional | A list of `by` and `at`. A single mapping is read as a list of one and written back as a list. Mabolo only ever writes `human:<id>` here: a person is what verification means |
 | `sources` | optional | Where a claim came from. `resource` is required, `id` is what a footnote in the body cites |
 | `resource` | optional | What this entry is about, when it is about one thing: a path, a URL, an identifier |
@@ -26,7 +26,7 @@ A filled in vault to read alongside this page is in [`examples/vault`](../exampl
 | `stale_after` | optional | An ISO-8601 timestamp with an offset, after which the entry wants a look |
 | `mabolo.area` | yes | Which folder the entry belongs to, and it has to match the folder it is in |
 | `mabolo.anchor` | optional | A path inside a project. When that path moves, the entry is worth checking |
-| `mabolo.pin` | optional | `true` keeps an entry in the short index a session starts with |
+| `mabolo.pin` | optional | `true` keeps an entry in the short index a session starts with, ahead of the active project and of whatever changed this week, and it is the last thing a tight budget cuts |
 | `mabolo.aliases` | optional | Names an entry also answers to, for instance after a rename |
 
 ## Areas
@@ -104,6 +104,15 @@ One folder in a vault is not made of entries. `.mabolo/` holds what is derived
 and disposable and is ignored by Git, with one exception: `.mabolo/eval/` holds
 the questions the memory is measured with, and those are versioned alongside the
 entries they query. See [measuring the memory](eval.md).
+
+## What makes an entry recent
+
+The session index offers what changed in the last seven days, and it reads that
+off the entry itself: the later of `generated.at` and any `verified.at`. Not the
+file's modification time, which is not part of a commit and would differ in a
+fresh clone. A timestamp without an offset is read as UTC, so the same commit
+sorts the same way in every time zone. An entry that gives no time at all is
+never recent, though a pin or an active project still brings it in.
 
 ## Links
 

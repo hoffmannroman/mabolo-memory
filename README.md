@@ -95,6 +95,14 @@ nothing.
 so the vault is readable by anything that speaks it, and everything specific to
 Mabolo lives in one namespaced block you can ignore.
 
+**A session gets a map, not a copy.** What arrives at the start of a session is
+every area with a count, the entries you pinned, the project you are in, and
+whatever moved this week. The last line always says how many entries were left
+out, because a list that stops without saying so reads like a complete one. The
+selection is a rule you can read, not a model: it can be replayed at an old
+commit, and that is what makes a drop in recall traceable to the change that
+caused it.
+
 **One commit per change.** Git is the history, so `git revert` is the way back,
 and `git log` tells you when a belief entered the memory.
 
@@ -130,15 +138,20 @@ This is early, and the README says only what exists:
   entries came back, in which order, whether the memory stayed quiet when it
   should, and what a preview would cost. It compares every run against a saved
   baseline and fails when an answer slips down the list, before it disappears.
+* `mabolo context` prints what a session would start with: every area and how
+  many entries it holds, the few entries this session is likely to need, and a
+  last line saying how many were left out. The eval measures that payload too,
+  so an entry that stops being offered is a failing case rather than a silence.
+  See [what a session starts with](docs/context.md).
 * The entry schema and its validator, with the example vault as the reference.
 * A Git remote, if you want one: `init` sets it, and the vault is an ordinary
   repository you can pull and push yourself.
 
-The MCP server and the context an agent actually receives are being built, the
-latter against a budget the memory has to stay inside: a session should pay for
-a short index, not for everything you ever wrote down. The measurement came
-first on purpose, because it is the only thing that can show that a short index
-replaced the long text instead of quietly losing half of it.
+The MCP server and the hook that hands the payload to an agent are still being
+built. The budget it has to stay inside is already the point: a session should
+pay for a short index, not for everything you ever wrote down. The measurement
+came first on purpose, because it is the only thing that can show that a short
+index replaced the long text instead of quietly losing half of it.
 
 ## Try it
 
@@ -148,6 +161,9 @@ cd mabolo-memory
 uv sync
 uv run mabolo validate examples/vault
 uv run mabolo eval examples/vault --explain
+
+# What a session would be handed, for a vault you are working in on that day.
+uv run mabolo context examples/vault --project atlas --as-of 2026-09-18
 
 # A throwaway vault and a throwaway configuration to go with it. Without
 # --config, `init` writes the real one in your config directory.

@@ -1,0 +1,10 @@
+id: session-index-atlas
+note: the pinned rule, the active project and what was touched this week, and nothing else
+tier: hint
+state:
+  project: atlas
+  as_of: 2026-09-18
+expect:
+  in_payload: [working-hours, atlas-release-checklist, ci-memory-limit]
+  not_in_payload: [beacon-runs-on-a-schedule, dates-are-iso]
+  budget_tokens: 800

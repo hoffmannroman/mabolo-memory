@@ -239,3 +239,90 @@ def test_init_run_twice_does_not_restate_the_language_of_an_existing_vault(tmp_p
                      encoding="utf-8")
     main(["--config", config, "init", "--yes", "--no-git"])
     assert Vault(tmp_path / "v").declared_language() == "de"
+
+
+# `mabolo context`: what a session would start with
+
+
+def context_vault(vault):
+    (vault.root / "persona" / "working-hours.md").write_text(
+        entry_text(
+            area="persona",
+            title="Works late",
+            description="Deep work after 20:00",
+            mabolo={"pin": True},
+            generated={"by": "mabolo/0.1.0", "at": "2026-01-01T10:00:00+03:00"},
+        ),
+        encoding="utf-8",
+    )
+    (vault.root / "infra" / "old-news.md").write_text(
+        entry_text(
+            title="Old news",
+            description="Nothing has touched this in a year",
+            generated={"by": "mabolo/0.1.0", "at": "2026-01-01T10:00:00+03:00"},
+        ),
+        encoding="utf-8",
+    )
+    return vault
+
+
+def test_context_prints_the_payload_and_what_it_costs(vault, capsys):
+    context_vault(vault)
+    code = main(["context", str(vault.root), "--as-of", "2026-09-18"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "- working-hours: Deep work after 20:00" in out
+    assert "old-news" not in out, "a year old, not pinned, no project"
+    assert "1 entry not shown" in out
+    assert "1 of 2 entries shown" in out
+    assert "budget 800" in out
+
+
+def test_context_can_be_told_not_to_read_the_clock(vault, capsys):
+    context_vault(vault)
+    assert main(["context", str(vault.root), "--no-clock"]) == 0
+    out = capsys.readouterr().out
+    assert "nothing counts as recent" in out
+    assert "- working-hours" in out, "a pin does not depend on a moment"
+
+
+def test_context_refuses_a_date_it_cannot_read(vault, capsys):
+    context_vault(vault)
+    assert main(["context", str(vault.root), "--as-of", "last tuesday"]) == 2
+    assert "is not a date" in capsys.readouterr().err
+
+
+def test_context_says_when_the_budget_cut_something(vault, capsys):
+    context_vault(vault)
+    assert main(["context", str(vault.root), "--as-of", "2026-09-18", "--budget", "1"]) == 0
+    assert "1 chosen entry did not fit in the budget" in capsys.readouterr().out
+
+
+def test_context_narrows_to_a_project(vault, capsys):
+    folder = vault.area_dir("project/atlas")
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "atlas-tone.md").write_text(
+        entry_text(area="project/atlas", title="Tone", description="Flat and factual"),
+        encoding="utf-8",
+    )
+    context_vault(vault)
+    assert main(["context", str(vault.root), "--project", "atlas", "--as-of", "2026-09-18"]) == 0
+    out = capsys.readouterr().out
+    assert "- atlas-tone: Flat and factual" in out
+    assert "project atlas," in out
+
+
+def test_eval_explains_a_hint_case_with_the_payload_it_measured(vault, capsys):
+    context_vault(vault)
+    (vault.eval_dir).mkdir(parents=True, exist_ok=True)
+    (vault.eval_dir / "c.yaml").write_text(
+        "id: c\ntier: hint\nstate:\n  as_of: 2026-09-18\n"
+        "expect:\n  in_payload: [working-hours]\n  not_in_payload: [old-news]\n",
+        encoding="utf-8",
+    )
+    assert main(["eval", str(vault.root), "--no-baseline", "--explain"]) == 0
+    out = capsys.readouterr().out
+    assert "hint     1 case, 1 pass, 0 fail" in out
+    assert "state   session start, no active project, as of 2026-09-18" in out
+    assert "1.      working-hours  (persona, pinned) <-- expected" in out
+    assert "omitted 1 of 2 entries, 0 cut by the budget" in out

@@ -60,6 +60,18 @@
       "passed": true,
       "rank": 1
     },
+    "session-index-atlas": {
+      "passed": true,
+      "rank": 6
+    },
+    "session-index-goes-quiet": {
+      "passed": true,
+      "rank": 1
+    },
+    "session-index-without-a-project": {
+      "passed": true,
+      "rank": 3
+    },
     "smalltalk": {
       "passed": true,
       "rank": null

@@ -14,6 +14,23 @@ mabolo eval --case deploy-source --explain
 mabolo eval --save-baseline      # write this run as the line to hold
 ```
 
+## Two things get measured, and they are not the same question
+
+A search is one link in the chain, and not the first one. Before a model can
+search for an entry it has to have a reason to go looking, and that reason is
+the session index: the short payload a session starts with. An entry that is no
+longer offered there is still findable by name, so every search case keeps
+passing while the memory gets quieter. That is the failure this tool is named
+after, so it has cases of its own.
+
+* `tier: index` is a search. A question goes in, entries come back, and the case
+  says which ones and how far down.
+* `tier: hint` is the session index. There is no question at all: the trigger is
+  the session starting, so the case describes the state it started in and says
+  what has to be in the payload, what has to stay out of it, and what it may
+  cost. What that payload is and how it is chosen:
+  [what a session starts with](context.md).
+
 ## What a case looks like
 
 One YAML file per case, in `.mabolo/eval/` inside the vault. They are versioned
@@ -28,6 +45,36 @@ expect:
   must_cite: true                 # the answer has to point at the entry
 tier: index
 ```
+
+A hint case has no `query`. The session start is its trigger, so it carries the
+state that start happened in:
+
+```yaml
+id: session-index-atlas
+tier: hint
+state:
+  project: atlas
+  as_of: 2026-09-18
+expect:
+  in_payload: [working-hours, atlas-release-checklist, ci-memory-limit]
+  not_in_payload: [beacon-runs-on-a-schedule, dates-are-iso]
+  budget_tokens: 800
+```
+
+`as_of` is required and there is no default. The selection rule counts seven
+days back from the moment the session starts, so a case that let the harness
+read the clock would measure a different vault every week and report the drift
+as a regression. A fixed moment is also what makes the case replayable at an old
+commit.
+
+`budget_tokens` is a statement about the result, not the budget the payload is
+built with. The payload is always built to the shipped target, or a case would
+only ever confirm itself.
+
+The position a hint case records is the **cut order**: 1 is the entry furthest
+from being dropped, and the number grows towards the line where the budget
+stops. So a rank that grows is an entry drifting towards falling out of the
+session index, which is the warning worth having before it does.
 
 A negative case names nothing and asserts silence. It is worth as much as the
 others: a search that always finds something is not a search, it is a slot
@@ -50,8 +97,20 @@ tier: index
 | `expect.rank_within` | How far down the list the entry may appear. Default 5 |
 | `expect.must_cite` | The answer has to cite the entry. Needs a model in the loop |
 | `expect.silence` | Nothing at all is the correct answer |
-| `tier` | `index`, `recall` or `design` |
+| `tier` | `index`, `hint`, `recall` or `design` |
 | `note` | For a reader. Ignored by the run |
+
+A hint case uses a different half of the format, and the two are kept apart: a
+`query` on a hint case and a `state` on a search case are both refused rather
+than ignored.
+
+| Key | What it means |
+|---|---|
+| `state.as_of` | The moment the session starts at. Required, never the clock |
+| `state.project` | The active project, or absent when there is none |
+| `expect.in_payload` | Entries that have to be in the session index, by name or alias |
+| `expect.not_in_payload` | Entries that have to stay out of it |
+| `expect.budget_tokens` | What the whole payload may cost, estimated |
 
 An unknown key is an error rather than something ignored. A case is a
 measurement instrument, and an instrument that silently drops a setting reports
@@ -77,9 +136,13 @@ says so for every case it cannot decide, and never counts one as a pass:
 
 ```
 index    19 cases, 19 pass, 0 fail
+hint     3 cases, 3 pass, 0 fail
 recall   1 case not measured yet, quiet recall needs the session hook, which is not built yet
 design   1 case not measured yet, applies_to as a load trigger is not built yet
 ```
+
+Each tier is counted on its own and never added up with another. They measure
+different payloads, and one number over both would hide which of them moved.
 
 That is the same rule the rest of the tool follows. Reporting a number for the
 easy half and nothing for the rest is how a measurement becomes reassurance.
@@ -133,7 +196,9 @@ means rewriting history:
    rather than by path.
 2. **Ranking is a pure function** of the files at a commit and the query.
    Nothing in it looks at usage counts, at the clock, or at what was clicked
-   yesterday.
+   yesterday. The session index is the same kind of function, with the moment
+   passed in rather than read: `as_of` is an argument everywhere, including in
+   `mabolo context`.
 3. **The index rebuilds deterministically** from any commit, down to the order
    of two entries that score the same.
 

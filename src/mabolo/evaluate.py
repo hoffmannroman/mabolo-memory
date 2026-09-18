@@ -27,6 +27,7 @@ Four rules hold this together, and each one was a decision:
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,9 +35,10 @@ from typing import Any, Iterable
 
 import yaml
 
-from . import frontmatter
+from . import context, frontmatter
 from .errors import MaboloError
 from .index import DEFAULT_LIMIT, Hit, Index
+from .schema import parse_time
 
 #: The file the gate compares against, beside the cases and versioned with them.
 BASELINE_FILE = "baseline.json"
@@ -55,10 +57,17 @@ DEFERRED = {
     "recall": "quiet recall needs the session hook, which is not built yet",
     "design": "applies_to as a load trigger is not built yet",
 }
-#: What a case can be about. Only the first is measurable without a model, and
-#: the rest are exactly the keys of DEFERRED, so a new tier cannot be accepted
-#: while the sentence explaining why it is deferred is still missing.
-TIERS = ("index", *DEFERRED)
+#: The tiers this harness can decide on its own, without a model in the loop.
+#: `index` is a search: a question goes in and entries come back. `hint` is the
+#: line above it in the chain, and it is not a search at all: it asks whether an
+#: entry is in the payload a session starts with. That is where a memory goes
+#: quiet without failing anything, because the curation drops the oldest line
+#: first and nobody is told.
+MEASURED_TIERS = ("index", "hint")
+#: What a case can be about. Everything beyond the measured ones is exactly the
+#: keys of DEFERRED, so a new tier cannot be accepted while the sentence
+#: explaining why it is deferred is still missing.
+TIERS = (*MEASURED_TIERS, *DEFERRED)
 
 DEFERRED_CITE = "must_cite needs a model in the loop, which the harness does not run"
 
@@ -67,21 +76,48 @@ DEFAULT_RANK_WITHIN = DEFAULT_LIMIT
 
 @dataclass(frozen=True)
 class Case:
-    """One question, and what the memory is expected to do with it."""
+    """One trigger, and what the memory is expected to do with it.
+
+    Two shapes share this class, and which fields mean anything depends on
+    `tier`. A search case has a `query` and expects entries back. A `hint` case
+    has no query at all: the session start is its trigger, so it carries the
+    state that start happened in, and expects names to be in the payload or out
+    of it. `parse_case` refuses the fields of the other shape rather than
+    ignoring them, so a case can never quietly measure something else.
+    """
 
     id: str
     query: str
     path: Path
+    tier: str = "index"
+    # A search case.
     entries: tuple[str, ...] = ()
     rank_within: int = DEFAULT_RANK_WITHIN
     must_cite: bool = False
     silence: bool = False
-    tier: str = "index"
+    # A hint case: the session state it asks about, and what it expects to see.
+    project: str | None = None
+    #: The moment the session starts at. Required for a hint case and never
+    #: taken from the clock: "touched in the last seven days" is part of the
+    #: selection rule, so a case without a fixed moment would pass this week and
+    #: fail the next without anything having changed.
+    as_of: dt.datetime | None = None
+    in_payload: tuple[str, ...] = ()
+    not_in_payload: tuple[str, ...] = ()
+    budget_tokens: int | None = None
 
     @property
     def measurable(self) -> bool:
-        """True when the retrieval harness alone can decide this case."""
-        return self.tier == "index"
+        """True when the harness alone can decide this case, with no model."""
+        return self.tier in MEASURED_TIERS
+
+    @property
+    def trigger(self) -> str:
+        """What set this case off, in one line, for a report to print."""
+        if self.tier != "hint":
+            return self.query
+        where = f"project {self.project}" if self.project else "no active project"
+        return f"session start, {where}, as of {self.as_of.date().isoformat()}"
 
 
 @dataclass(frozen=True)
@@ -104,6 +140,10 @@ class Result:
     #: The question as the search parsed it, kept so that an explanation shows
     #: what the search used rather than what a second code path reconstructs.
     query: Any = None
+    #: The session index a hint case was judged against, for the same reason:
+    #: an explanation shows the payload that was measured, not a second build
+    #: of it that could differ.
+    payload: context.SessionIndex | None = None
 
 
 def _as_bool(value: Any, field_name: str, where: Path) -> bool:
@@ -114,14 +154,33 @@ def _as_bool(value: Any, field_name: str, where: Path) -> bool:
     raise MaboloError(f"{where}: {field_name} is yes or no, not {value!r}")
 
 
-def _as_names(value: Any, where: Path) -> tuple[str, ...]:
+def _as_names(value: Any, where: Path, field_name: str = "expect.entries") -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-        raise MaboloError(f"{where}: expect.entries is a list of entry names")
+        raise MaboloError(f"{where}: {field_name} is a list of entry names")
     return tuple(v.strip() for v in value if v.strip())
+
+
+def _as_count(value: Any, field_name: str, where: Path) -> int:
+    """A whole positive number, and not a bool dressed up as one."""
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise MaboloError(f"{where}: {field_name} is a whole number, at least 1")
+    return value
+
+
+def _reject(data: dict[str, Any], keys: Iterable[str], path: Path, why: str) -> None:
+    """Refuse the fields belonging to the other shape of case.
+
+    Ignoring them would be the quiet failure this harness exists against: a case
+    that carries `query` under `tier: hint` looks like it measures a question
+    and measures a session start.
+    """
+    present = sorted(k for k in keys if k in data)
+    if present:
+        raise MaboloError(f"{path}: {', '.join(present)} {why}")
 
 
 def parse_case(data: Any, path: Path) -> Case:
@@ -132,17 +191,14 @@ def parse_case(data: Any, path: Path) -> Case:
     means something else than the person writing the case intended.
     """
     if not isinstance(data, dict):
-        raise MaboloError(f"{path}: a case is one mapping, with id, query and expect")
-    unknown = sorted(set(data) - {"id", "query", "expect", "tier", "note"})
+        raise MaboloError(f"{path}: a case is one mapping, with id, a trigger and expect")
+    unknown = sorted(set(data) - {"id", "query", "expect", "tier", "note", "state"})
     if unknown:
         raise MaboloError(f"{path}: unknown key(s) {', '.join(unknown)} in this case")
 
     case_id = str(data.get("id") or "").strip()
     if not case_id:
         raise MaboloError(f"{path}: the case needs an id")
-    query = data.get("query")
-    if not isinstance(query, str) or not query.strip():
-        raise MaboloError(f"{path}: the case needs a query")
 
     tier = str(data.get("tier") or "index").strip()
     if tier not in TIERS:
@@ -153,6 +209,19 @@ def parse_case(data: Any, path: Path) -> Case:
         expect = {}
     if not isinstance(expect, dict):
         raise MaboloError(f"{path}: expect is a mapping")
+
+    if tier == "hint":
+        return _parse_hint_case(data, expect, case_id, path)
+
+    _reject(
+        data,
+        ("state",),
+        path,
+        "belongs to a hint case; this one is triggered by its query",
+    )
+    query = data.get("query")
+    if not isinstance(query, str) or not query.strip():
+        raise MaboloError(f"{path}: the case needs a query")
     unknown = sorted(set(expect) - {"entries", "rank_within", "must_cite", "silence"})
     if unknown:
         raise MaboloError(f"{path}: unknown key(s) {', '.join(unknown)} under expect")
@@ -179,6 +248,75 @@ def parse_case(data: Any, path: Path) -> Case:
         must_cite=_as_bool(expect.get("must_cite"), "expect.must_cite", path),
         silence=silence,
         tier=tier,
+    )
+
+
+def _parse_hint_case(data: dict[str, Any], expect: Any, case_id: str, path: Path) -> Case:
+    """A case about the session index, which has a state instead of a question.
+
+    Every field is required to be explicit, `as_of` most of all. The selection
+    rule counts seven days back from the moment the session starts, so a case
+    that let the harness read the clock would measure a different vault every
+    week and report the difference as a regression in the search.
+    """
+    _reject(
+        data,
+        ("query",),
+        path,
+        "does not belong on a hint case: the session start is the trigger, "
+        "and the state it happens in goes under state:",
+    )
+    state = data.get("state")
+    if not isinstance(state, dict):
+        raise MaboloError(
+            f"{path}: a hint case needs state: with as_of, and project when one is active"
+        )
+    unknown = sorted(set(state) - {"project", "as_of"})
+    if unknown:
+        raise MaboloError(f"{path}: unknown key(s) {', '.join(unknown)} under state")
+
+    project = state.get("project")
+    if project is not None and (not isinstance(project, str) or not project.strip()):
+        raise MaboloError(f"{path}: state.project is the name of a project, or absent")
+    as_of = parse_time(state.get("as_of"))
+    if as_of is None:
+        raise MaboloError(
+            f"{path}: state.as_of is the date the session starts at, such as 2026-09-18. "
+            "It is required, because the index counts seven days back from it and a case "
+            "without it would measure a different vault every week."
+        )
+
+    unknown = sorted(set(expect) - {"in_payload", "not_in_payload", "budget_tokens"})
+    if unknown:
+        raise MaboloError(
+            f"{path}: unknown key(s) {', '.join(unknown)} under expect for a hint case. "
+            "It expects in_payload, not_in_payload and budget_tokens."
+        )
+    present = _as_names(expect.get("in_payload"), path, "expect.in_payload")
+    absent = _as_names(expect.get("not_in_payload"), path, "expect.not_in_payload")
+    budget = expect.get("budget_tokens")
+    if budget is not None:
+        budget = _as_count(budget, "expect.budget_tokens", path)
+    if not present and not absent and budget is None:
+        raise MaboloError(
+            f"{path}: this case expects nothing. Name what has to be in the session index, "
+            "what has to stay out of it, or what it may cost."
+        )
+    both = sorted(set(present) & set(absent))
+    if both:
+        raise MaboloError(
+            f"{path}: {', '.join(both)} is expected both in the session index and out of it"
+        )
+    return Case(
+        id=case_id,
+        query="",
+        path=path,
+        tier="hint",
+        project=project.strip() if isinstance(project, str) else None,
+        as_of=as_of,
+        in_payload=present,
+        not_in_payload=absent,
+        budget_tokens=budget,
     )
 
 
@@ -307,6 +445,8 @@ def run_case(index: Index, case: Case) -> Result:
     """Run one case against one index."""
     if not case.measurable:
         return Result(case=case, passed=False, measured=False, reasons=(DEFERRED[case.tier],))
+    if case.tier == "hint":
+        return run_hint_case(index, case)
 
     # Searched as deep as the case asks, but costed over what a preview would
     # actually send. Costing the deeper list made a case with `rank_within: 10`
@@ -338,6 +478,75 @@ def run_case(index: Index, case: Case) -> Result:
         cost=cost,
         query=found.query,
     )
+
+
+def run_hint_case(index: Index, case: Case) -> Result:
+    """Run one hint case: build the session index and look at what is in it.
+
+    The payload is always built with the shipped budget, never with the one the
+    case asserts. `budget_tokens` is a statement about the result, and a case
+    that changed the budget it measures would only ever confirm itself.
+    """
+    payload = context.build(index.documents, project=case.project, as_of=case.as_of)
+    reasons: list[str] = []
+    positions: list[int] = []
+
+    for wanted in case.in_payload:
+        name, missing = _resolve(index, wanted)
+        if missing:
+            reasons.append(missing)
+            continue
+        position = payload.position(name)
+        if position is None:
+            reasons.append(
+                f"{wanted} is not in the session index, which holds "
+                f"{len(payload.lines)} of {len(index)} entries"
+            )
+            continue
+        positions.append(position)
+
+    for unwanted in case.not_in_payload:
+        name, missing = _resolve(index, unwanted)
+        if missing:
+            reasons.append(missing)
+            continue
+        position = payload.position(name)
+        if position is not None:
+            reasons.append(
+                f"{unwanted} is in the session index at position {position}, "
+                "and this case says it should not be"
+            )
+
+    cost = payload.cost()
+    if case.budget_tokens is not None and cost > case.budget_tokens:
+        reasons.append(
+            f"the session index costs about {cost} tokens, wanted {case.budget_tokens} or fewer"
+        )
+
+    # The worst position, for the same reason a search case stores the worst
+    # rank: it is the line closest to being cut, so it is the one that warns
+    # first. None as soon as anything went wrong, because a failing case has no
+    # position worth comparing.
+    position = max(positions) if not reasons and len(positions) == len(case.in_payload) else None
+    return Result(
+        case=case,
+        passed=not reasons,
+        reasons=tuple(reasons),
+        rank=position,
+        cost=cost,
+        payload=payload,
+    )
+
+
+def _resolve(index: Index, wanted: str) -> tuple[str, str | None]:
+    """The entry a case names, or the sentence saying it is not in this vault."""
+    document = index.resolve(wanted)
+    if document is None:
+        return wanted, (
+            f"{wanted} is not an entry in this vault, so the case cannot be measured. "
+            "It was probably renamed or removed."
+        )
+    return document.name, None
 
 
 def _judge(index: Index, case: Case, hits: tuple[Hit, ...]) -> tuple[list[str], int | None]:
@@ -392,13 +601,26 @@ class Run:
     def failures(self) -> list[Result]:
         return [r for r in self.measured if not r.passed]
 
+    def in_tier(self, tier: str) -> list[Result]:
+        """Every measured case of one tier. A tier is a separate measurement,
+        so the numbers are never added up across them."""
+        return [r for r in self.measured if r.case.tier == tier]
+
+    @property
+    def searches(self) -> list[Result]:
+        return self.in_tier("index")
+
+    @property
+    def hints(self) -> list[Result]:
+        return self.in_tier("hint")
+
     @property
     def positives(self) -> list[Result]:
-        return [r for r in self.measured if not r.case.silence]
+        return [r for r in self.searches if not r.case.silence]
 
     @property
     def negatives(self) -> list[Result]:
-        return [r for r in self.measured if r.case.silence]
+        return [r for r in self.searches if r.case.silence]
 
     @property
     def uncited(self) -> list[Result]:
@@ -415,10 +637,18 @@ class Run:
 
     def cost(self) -> tuple[int, int]:
         """The average and the worst estimated cost of a preview, in tokens."""
-        costs = [r.cost for r in self.measured if not r.case.silence]
-        if not costs:
-            return (0, 0)
-        return (round(sum(costs) / len(costs)), max(costs))
+        return _average_and_worst([r.cost for r in self.positives])
+
+    def hint_cost(self) -> tuple[int, int]:
+        """The same for the session index, which is a different payload and is
+        therefore never averaged together with a search preview."""
+        return _average_and_worst([r.cost for r in self.hints])
+
+
+def _average_and_worst(costs: list[int]) -> tuple[int, int]:
+    if not costs:
+        return (0, 0)
+    return (round(sum(costs) / len(costs)), max(costs))
 
 
 def run(index: Index, cases: list[Case]) -> Run:
@@ -593,12 +823,16 @@ def render(result: Run, changes: list[Change] | None = None) -> str:
     counted = "1 entry" if result.entries == 1 else f"{result.entries} entries"
     lines: list[str] = [f"{counted}, {_plural(len(result.results), 'case')}", ""]
 
-    measured = result.measured
+    for tier in MEASURED_TIERS:
+        group = result.in_tier(tier)
+        if not group:
+            continue
+        failed_here = [r for r in group if not r.passed]
+        lines.append(
+            f"{tier:8} {_plural(len(group), 'case')}, "
+            f"{len(group) - len(failed_here)} pass, {len(failed_here)} fail"
+        )
     failed = result.failures
-    lines.append(
-        f"index    {_plural(len(measured), 'case')}, "
-        f"{len(measured) - len(failed)} pass, {len(failed)} fail"
-    )
     for tier, reason in DEFERRED.items():
         waiting = [r for r in result.deferred if r.case.tier == tier]
         if waiting:
@@ -618,6 +852,13 @@ def render(result: Run, changes: list[Change] | None = None) -> str:
     average, worst = result.cost()
     if average:
         lines.append(f"a preview costs about {average} tokens, {worst} at worst, estimated")
+    if result.hints:
+        held = sum(1 for r in result.hints if r.passed)
+        average, worst = result.hint_cost()
+        lines.append(
+            f"the session index held what was asked in {held} of {len(result.hints)} cases "
+            f"and costs about {average} tokens, {worst} at worst, estimated"
+        )
     if result.uncited:
         count = len(result.uncited)
         asks = "case asks" if count == 1 else "cases ask"
@@ -626,8 +867,9 @@ def render(result: Run, changes: list[Change] | None = None) -> str:
     if failed:
         lines.append("")
         for item in failed:
+            label = "state" if item.case.tier == "hint" else "query"
             lines.append(f"fail  {item.case.id}")
-            lines.append(f"      query: {item.case.query}")
+            lines.append(f"      {label}: {item.case.trigger}")
             for reason in item.reasons:
                 lines.append(f"      {reason}")
             if item.hits and not item.case.silence:

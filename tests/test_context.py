@@ -1,0 +1,233 @@
+"""The session index: what a session starts with, and what the budget cuts first.
+
+Every test here fixes the moment it asks about. A test that let the rule read
+the clock would pass this week and fail the next, which is the exact property
+the tier itself is built to avoid.
+"""
+
+import datetime as dt
+
+from mabolo import context
+from mabolo.index import Document
+
+UTC = dt.timezone.utc
+NOW = dt.datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
+
+
+def doc(name: str, *, area: str = "infra", pin: bool = False, days_ago: float | None = None,
+        description: str = "a line") -> Document:
+    """One document, described by how long ago it was touched."""
+    at = NOW - dt.timedelta(days=days_ago) if days_ago is not None else None
+    return Document(
+        name=name,
+        title=name,
+        description=description,
+        area=area,
+        path=None,
+        aliases=(),
+        pin=pin,
+        at=at,
+    )
+
+
+# What gets in
+
+
+def test_a_pinned_entry_is_in_without_a_project_and_without_being_recent():
+    index = context.build([doc("always", pin=True, days_ago=400)], as_of=NOW)
+    assert index.names == ("always",)
+
+
+def test_the_active_project_is_in_and_another_project_is_not():
+    index = context.build(
+        [doc("a", area="project/atlas", days_ago=400), doc("b", area="project/beacon", days_ago=400)],
+        project="atlas",
+        as_of=NOW,
+    )
+    assert index.names == ("a",)
+
+
+def test_recent_is_in_and_older_than_the_window_is_not():
+    index = context.build([doc("new", days_ago=1), doc("old", days_ago=30)], as_of=NOW)
+    assert index.names == ("new",)
+
+
+def test_the_edge_of_the_window_belongs_to_the_older_side():
+    """Exactly seven days out is out, so the boundary is one sentence and not two."""
+    inside = context.build([doc("e", days_ago=context.FRESH_DAYS - 0.01)], as_of=NOW)
+    outside = context.build([doc("e", days_ago=context.FRESH_DAYS)], as_of=NOW)
+    assert inside.names == ("e",)
+    assert outside.names == ()
+
+
+def test_without_a_moment_nothing_counts_as_recent():
+    """No clock is read here. A caller that wants the freshness rule says when."""
+    index = context.build([doc("new", days_ago=0), doc("pinned", pin=True)])
+    assert index.names == ("pinned",)
+
+
+def test_an_entry_that_states_no_time_is_never_recent():
+    index = context.build([doc("undated"), doc("new", days_ago=1)], as_of=NOW)
+    assert index.names == ("new",)
+
+
+def test_a_naive_timestamp_is_read_as_utc_rather_than_refused():
+    """Comparing an aware and a naive datetime raises, and an entry may carry either."""
+    naive = Document("n", "n", "d", "infra", None, (), at=dt.datetime(2026, 9, 17, 12))
+    index = context.build([naive], as_of=dt.date(2026, 9, 18))
+    assert index.names == ("n",)
+
+
+def test_a_date_is_accepted_where_a_datetime_is():
+    index = context.build([doc("new", days_ago=1)], as_of=dt.date(2026, 9, 18))
+    assert index.names == ("new",)
+
+
+# Cut order
+
+
+def test_cut_order_is_pinned_then_project_then_recent():
+    index = context.build(
+        [
+            doc("recent", days_ago=1),
+            doc("project", area="project/atlas", days_ago=400),
+            doc("pinned", pin=True, days_ago=400),
+        ],
+        project="atlas",
+        as_of=NOW,
+    )
+    assert index.names == ("pinned", "project", "recent")
+
+
+def test_a_pinned_entry_of_the_active_project_is_held_by_the_pin():
+    """Otherwise it would be cut together with the project it happens to be in."""
+    index = context.build(
+        [doc("pinned", area="project/atlas", pin=True), doc("plain", area="project/atlas")],
+        project="atlas",
+        as_of=NOW,
+    )
+    assert index.lines[0].name == "pinned"
+    assert index.lines[0].reason == context.PINNED
+
+
+def test_the_oldest_of_a_class_is_cut_first():
+    """A budget with room for one of the two long lines, by a wide margin."""
+    index = context.build(
+        [doc("older", days_ago=6, description="x" * 200),
+         doc("newer", days_ago=1, description="x" * 200)],
+        as_of=NOW,
+        target_tokens=80,
+    )
+    assert index.names == ("newer",)
+    assert index.cut == 1
+
+
+def test_two_entries_of_the_same_moment_are_ordered_by_name():
+    """Without a tie break the order would follow how the files were read."""
+    documents = [doc("b", days_ago=1), doc("a", days_ago=1)]
+    assert context.build(documents, as_of=NOW).names == ("a", "b")
+    assert context.build(list(reversed(documents)), as_of=NOW).names == ("a", "b")
+
+
+def test_an_undated_entry_sorts_last_inside_its_class():
+    index = context.build([doc("undated", pin=True), doc("dated", pin=True, days_ago=1)], as_of=NOW)
+    assert index.names == ("dated", "undated")
+
+
+# The budget
+
+
+def test_the_budget_cuts_from_the_unsafe_end_and_says_how_many():
+    documents = [doc(f"e{i:02d}", days_ago=1, description="x" * 60) for i in range(20)]
+    index = context.build(documents, as_of=NOW, target_tokens=100)
+    assert 0 < len(index.lines) < 20
+    assert index.cut == 20 - len(index.lines)
+    assert index.omitted == 20 - len(index.lines)
+
+
+def test_the_payload_stays_inside_the_budget():
+    documents = [doc(f"e{i:02d}", days_ago=1, description="x" * 80) for i in range(50)]
+    for target in (60, 200, 800):
+        index = context.build(documents, as_of=NOW, target_tokens=target)
+        assert index.cost() <= target, (target, index.cost())
+
+
+def test_a_budget_too_small_for_the_headings_yields_no_lines_rather_than_a_wrong_one():
+    index = context.build([doc("e", days_ago=1)], as_of=NOW, target_tokens=1)
+    assert index.lines == ()
+    assert index.omitted == 1
+
+
+def test_what_the_rule_skipped_and_what_the_budget_cut_are_counted_apart():
+    index = context.build(
+        [doc("recent", days_ago=1), doc("ancient", days_ago=400)], as_of=NOW, target_tokens=40
+    )
+    assert index.cut == 0, "the rule never chose the ancient one, so nothing was cut"
+    assert index.omitted == 1
+
+
+# The text
+
+
+def test_every_area_gets_a_heading_with_its_count_even_with_nothing_shown():
+    index = context.build(
+        [doc("shown", area="infra", days_ago=1), doc("hidden", area="design", days_ago=400)],
+        as_of=NOW,
+    )
+    text = index.text()
+    assert "## infra (1 entry)" in text
+    assert "## design (1 entry)" in text
+    assert "- shown: a line" in text
+    assert "hidden" not in text
+
+
+def test_the_last_line_names_how_many_were_left_out():
+    index = context.build(
+        [doc("shown", days_ago=1), doc("a", days_ago=400), doc("b", days_ago=400)], as_of=NOW
+    )
+    assert index.text().rstrip().endswith("2 entries not shown. Search the memory by name or topic to reach them.")
+
+
+def test_the_last_line_is_written_even_when_nothing_was_left_out():
+    """Its absence would have to be read as "nothing omitted", which is the
+    quiet stop this tier exists against."""
+    index = context.build([doc("shown", days_ago=1)], as_of=NOW)
+    assert index.text().rstrip().endswith("Every entry is listed above.")
+
+
+def test_a_line_shows_the_description_and_falls_back_to_the_title():
+    titled = Document("t", "A title", "", "infra", None, (), at=NOW)
+    index = context.build([doc("described", days_ago=1, description="what it says"), titled], as_of=NOW)
+    assert "- described: what it says" in index.text()
+    assert "- t: A title" in index.text()
+
+
+def test_entries_are_shown_by_name_inside_an_area_not_in_cut_order():
+    index = context.build([doc("zulu", days_ago=1), doc("alpha", days_ago=2)], as_of=NOW)
+    body = index.text()
+    assert body.index("- alpha") < body.index("- zulu")
+    assert index.names == ("zulu", "alpha"), "cut order is the other way round"
+
+
+# Properties the rest of the tool leans on
+
+
+def test_position_is_one_based_and_none_for_an_entry_that_is_not_there():
+    index = context.build([doc("a", pin=True), doc("b", days_ago=1)], as_of=NOW)
+    assert index.position("a") == 1
+    assert index.position("b") == 2
+    assert index.position("c") is None
+
+
+def test_the_same_documents_in_another_order_give_the_same_index():
+    documents = [doc("a", days_ago=3), doc("b", days_ago=1), doc("c", pin=True)]
+    first = context.build(documents, as_of=NOW)
+    second = context.build(list(reversed(documents)), as_of=NOW)
+    assert first.names == second.names
+    assert first.text() == second.text()
+
+
+def test_total_counts_the_vault_and_not_the_payload():
+    index = context.build([doc("a", days_ago=1), doc("b", days_ago=400)], as_of=NOW)
+    assert index.total == 2
+    assert len(index.lines) == 1

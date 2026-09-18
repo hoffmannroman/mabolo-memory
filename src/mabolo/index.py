@@ -33,6 +33,7 @@ Two things are deliberately not here yet:
 
 from __future__ import annotations
 
+import datetime as dt
 import math
 import sqlite3
 from bisect import bisect_left
@@ -42,7 +43,7 @@ from typing import Iterable
 
 from . import query as q
 from .errors import MaboloError
-from .schema import PROJECT_PREFIX, Entry
+from .schema import PROJECT_PREFIX, Entry, parse_time
 
 #: The searchable fields and their BM25 weight, in one place. The column list,
 #: the insert statement and the weight arguments are all built from this, so a
@@ -92,7 +93,13 @@ def estimate_tokens(text: str) -> int:
 
 @dataclass(frozen=True)
 class Document:
-    """One entry, reduced to what the search needs."""
+    """One entry, reduced to what the search and the session index need.
+
+    `pin` and `at` are not searched. They belong to the other reader of this
+    list: the session index picks its lines by them, and building a second view
+    of the same files to carry two fields would be a second place that can
+    disagree with this one about what is in the vault.
+    """
 
     name: str
     title: str
@@ -100,6 +107,14 @@ class Document:
     area: str
     path: Path | None
     aliases: tuple[str, ...]
+    #: The entry asked to be in every session.
+    pin: bool = False
+    #: When the entry was last touched, as the file itself states it: the latest
+    #: of `generated.at` and every `verified.at`. Taken from the frontmatter and
+    #: not from the filesystem, because an mtime is not part of a commit and a
+    #: clone would sort the session index differently from the machine it was
+    #: written on.
+    at: dt.datetime | None = None
     #: Every word of the entry, folded and split the way a query is, sorted so
     #: that a prefix can be found without walking the list.
     words: tuple[str, ...] = field(default_factory=tuple)
@@ -190,6 +205,22 @@ def _searchable(text: str) -> str:
     return " ".join(q.words_of(text))
 
 
+def touched_at(entry: Entry) -> dt.datetime | None:
+    """When an entry was last touched, according to the entry itself.
+
+    The latest of `generated.at` and every `verified.at`, normalised to UTC. An
+    entry that gives no offset is read as UTC rather than as local time: local
+    time would make the same commit sort differently in two time zones, and the
+    session index cuts by exactly this value.
+    """
+    stamps = [entry.generated.at] if entry.generated else []
+    stamps += [v.at for v in entry.verified]
+    times = [t for t in (parse_time(s) for s in stamps) if t is not None]
+    if not times:
+        return None
+    return max(t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc) for t in times)
+
+
 def _document(entry: Entry) -> Document:
     """One entry as the index sees it."""
     values = {
@@ -208,6 +239,8 @@ def _document(entry: Entry) -> Document:
         area=entry.area,
         path=entry.path,
         aliases=tuple(q.fold(a) for a in entry.mabolo.aliases),
+        pin=entry.mabolo.pin,
+        at=touched_at(entry),
         words=tuple(words),
         fields=fields,
     )

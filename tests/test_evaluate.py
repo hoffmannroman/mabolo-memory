@@ -278,9 +278,11 @@ def test_a_case_that_needs_a_model_is_named_and_never_passed(vault):
         assert result.reasons == (evaluate.DEFERRED[tier],)
 
 
-def test_every_tier_but_the_first_says_why_it_is_deferred(vault):
-    """A tier that can be written into a case and has no reason is a KeyError."""
-    assert set(evaluate.TIERS) - {"index"} == set(evaluate.DEFERRED)
+def test_every_tier_is_either_measured_or_says_why_it_is_not(vault):
+    """A tier that can be written into a case and has no reason is a KeyError,
+    and one that is both measured and deferred would be scored and excused."""
+    assert set(evaluate.TIERS) == set(evaluate.MEASURED_TIERS) | set(evaluate.DEFERRED)
+    assert not set(evaluate.MEASURED_TIERS) & set(evaluate.DEFERRED)
 
 
 def test_must_cite_is_reported_and_not_scored(vault):
@@ -451,3 +453,252 @@ def test_the_baseline_is_written_with_a_stable_byte_order(vault):
     first = store(vault).write_baseline(result, "en").read_bytes()
     second = store(vault).write_baseline(result, "en").read_bytes()
     assert first == second and first.endswith(b"\n")
+
+
+# The hint tier: is the entry in what a session starts with
+
+
+HINT = """
+id: session-index
+tier: hint
+state:
+  project: atlas
+  as_of: 2026-09-18
+expect:
+  in_payload: [deploy-from-main]
+  not_in_payload: [backups-run-nightly]
+  budget_tokens: 800
+"""
+
+
+def hint_vault(vault):
+    """Two entries, one pinned and one not, at a known moment."""
+    (vault.root / "infra" / "deploy-from-main.md").write_text(
+        entry_text(
+            title="Deploy from main only",
+            description="Releases are cut from main, tags are labels",
+            mabolo={"pin": True},
+            generated={"by": "mabolo/0.1.0", "at": "2026-09-17T10:00:00+03:00"},
+        ),
+        encoding="utf-8",
+    )
+    (vault.root / "infra" / "backups-run-nightly.md").write_text(
+        entry_text(
+            title="Backups",
+            description="A snapshot every night",
+            generated={"by": "mabolo/0.1.0", "at": "2026-01-01T10:00:00+03:00"},
+        ),
+        encoding="utf-8",
+    )
+    return Index.build(vault.entries())
+
+
+def test_a_hint_case_is_read_with_its_state(tmp_path):
+    import yaml
+
+    case = evaluate.parse_case(yaml.safe_load(HINT), tmp_path / "c.yaml")
+    assert case.tier == "hint"
+    assert case.project == "atlas"
+    assert case.as_of.date().isoformat() == "2026-09-18"
+    assert case.in_payload == ("deploy-from-main",)
+    assert case.not_in_payload == ("backups-run-nightly",)
+    assert case.budget_tokens == 800
+    assert case.measurable
+
+
+def test_a_hint_case_refuses_a_query(tmp_path):
+    """The session start is the trigger. A query here would look like a search
+    and measure something else."""
+    with pytest.raises(MaboloError, match="does not belong on a hint case"):
+        evaluate.parse_case(
+            {"id": "c", "tier": "hint", "query": "anything", "state": {"as_of": "2026-09-18"},
+             "expect": {"in_payload": ["a"]}},
+            tmp_path / "c.yaml",
+        )
+
+
+def test_a_search_case_refuses_a_state(tmp_path):
+    with pytest.raises(MaboloError, match="belongs to a hint case"):
+        evaluate.parse_case(
+            {"id": "c", "query": "anything", "state": {"as_of": "2026-09-18"},
+             "expect": {"entries": ["a"]}},
+            tmp_path / "c.yaml",
+        )
+
+
+def test_a_hint_case_without_a_moment_is_refused(tmp_path):
+    """Without a fixed moment the case would measure a different vault every week."""
+    with pytest.raises(MaboloError, match="state.as_of"):
+        evaluate.parse_case(
+            {"id": "c", "tier": "hint", "state": {"project": "atlas"},
+             "expect": {"in_payload": ["a"]}},
+            tmp_path / "c.yaml",
+        )
+
+
+def test_a_hint_case_without_a_state_is_refused(tmp_path):
+    with pytest.raises(MaboloError, match="needs state"):
+        evaluate.parse_case(
+            {"id": "c", "tier": "hint", "expect": {"in_payload": ["a"]}}, tmp_path / "c.yaml"
+        )
+
+
+def test_a_hint_case_refuses_the_keys_of_a_search_case(tmp_path):
+    with pytest.raises(MaboloError, match="unknown key"):
+        evaluate.parse_case(
+            {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18"},
+             "expect": {"entries": ["a"], "rank_within": 1}},
+            tmp_path / "c.yaml",
+        )
+
+
+def test_an_unknown_key_under_state_is_refused(tmp_path):
+    with pytest.raises(MaboloError, match="unknown key"):
+        evaluate.parse_case(
+            {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18", "user": "alex"},
+             "expect": {"in_payload": ["a"]}},
+            tmp_path / "c.yaml",
+        )
+
+
+def test_a_hint_case_that_expects_nothing_is_refused(tmp_path):
+    with pytest.raises(MaboloError, match="expects nothing"):
+        evaluate.parse_case(
+            {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18"}, "expect": {}},
+            tmp_path / "c.yaml",
+        )
+
+
+def test_a_name_cannot_be_expected_in_and_out_at_once(tmp_path):
+    with pytest.raises(MaboloError, match="both in the session index and out of it"):
+        evaluate.parse_case(
+            {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18"},
+             "expect": {"in_payload": ["a"], "not_in_payload": ["a"]}},
+            tmp_path / "c.yaml",
+        )
+
+
+@pytest.mark.parametrize("budget", [0, -1, True, "800"])
+def test_a_budget_that_is_not_a_count_is_refused(tmp_path, budget):
+    with pytest.raises(MaboloError, match="budget_tokens"):
+        evaluate.parse_case(
+            {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18"},
+             "expect": {"in_payload": ["a"], "budget_tokens": budget}},
+            tmp_path / "c.yaml",
+        )
+
+
+def test_a_hint_case_passes_when_the_entry_is_in_the_session_index(vault, tmp_path):
+    import yaml
+
+    index = hint_vault(vault)
+    result = evaluate.run_case(index, evaluate.parse_case(yaml.safe_load(HINT), tmp_path / "c.yaml"))
+    assert result.passed, result.reasons
+    assert result.rank == 1, "the pinned entry is the safest line in the index"
+    assert result.cost > 0
+    assert result.payload is not None
+
+
+def test_a_hint_case_fails_and_says_how_full_the_index_was(vault, tmp_path):
+    index = hint_vault(vault)
+    case = evaluate.parse_case(
+        {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18"},
+         "expect": {"in_payload": ["backups-run-nightly"]}},
+        tmp_path / "c.yaml",
+    )
+    result = evaluate.run_case(index, case)
+    assert not result.passed
+    assert result.rank is None
+    assert "is not in the session index, which holds 1 of 2 entries" in result.reasons[0]
+
+
+def test_a_hint_case_fails_when_something_that_should_be_gone_is_still_there(vault, tmp_path):
+    index = hint_vault(vault)
+    case = evaluate.parse_case(
+        {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18"},
+         "expect": {"not_in_payload": ["deploy-from-main"]}},
+        tmp_path / "c.yaml",
+    )
+    result = evaluate.run_case(index, case)
+    assert not result.passed
+    assert "at position 1" in result.reasons[0]
+
+
+def test_a_hint_case_names_an_entry_the_vault_does_not_have(vault, tmp_path):
+    index = hint_vault(vault)
+    case = evaluate.parse_case(
+        {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18"},
+         "expect": {"in_payload": ["renamed-away"]}},
+        tmp_path / "c.yaml",
+    )
+    result = evaluate.run_case(index, case)
+    assert not result.passed
+    assert "is not an entry in this vault" in result.reasons[0]
+
+
+def test_a_hint_case_resolves_an_alias(vault, tmp_path):
+    (vault.root / "infra" / "deploy-from-main.md").write_text(
+        entry_text(
+            title="Deploy",
+            description="Releases are cut from main",
+            mabolo={"pin": True, "aliases": ["release source"]},
+        ),
+        encoding="utf-8",
+    )
+    index = Index.build(vault.entries())
+    case = evaluate.parse_case(
+        {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18"},
+         "expect": {"in_payload": ["release source"]}},
+        tmp_path / "c.yaml",
+    )
+    assert evaluate.run_case(index, case).passed
+
+
+def test_the_asserted_budget_does_not_change_the_index_it_measures(vault, tmp_path):
+    """Building the payload to the asserted budget would make the case confirm
+    itself: whatever number it names, the payload would fit inside it."""
+    index = hint_vault(vault)
+    case = evaluate.parse_case(
+        {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18"},
+         "expect": {"in_payload": ["deploy-from-main"], "budget_tokens": 1}},
+        tmp_path / "c.yaml",
+    )
+    result = evaluate.run_case(index, case)
+    assert not result.passed
+    assert "wanted 1 or fewer" in result.reasons[-1]
+    assert result.payload.names == ("deploy-from-main",), "built with the shipped budget"
+
+
+def test_the_two_measured_tiers_are_counted_apart(vault, tmp_path):
+    index = hint_vault(vault)
+    import yaml
+
+    cases = [
+        evaluate.parse_case(yaml.safe_load(HINT), tmp_path / "hint.yaml"),
+        evaluate.parse_case(
+            {"id": "search", "query": "where are releases cut from",
+             "expect": {"entries": ["deploy-from-main"]}},
+            tmp_path / "search.yaml",
+        ),
+    ]
+    result = evaluate.run(index, cases)
+    assert len(result.in_tier("hint")) == 1
+    assert len(result.in_tier("index")) == 1
+    report = evaluate.render(result)
+    assert "index    1 case, 1 pass, 0 fail" in report
+    assert "hint     1 case, 1 pass, 0 fail" in report
+    assert "the session index held what was asked in 1 of 1 cases" in report
+
+
+def test_a_hint_case_that_slips_down_the_index_is_reported(vault, tmp_path):
+    """The early warning: still in the index, and closer to the line where the
+    budget cuts."""
+    baseline = evaluate.Baseline(language="en", cases={"c": evaluate.BaselineCase(passed=True, rank=1)})
+    case = evaluate.parse_case(
+        {"id": "c", "tier": "hint", "state": {"as_of": "2026-09-18"},
+         "expect": {"in_payload": ["a"]}},
+        tmp_path / "c.yaml",
+    )
+    run = evaluate.Run(results=[evaluate.Result(case=case, passed=True, rank=3)])
+    changes = evaluate.compare(baseline, run)
+    assert [c.kind for c in changes] == ["slipped"]

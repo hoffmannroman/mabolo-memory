@@ -5,7 +5,7 @@ import pytest
 from conftest import entry_text
 from mabolo import frontmatter, query
 from mabolo.errors import MaboloError
-from mabolo.index import Index, estimate_tokens
+from mabolo.index import Index, estimate_tokens, touched_at
 from mabolo.schema import Entry, MaboloBlock
 
 
@@ -268,3 +268,51 @@ def test_an_index_can_be_closed(vault):
         assert len(index) == 1
     with pytest.raises(Exception):
         index.search("backups")
+
+
+# What the session index reads off a document
+
+
+def test_a_document_carries_the_pin_and_the_moment_it_was_touched(vault):
+    index = build(vault, {
+        "pinned": entry_text(
+            mabolo={"pin": True},
+            generated={"by": "mabolo/0.1.0", "at": "2026-09-01T10:00:00+03:00"},
+        ),
+        "plain": entry_text(generated={"by": "mabolo/0.1.0", "at": "2026-09-01T10:00:00+03:00"}),
+    })
+    by_name = {d.name: d for d in index.documents}
+    assert by_name["pinned"].pin is True
+    assert by_name["plain"].pin is False
+    assert by_name["plain"].at.isoformat() == "2026-09-01T10:00:00+03:00"
+
+
+def test_touched_at_is_the_latest_of_generated_and_verified():
+    """A verification is a touch. Reading only `generated` would make an entry
+    somebody confirmed yesterday look years old to the session index."""
+    entry = Entry.from_meta({
+        "type": "reference",
+        "generated": {"by": "mabolo/0.1.0", "at": "2026-08-01T10:00:00+00:00"},
+        "verified": [
+            {"by": "human:alex", "at": "2026-09-10T10:00:00+00:00"},
+            {"by": "human:alex", "at": "2026-08-20T10:00:00+00:00"},
+        ],
+    })
+    assert touched_at(entry).isoformat() == "2026-09-10T10:00:00+00:00"
+
+
+def test_touched_at_is_none_when_the_entry_states_no_time():
+    assert touched_at(Entry.from_meta({"type": "reference"})) is None
+
+
+def test_touched_at_reads_a_timestamp_without_an_offset_as_utc():
+    """Local time would sort the same commit differently in two time zones."""
+    entry = Entry.from_meta({"type": "reference", "generated": {"by": "x/1", "at": "2026-09-10T10:00:00"}})
+    assert touched_at(entry).tzinfo is not None
+    assert touched_at(entry).utcoffset().total_seconds() == 0
+
+
+def test_an_unreadable_timestamp_is_ignored_rather_than_guessed():
+    """`validate` is what complains about it; the index must not crash on it."""
+    entry = Entry.from_meta({"type": "reference", "generated": {"by": "x/1", "at": "not a date"}})
+    assert touched_at(entry) is None

@@ -1,9 +1,14 @@
 """The `mabolo` command.
 
-Three commands so far: `init` creates a vault and a configuration, `validate`
-says what is wrong with one, and `eval` measures whether the memory actually
-hands over the entry that answers a question. Everything else arrives with the
-part of the tool that gives it something to talk about.
+Four commands so far: `init` creates a vault and a configuration, `validate`
+says what is wrong with one, `eval` measures whether the memory actually hands
+over the entry that answers a question, and `context` prints what a session
+would start with. Everything else arrives with the part of the tool that gives
+it something to talk about.
+
+`context` exists before the hook that will send that payload to an agent, so
+that the payload can be read and measured by a person first. A tier nobody has
+looked at is a tier nobody can argue with.
 
 `init` prints its plan before it writes anything and ends with a real check
 rather than a success message. The other commands report; the one place they
@@ -23,11 +28,11 @@ from pathlib import Path
 
 from dataclasses import replace
 
-from . import __version__, evaluate, git
+from . import __version__, context, evaluate, git
 from .config import Config, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
 from .index import Index
-from .schema import FIXED_AREAS
+from .schema import FIXED_AREAS, now, parse_time
 from .validate import validate_vault
 from .vault import Vault
 
@@ -174,6 +179,41 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return EXIT_OK if args.errors_only or not report.warnings else EXIT_FINDINGS
 
 
+def cmd_context(args: argparse.Namespace) -> int:
+    """Print the session index: what a session would be handed at its start."""
+    vault = _vault_from(args)
+    as_of = None
+    if args.as_of:
+        as_of = parse_time(args.as_of)
+        if as_of is None:
+            raise MaboloError(f"{args.as_of!r} is not a date. Use 2026-09-18 or a full timestamp.")
+    elif not args.no_clock:
+        as_of = now()
+
+    with Index.build(vault.entries(), language=vault.declared_language()) as index:
+        payload = context.build(
+            index.documents,
+            project=args.project,
+            as_of=as_of,
+            target_tokens=args.budget,
+        )
+    print(payload.text())
+    print()
+    when = "no moment given, so nothing counts as recent" if as_of is None else f"as of {as_of.isoformat()}"
+    where = f"project {args.project}" if args.project else "no active project"
+    print(f"{where}, {when}")
+    print(
+        f"{len(payload.lines)} of {payload.total} entries shown, "
+        f"about {payload.cost()} tokens, estimated, budget {payload.target_tokens}"
+    )
+    if payload.cut:
+        # Said out loud rather than left to the count above: the rule chose
+        # these and the budget took them away again, which is the one thing a
+        # person may want to fix by raising the budget.
+        print(f"{payload.cut} chosen {'entry' if payload.cut == 1 else 'entries'} did not fit in the budget")
+    return EXIT_OK
+
+
 def _vault_from(args: argparse.Namespace) -> Vault:
     """The vault a command was pointed at, from the argument or the configuration."""
     config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
@@ -253,10 +293,13 @@ def _explain(index: Index, result: evaluate.Result) -> None:
     """
     case = result.case
     print(f"{case.id}  ({case.tier})")
-    print(f"  query   {case.query}")
+    print(f"  {'state' if case.tier == 'hint' else 'query'}   {case.trigger}")
     if not result.measured:
         print(f"  skipped {result.reasons[0] if result.reasons else 'not measured'}")
         print()
+        return
+    if case.tier == "hint":
+        _explain_hint(index, result)
         return
     parsed = result.query
     print(f"  stems   {', '.join(parsed.stems) or 'none'}")
@@ -273,6 +316,38 @@ def _explain(index: Index, result: evaluate.Result) -> None:
         print(f"  {hit.rank}.      {hit.name}  score {hit.score:.3f}  matched {evidence}{wanted}")
     print(f"  cost    about {result.cost} tokens for a preview of those, estimated")
     print()
+
+
+def _explain_hint(index: Index, result: evaluate.Result) -> None:
+    """The session index a hint case was judged against, line by line.
+
+    Printed from the payload the run produced rather than from a second build
+    of it, for the same reason the search explains itself from its own result.
+    """
+    case = result.case
+    payload = result.payload
+    if payload is None:
+        print("  result  no session index was built")
+        print()
+        return
+    expected = {n for n, _ in (_named(index, w) for w in case.in_payload)}
+    unwanted = {n for n, _ in (_named(index, w) for w in case.not_in_payload)}
+    if not payload.lines:
+        print("  result  the session index is empty")
+    for position, line in enumerate(payload.lines, start=1):
+        mark = " <-- expected" if line.name in expected else ""
+        mark = " <-- should not be here" if line.name in unwanted else mark
+        print(f"  {position}.      {line.name}  ({line.area}, {line.reason}){mark}")
+    for wanted in sorted(expected - set(payload.names)):
+        print(f"  --      {wanted}  is not in the index")
+    print(f"  omitted {payload.omitted} of {payload.total} entries, {payload.cut} cut by the budget")
+    print(f"  cost    about {result.cost} tokens for the whole payload, estimated")
+    print()
+
+
+def _named(index: Index, wanted: str) -> tuple[str, bool]:
+    document = index.resolve(wanted)
+    return (document.name if document else wanted, document is not None)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -309,6 +384,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-baseline", action="store_true", help="report the run without comparing it"
     )
     measure.set_defaults(func=cmd_eval)
+
+    shown = sub.add_parser("context", help="print what a session would start with")
+    shown.add_argument("path", nargs="?", help="the vault, default is the configured one")
+    shown.add_argument("--project", help="the project the session is about")
+    shown.add_argument("--as-of", help="the moment the session starts at, default is now")
+    shown.add_argument(
+        "--no-clock",
+        action="store_true",
+        help="do not read the clock, so nothing counts as recent",
+    )
+    shown.add_argument(
+        "--budget",
+        type=int,
+        default=context.DEFAULT_TARGET_TOKENS,
+        help=f"what the payload should cost, in tokens, default {context.DEFAULT_TARGET_TOKENS}",
+    )
+    shown.set_defaults(func=cmd_context)
 
     return parser
 

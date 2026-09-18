@@ -1,0 +1,11 @@
+id: session-index-goes-quiet
+note: |
+  Six weeks later nothing is recent any more. Only the pin survives, and the
+  entries that were on the first page a moment ago are reachable by search
+  alone. This is the case that fails when the curation silently keeps them.
+tier: hint
+state:
+  as_of: 2026-10-30
+expect:
+  in_payload: [working-hours]
+  not_in_payload: [ci-memory-limit, build-server, atlas-tone]
