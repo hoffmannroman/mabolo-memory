@@ -1,0 +1,7 @@
+id: quiet-recall-late-night
+note: not a search but an interruption, so it needs the session hook to be measurable
+query: I will start the big refactor now, it is half past eleven
+expect:
+  entries: [working-hours]
+  rank_within: 1
+tier: recall

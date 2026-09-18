@@ -1,0 +1,6 @@
+id: atlas-database
+query: which database does Atlas use?
+expect:
+  entries: [atlas-uses-postgres]
+  rank_within: 1
+tier: index

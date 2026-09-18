@@ -1,0 +1,6 @@
+id: gratitude
+query: thanks, that worked
+expect:
+  entries: []
+  silence: true
+tier: index

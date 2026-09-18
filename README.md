@@ -126,14 +126,19 @@ This is early, and the README says only what exists:
   before touching anything, and is safe to run twice.
 * `mabolo validate` checks a vault against the format and says what is wrong in
   plain words, separating what breaks from what merely deserves a look.
+* `mabolo eval` runs your own questions against your own vault and reports which
+  entries came back, in which order, whether the memory stayed quiet when it
+  should, and what a preview would cost. It compares every run against a saved
+  baseline and fails when an answer slips down the list, before it disappears.
 * The entry schema and its validator, with the example vault as the reference.
 * A Git remote, if you want one: `init` sets it, and the vault is an ordinary
   repository you can pull and push yourself.
 
-The MCP server, the search, and the context an agent actually receives are being
-built, the last one against a budget the memory has to stay inside: a session
-should pay for a short index, not for everything you ever wrote down. Until that
-lands, this is the format and the tooling around it.
+The MCP server and the context an agent actually receives are being built, the
+latter against a budget the memory has to stay inside: a session should pay for
+a short index, not for everything you ever wrote down. The measurement came
+first on purpose, because it is the only thing that can show that a short index
+replaced the long text instead of quietly losing half of it.
 
 ## Try it
 
@@ -142,6 +147,7 @@ git clone https://github.com/hoffmannroman/mabolo-memory.git
 cd mabolo-memory
 uv sync
 uv run mabolo validate examples/vault
+uv run mabolo eval examples/vault --explain
 
 # A throwaway vault and a throwaway configuration to go with it. Without
 # --config, `init` writes the real one in your config directory.
@@ -155,8 +161,12 @@ uv run mabolo --config /tmp/mabolo-demo.toml init --vault /tmp/my-vault --yes
 * **A vault belongs to one person.** There is no team mode and no cloud.
 * **The approval gate holds for Mabolo's own tools.** Any program on your
   machine can still edit a Markdown file.
-* **The search index will be SQLite**, which is a database. It is derived from
-  the files and can be deleted and rebuilt at any time.
+* **The search index is SQLite**, which is a database. It is derived from the
+  files, built in memory and never stored, so there is nothing to delete and
+  nothing that can disagree with what is on disk.
+* **The search is words, not meaning.** A question asked with synonyms, or in a
+  different language from the entry, falls through. Measuring that honestly is
+  what `mabolo eval` is for.
 
 ## It stays yours
 

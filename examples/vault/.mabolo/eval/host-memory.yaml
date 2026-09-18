@@ -1,0 +1,7 @@
+id: host-memory
+note: the machine profile and the build limit both answer this, and both are right
+query: how much memory does the build server have?
+expect:
+  entries: [build-server]
+  rank_within: 3
+tier: index

@@ -1,0 +1,7 @@
+id: atlas-tone
+note: four entries in this vault carry the word atlas, so the name alone must not win
+query: can an Atlas headline use an exclamation mark?
+expect:
+  entries: [atlas-tone]
+  rank_within: 1
+tier: index

@@ -1,0 +1,7 @@
+id: deploy-source
+query: are we allowed to cut a release from a tag?
+expect:
+  entries: [deploy-from-main]
+  rank_within: 1
+  must_cite: true
+tier: index

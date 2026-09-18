@@ -1,0 +1,6 @@
+id: backup-window
+query: when does the nightly snapshot run?
+expect:
+  entries: [backups-run-nightly]
+  rank_within: 1
+tier: index

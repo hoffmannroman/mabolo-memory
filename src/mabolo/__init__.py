@@ -1,7 +1,9 @@
 """Mabolo Memory: a memory made of Markdown and Git.
 
-What exists so far is the format and the skeleton around it: the Open Knowledge
-Format v0.2 entry schema, a validator, configuration and `mabolo init`.
+What exists so far is the format, the skeleton around it and the measurement:
+the Open Knowledge Format v0.2 entry schema, a validator, configuration,
+`mabolo init`, a BM25 index over the files, and `mabolo eval`, which is how
+anything built on top of the index has to prove that it did not lose something.
 """
 
 from __future__ import annotations

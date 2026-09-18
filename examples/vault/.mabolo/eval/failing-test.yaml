@@ -1,0 +1,7 @@
+id: failing-test
+note: every word here appears somewhere in a body, and none of it is a question for the memory
+query: fix the failing test
+expect:
+  entries: []
+  silence: true
+tier: index

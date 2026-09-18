@@ -1,5 +1,6 @@
 import pytest
 
+from conftest import entry_text
 from mabolo.cli import main
 from mabolo.config import Config
 
@@ -109,3 +110,72 @@ def test_a_missing_permission_reads_as_a_sentence(tmp_path, capsys):
         os.chmod(locked, 0o755)
     assert code == 2
     assert "mabolo:" in capsys.readouterr().err
+
+
+def eval_vault(tmp_path, config: str) -> str:
+    """A vault with one entry and one case, wired to its own configuration."""
+    vault = tmp_path / "v"
+    main(["--config", config, "init", "--vault", str(vault), "--actor", "human:someone",
+          "--yes", "--no-git"])
+    (vault / "infra" / "deploy-from-main.md").write_text(
+        entry_text(title="Deploy from main only", description="Releases are cut from main",
+                   body="Releases are cut from main. A tag marks what shipped."),
+        encoding="utf-8",
+    )
+    (vault / ".mabolo" / "eval" / "deploy-source.yaml").write_text(
+        "id: deploy-source\nquery: where are releases cut from\n"
+        "expect:\n  entries: [deploy-from-main]\n  rank_within: 1\n",
+        encoding="utf-8",
+    )
+    return str(vault)
+
+
+def test_eval_measures_a_vault_and_says_what_it_did_not_measure(tmp_path, capsys):
+    config = str(tmp_path / "c.toml")
+    eval_vault(tmp_path, config)
+    assert main(["--config", config, "eval"]) == 0
+    out = capsys.readouterr().out
+    assert "1 case, 1 pass, 0 fail" in out
+    assert "no baseline yet" in out
+
+
+def test_eval_on_a_vault_without_cases_does_not_report_success(tmp_path, capsys):
+    """Measured nothing, printed above a green exit code, is the lie to avoid."""
+    config = str(tmp_path / "c.toml")
+    main(["--config", config, "init", "--vault", str(tmp_path / "v"), "--yes", "--no-git"])
+    assert main(["--config", config, "eval"]) == 1
+    assert "nothing was measured" in capsys.readouterr().out
+
+
+def test_eval_saves_a_baseline_and_then_guards_it(tmp_path, capsys):
+    config = str(tmp_path / "c.toml")
+    vault = eval_vault(tmp_path, config)
+    assert main(["--config", config, "eval", "--save-baseline"]) == 0
+    assert (tmp_path / "v" / ".mabolo" / "eval" / "baseline.json").exists()
+    capsys.readouterr()
+
+    # The entry the case depends on loses the words the question uses.
+    (tmp_path / "v" / "infra" / "deploy-from-main.md").write_text(
+        entry_text(title="Where a build comes from", description="The trunk is the only origin",
+                   body="Builds come from the trunk."),
+        encoding="utf-8",
+    )
+    assert main(["--config", config, "eval", vault]) == 1
+    out = capsys.readouterr().out
+    assert "was not returned at all" in out
+    assert "passed in the baseline and fails now" in out
+
+
+def test_eval_can_run_one_case_and_explain_it(tmp_path, capsys):
+    config = str(tmp_path / "c.toml")
+    eval_vault(tmp_path, config)
+    assert main(["--config", config, "eval", "--case", "deploy-source", "--explain"]) == 0
+    out = capsys.readouterr().out
+    assert "stems" in out and "deploy-from-main" in out and "<-- expected" in out
+
+
+def test_eval_names_a_case_that_does_not_exist(tmp_path, capsys):
+    config = str(tmp_path / "c.toml")
+    eval_vault(tmp_path, config)
+    assert main(["--config", config, "eval", "--case", "nothing-like-this"]) == 2
+    assert "no case called nothing-like-this" in capsys.readouterr().err

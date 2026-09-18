@@ -1,0 +1,6 @@
+id: unrelated-fact
+query: what is the capital of France
+expect:
+  entries: []
+  silence: true
+tier: index

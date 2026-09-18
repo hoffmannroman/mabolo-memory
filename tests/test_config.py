@@ -168,3 +168,19 @@ def test_an_unknown_key_under_remote_survives_a_rewrite(tmp_path):
     )
     Config.load(path).save(path)
     assert "future_flag = true" in path.read_text(encoding="utf-8")
+
+
+def test_the_vault_language_defaults_to_english_and_round_trips(tmp_path):
+    config = Config.default(vault=tmp_path / "v", actor="human:someone")
+    assert config.language == "en"
+    config.language = "de"
+    saved = config.save(tmp_path / "c.toml")
+    assert Config.load(saved).language == "de"
+
+
+def test_a_language_that_is_not_a_code_is_refused(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text(f'vault = "{tmp_path}/v"\nactor = "human:someone"\nlanguage = "Deutsch"\n',
+                    encoding="utf-8")
+    with pytest.raises(MaboloError, match="short code"):
+        Config.load(path)

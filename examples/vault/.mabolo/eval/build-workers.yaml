@@ -1,0 +1,6 @@
+id: build-workers
+query: why does the build get killed when I raise the worker count?
+expect:
+  entries: [ci-memory-limit]
+  rank_within: 1
+tier: index

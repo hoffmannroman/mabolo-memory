@@ -86,6 +86,11 @@ no frontmatter, or the root one with nothing but `okf_version`. Anything else in
 a file of that name is reported and left alone, because a file Mabolo did not
 write is a file somebody else did.
 
+One folder in a vault is not made of entries. `.mabolo/` holds what is derived
+and disposable and is ignored by Git, with one exception: `.mabolo/eval/` holds
+the questions the memory is measured with, and those are versioned alongside the
+entries they query. See [measuring the memory](eval.md).
+
 ## Links
 
 Links between entries are relative Markdown links, so they work in an editor, in

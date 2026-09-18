@@ -1,0 +1,6 @@
+id: smalltalk
+query: carry on
+expect:
+  entries: []
+  silence: true
+tier: index

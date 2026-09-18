@@ -1,0 +1,6 @@
+id: atlas-release
+query: what has to be true before an Atlas release?
+expect:
+  entries: [atlas-release-checklist]
+  rank_within: 1
+tier: index

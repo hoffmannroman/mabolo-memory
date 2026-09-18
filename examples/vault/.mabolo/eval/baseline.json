@@ -1,0 +1,81 @@
+{
+  "cases": {
+    "atlas-database": {
+      "passed": true,
+      "rank": 1
+    },
+    "atlas-release": {
+      "passed": true,
+      "rank": 1
+    },
+    "atlas-tone": {
+      "passed": true,
+      "rank": 1
+    },
+    "backup-window": {
+      "passed": true,
+      "rank": 1
+    },
+    "beacon-schedule": {
+      "passed": true,
+      "rank": 1
+    },
+    "build-workers": {
+      "passed": true,
+      "rank": 1
+    },
+    "centred-text": {
+      "passed": true,
+      "rank": 1
+    },
+    "deploy-source": {
+      "passed": true,
+      "rank": 1
+    },
+    "failing-test": {
+      "passed": true,
+      "rank": null
+    },
+    "gratitude": {
+      "passed": true,
+      "rank": null
+    },
+    "host-memory": {
+      "passed": true,
+      "rank": 2
+    },
+    "late-question": {
+      "passed": true,
+      "rank": 1
+    },
+    "resume-work": {
+      "passed": true,
+      "rank": null
+    },
+    "review-shape": {
+      "passed": true,
+      "rank": 1
+    },
+    "secrets-by-alias": {
+      "passed": true,
+      "rank": 1
+    },
+    "smalltalk": {
+      "passed": true,
+      "rank": null
+    },
+    "staging-parity": {
+      "passed": true,
+      "rank": 1
+    },
+    "two-rules": {
+      "passed": true,
+      "rank": 2
+    },
+    "unrelated-fact": {
+      "passed": true,
+      "rank": null
+    }
+  },
+  "version": 1
+}

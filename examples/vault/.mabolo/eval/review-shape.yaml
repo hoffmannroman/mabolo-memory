@@ -1,0 +1,6 @@
+id: review-shape
+query: should I review this as a diff or as a summary?
+expect:
+  entries: [reviews-need-a-diff]
+  rank_within: 1
+tier: index

@@ -1,8 +1,9 @@
 """The `mabolo` command.
 
-Two commands so far: `init` creates a vault and a configuration, `validate` says
-what is wrong with one. Everything else arrives with the part of the tool that
-gives it something to talk about.
+Three commands so far: `init` creates a vault and a configuration, `validate`
+says what is wrong with one, and `eval` measures whether the memory actually
+hands over the entry that answers a question. Everything else arrives with the
+part of the tool that gives it something to talk about.
 
 Everything prints its plan before it writes anything, and `init` ends with a
 real check rather than a success message.
@@ -21,9 +22,10 @@ from pathlib import Path
 
 from dataclasses import replace
 
-from . import __version__, git
+from . import __version__, evaluate, git, query
 from .config import Config, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
+from .index import Index
 from .schema import FIXED_AREAS
 from .validate import validate_vault
 from .vault import Vault
@@ -151,20 +153,108 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
-    areas = tuple(config.areas) if config else FIXED_AREAS
-    root = Path(args.path).expanduser() if args.path else (config.vault if config else None)
-    if root is None:
-        raise MaboloError("no vault given and no configuration found. Run `mabolo init` first.")
-    if not root.is_dir():
-        raise MaboloError(f"{root} is not a folder")
-    report = validate_vault(root, areas)
-    print(report.render(root, show_warnings=not args.errors_only))
+    vault, _ = _vault_from(args)
+    report = validate_vault(vault.root, vault.areas)
+    print(report.render(vault.root, show_warnings=not args.errors_only))
     if not report.ok:
         return EXIT_FINDINGS
     # With --errors-only the warnings were not shown, so they cannot be what the
     # caller is being told about, and a clean exit is the honest answer.
     return EXIT_OK if args.errors_only or not report.warnings else EXIT_FINDINGS
+
+
+def _vault_from(args: argparse.Namespace) -> tuple[Vault, str]:
+    """The vault a command was pointed at, and the language its entries are in."""
+    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
+    areas = tuple(config.areas) if config else FIXED_AREAS
+    language = config.language if config else "en"
+    root = Path(args.path).expanduser() if args.path else (config.vault if config else None)
+    if root is None:
+        raise MaboloError("no vault given and no configuration found. Run `mabolo init` first.")
+    if not root.is_dir():
+        raise MaboloError(f"{root} is not a folder")
+    return Vault(root, areas=areas), language
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Run the question set against the vault and say what moved.
+
+    Exit 1 covers three different disappointments, and the output distinguishes
+    them: a case failed, a case got worse than the baseline, or there were no
+    cases at all. The last one is the reason this does not exit 0 on an empty
+    folder: "measured nothing" printed above a green exit code is exactly the
+    kind of quiet success this whole tool exists to prevent.
+    """
+    vault, language = _vault_from(args)
+    cases = evaluate.load_cases(vault.eval_dir)
+    if args.case:
+        wanted = set(args.case)
+        missing = sorted(wanted - {c.id for c in cases})
+        if missing:
+            raise MaboloError(f"no case called {', '.join(missing)} in {vault.eval_dir}")
+        cases = [c for c in cases if c.id in wanted]
+    index = Index.build(vault.entries(), language=language)
+
+    if not cases:
+        print(f"no cases in {vault.eval_dir}, so nothing was measured")
+        print(f"The vault holds {len(index)} entries. A case is one YAML file, see docs/eval.md.")
+        return EXIT_FINDINGS
+
+    result = evaluate.run(index, cases)
+    baseline_path = vault.eval_dir / evaluate.BASELINE_FILE
+    baseline = None if args.no_baseline else evaluate.read_baseline(baseline_path)
+    changes = evaluate.compare(baseline, result)
+    if args.case:
+        # Every case the baseline knows and this run left out would otherwise be
+        # reported as missing, which is true and useless: leaving them out is
+        # what --case means.
+        changes = [c for c in changes if c.kind != "gone"]
+    print(evaluate.render(result, changes))
+
+    if args.explain:
+        print()
+        for item in result.results:
+            _explain(index, item, language)
+
+    if args.save_baseline:
+        saved = evaluate.write_baseline(baseline_path, result)
+        print(f"\nbaseline written to {saved}, {len(result.measured)} cases")
+        return EXIT_OK if result.ok else EXIT_FINDINGS
+
+    worse = [c for c in changes if c.is_worse]
+    if baseline is None and not args.no_baseline:
+        print(f"\nno baseline yet. `mabolo eval --save-baseline` writes {baseline_path}.")
+    if not result.ok or worse:
+        return EXIT_FINDINGS
+    return EXIT_OK
+
+
+def _explain(index: Index, result: evaluate.Result, language: str) -> None:
+    """Everything the ranking used for one case, so a number can be argued with."""
+    case = result.case
+    print(f"{case.id}  ({case.tier})")
+    print(f"  query   {case.query}")
+    if not result.measured:
+        print(f"  skipped {result.reasons[0] if result.reasons else 'not measured'}")
+        print()
+        return
+    parsed = query.build(case.query, language)
+    print(f"  stems   {', '.join(parsed.stems) or 'none'}")
+    if parsed.phrases:
+        print(f"  phrases {', '.join(parsed.phrases)}")
+    named = [t for t in parsed.tokens if t in index.names]
+    named += [n for n in index.phrase_names if n in query.fold(case.query)]
+    print(f"  names   {', '.join(named) or 'none of the query is a name this vault knows'}")
+    if not result.hits:
+        print("  result  nothing, the relevance floor turned every candidate away")
+    for hit in result.hits:
+        wanted = " <-- expected" if hit.name in case.entries else ""
+        print(
+            f"  {hit.rank}.      {hit.name}  score {hit.score:.3f}  "
+            f"matched {', '.join(hit.matched)}{wanted}"
+        )
+    print(f"  cost    about {result.cost} tokens for those lines, estimated")
+    print()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -189,6 +279,18 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("path", nargs="?", help="the vault, default is the configured one")
     validate.add_argument("--errors-only", action="store_true", help="hide warnings")
     validate.set_defaults(func=cmd_validate)
+
+    measure = sub.add_parser("eval", help="run the question set against the vault")
+    measure.add_argument("path", nargs="?", help="the vault, default is the configured one")
+    measure.add_argument("--case", action="append", help="run only this case, repeatable")
+    measure.add_argument("--explain", action="store_true", help="show stems, ranks and scores")
+    measure.add_argument(
+        "--save-baseline", action="store_true", help="write this run as the baseline to compare against"
+    )
+    measure.add_argument(
+        "--no-baseline", action="store_true", help="report the run without comparing it"
+    )
+    measure.set_defaults(func=cmd_eval)
 
     return parser
 
