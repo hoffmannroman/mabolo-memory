@@ -25,6 +25,11 @@ Active project: atlas
 ## Always
 - working-hours: Deep work after 20:00, reviews and replies before noon
 
+## Lately
+- 2026-09-16: The release moved to Friday, because the migration did not run through on staging twice in a row. See [atlas-release-checklist](project/atlas/atlas-release-checklist.md).
+- 2026-09-16: Decided against a second store for the session cache, so nothing outlives a request: [atlas-uses-postgres](project/atlas/atlas-uses-postgres.md).
+- 2026-08-14: Wrote down where releases are cut from, [atlas-release-checklist](project/atlas/atlas-release-checklist.md).
+
 ## design (3 entries)
 
 ## hosts (2 entries)
@@ -47,7 +52,10 @@ Active project: atlas
 ```
 
 `## Always` holds the standing rules, and they are the reason the rest of this
-page exists. The first line says which project the payload was built for. Without it a line
+page exists. `## Lately` holds the other half of what a session needs: the map
+says what *exists*, and those lines say what was *decided*. An entry says
+releases are cut from main; the journal says the release moved to Friday and
+why. The first line says which project the payload was built for. Without it a line
 about a release checklist looks the same whether it arrived because the session
 is in that project or because somebody pinned it, and those are two different
 reasons to trust it.
@@ -56,6 +64,40 @@ reasons to trust it.
 is listed where it belongs rather than twice. The empty headings are the point. Nothing in `design` was picked for this
 session, and a reader can still see that three rules exist there and go and ask
 for them.
+
+## Lately: a pointer, never a copy
+
+The lines under `## Lately` come from `log.md`, the one file in a vault written
+in the order things happened. A line belongs to a project when it links into
+that project's area, which is the link form the rest of the vault already uses:
+
+```markdown
+## 2026-09-16
+
+- The release moved to Friday, because the migration did not run through on
+  staging twice in a row. See [atlas-release-checklist](project/atlas/atlas-release-checklist.md).
+- A line naming no project belongs to no project, and appears in no payload.
+```
+
+The link is kept in the payload on purpose. It is the pointer: the line says
+what was decided, and the link says which entry holds the long version, so the
+payload never has to carry it. A line that wraps in an editor is folded back
+into one sentence, because half a decision reads like a whole one.
+
+Three rules hold this block:
+
+* **Only the active project.** No project, no block. Handing a session the
+  newest lines of somebody else's project would be worse than silence.
+* **Newest first, and the budget takes the far end.** It has a budget of its
+  own, 500 tokens, which is neither taken from the map nor added to it. When
+  lines are cut the block says how many, because a list that quietly stops
+  reads like a complete one.
+* **Nothing dated later than the session counts.** One typo, or one machine
+  with a wrong clock, would otherwise park a line at the top of every session
+  from now on.
+
+Journal lines are not entries. They carry no name, they are never searched, and
+they are counted apart from the entries in every number this command prints.
 
 ## Two kinds of entry, and only one of them is a rule
 

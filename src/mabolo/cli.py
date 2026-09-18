@@ -28,7 +28,7 @@ from pathlib import Path
 
 from dataclasses import replace
 
-from . import __version__, context, evaluate, git
+from . import __version__, context, evaluate, git, journal
 from .config import Config, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
 from . import index as index_module
@@ -228,6 +228,8 @@ def cmd_context(args: argparse.Namespace) -> int:
         # less prints "budget -1" above an empty payload, which is arithmetic
         # rather than an answer.
         raise MaboloError("--budget is a whole number of tokens, at least 1")
+    if args.project_budget < 1:
+        raise MaboloError("--project-budget is a whole number of tokens, at least 1")
     as_of = None
     if args.as_of:
         as_of = parse_time(args.as_of)
@@ -245,12 +247,18 @@ def cmd_context(args: argparse.Namespace) -> int:
     # from files to documents is what both readers of a vault share.
     documents = index_module.documents_of(vault.entries())
     project, source = _project_for(args, documents, repo_root(Path.cwd()).name)
+    # The journal is read for the active project only, and only by the caller:
+    # `context.build` stays a function of its arguments, and the file it would
+    # otherwise have to find is the one thing that is not in the entry list.
+    notes = journal.recent(vault.notes(), project, as_of.date() if as_of else None)
     payload = context.build(
         documents,
         project=project,
         as_of=as_of,
         target_tokens=args.budget,
         core_tokens=args.core_budget,
+        notes=notes,
+        project_tokens=args.project_budget,
     )
     print(payload.text())
     print()
@@ -327,7 +335,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
             print(f"The vault holds {len(index)} entries. A case is one YAML file, see docs/eval.md.")
             return EXIT_FINDINGS
 
-        result = evaluate.run(index, cases)
+        result = evaluate.run(index, cases, vault.notes())
         # Not read when it is about to be replaced. `--save-baseline` is the way
         # out of a baseline this version cannot read or that was measured in
         # another language, so it must not be the command that trips over one.
@@ -475,6 +483,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=context.DEFAULT_CORE_TOKENS,
         help=f"what the standing rules may cost, default {context.DEFAULT_CORE_TOKENS}",
+    )
+    shown.add_argument(
+        "--project-budget",
+        type=int,
+        default=context.DEFAULT_PROJECT_TOKENS,
+        help=f"what the journal block may cost, default {context.DEFAULT_PROJECT_TOKENS}",
     )
     shown.set_defaults(func=cmd_context)
 

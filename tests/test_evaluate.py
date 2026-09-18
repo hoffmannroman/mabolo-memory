@@ -8,7 +8,9 @@ import yaml
 import pytest
 
 from conftest import entry_text
-from mabolo import evaluate
+import datetime as dt
+
+from mabolo import evaluate, journal
 from mabolo.errors import MaboloError
 from mabolo.index import Index
 
@@ -840,3 +842,32 @@ def test_a_case_that_changed_tier_is_new_and_not_a_slip(vault, tmp_path):
     assert [c.kind for c in changes] == ["new"]
     assert not changes[0].is_worse
     assert "was measured as a search case" in changes[0].message
+
+
+def test_a_hint_case_is_measured_with_the_journal_block_in_the_payload(tmp_path, vault):
+    """What is measured has to be the payload a session actually receives.
+
+    Built without the block, the harness reports a cost nobody is charged, and
+    the gap grows quietly as the journal does. The case also has to see the
+    lines: a decision from last week is exactly what a hint case asks about.
+    """
+    index = hint_vault(vault)
+    case = hint_case(tmp_path, {"in_payload": ["deploy-from-main"]}, project="atlas")
+    notes = [
+        journal.Note(
+            at=dt.date(2026, 9, 16),
+            text="the release moved to Friday, see [atlas-tone](project/atlas/atlas-tone.md)",
+            project="atlas",
+        )
+    ]
+    bare = evaluate.run_hint_case(index, case)
+    with_journal = evaluate.run_hint_case(index, case, notes)
+    assert bare.passed and with_journal.passed
+    assert with_journal.cost > bare.cost
+
+
+def test_a_journal_line_of_another_project_costs_the_payload_nothing(tmp_path, vault):
+    index = hint_vault(vault)
+    case = hint_case(tmp_path, {"in_payload": ["deploy-from-main"]}, project="atlas")
+    elsewhere = [journal.Note(at=dt.date(2026, 9, 16), text="not here", project="beacon")]
+    assert evaluate.run_hint_case(index, case, elsewhere).cost == evaluate.run_hint_case(index, case).cost

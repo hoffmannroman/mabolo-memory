@@ -31,11 +31,11 @@ import datetime as dt
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 import yaml
 
-from . import context, frontmatter
+from . import context, frontmatter, journal
 from .errors import MaboloError
 from .index import DEFAULT_LIMIT, Hit, Index
 from .schema import PROJECT_PREFIX, parse_time
@@ -475,12 +475,24 @@ def select(cases: list[Case], wanted: Iterable[str]) -> list[Case]:
     return [c for c in cases if c.id in wanted]
 
 
-def run_case(index: Index, case: Case) -> Result:
+def _as_day(moment: dt.datetime | dt.date | None) -> dt.date | None:
+    """The calendar day a moment falls on, for comparing against journal days.
+
+    A journal heading is a day, not an instant, so this is where the two meet.
+    Whatever offset the moment carries is the one its day is read in: a case
+    fixed at midnight in one zone must not reach into the next day in another.
+    """
+    if moment is None:
+        return None
+    return moment.date() if isinstance(moment, dt.datetime) else moment
+
+
+def run_case(index: Index, case: Case, notes: Sequence[journal.Note] = ()) -> Result:
     """Run one case against one index."""
     if not case.measurable:
         return Result(case=case, passed=False, measured=False, reasons=(DEFERRED[case.tier],))
     if case.tier == "hint":
-        return run_hint_case(index, case)
+        return run_hint_case(index, case, notes)
 
     # Searched as deep as the case asks, but costed over what a preview would
     # actually send. Costing the deeper list made a case with `rank_within: 10`
@@ -514,14 +526,24 @@ def run_case(index: Index, case: Case) -> Result:
     )
 
 
-def run_hint_case(index: Index, case: Case) -> Result:
+def run_hint_case(index: Index, case: Case, notes: Sequence[journal.Note] = ()) -> Result:
     """Run one hint case: build the session index and look at what is in it.
 
     The payload is always built with the shipped budget, never with the one the
     case asserts. `budget_tokens` is a statement about the result, and a case
     that changed the budget it measures would only ever confirm itself.
+
+    The journal block is built here too, for the same reason the budget is not
+    the case's to choose: what is measured has to be the payload a session
+    actually receives. Measuring it without the block would report a cost
+    nobody is ever charged, and it would grow quietly as the journal does.
     """
-    payload = context.build(index.documents, project=case.project, as_of=case.as_of)
+    payload = context.build(
+        index.documents,
+        project=case.project,
+        as_of=case.as_of,
+        notes=journal.recent(list(notes), case.project, _as_day(case.as_of)),
+    )
     reasons: list[str] = []
     positions: list[int] = []
 
@@ -698,9 +720,9 @@ def _average_and_worst(costs: list[int]) -> tuple[int, int]:
     return (round(sum(costs) / len(costs)), max(costs))
 
 
-def run(index: Index, cases: list[Case]) -> Run:
+def run(index: Index, cases: list[Case], notes: Sequence[journal.Note] = ()) -> Run:
     """Run every case against one index."""
-    return Run(results=[run_case(index, case) for case in cases], entries=len(index))
+    return Run(results=[run_case(index, case, notes) for case in cases], entries=len(index))
 
 
 # The baseline, and what changed against it

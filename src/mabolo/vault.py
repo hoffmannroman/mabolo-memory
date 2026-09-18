@@ -26,7 +26,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import frontmatter, git
+from . import frontmatter, git, journal
 from .errors import MaboloError
 from .schema import (
     DEFAULT_LANGUAGE,
@@ -271,6 +271,21 @@ class Vault:
                     "Run `mabolo validate` to see all of them at once."
                 ) from None
         return out
+
+    def notes(self) -> list["journal.Note"]:
+        """Every journal line, in file order, or nothing when there is no journal.
+
+        Unlike `entries`, a missing or unreadable `log.md` is not an error. The
+        journal is the one file a vault can do without: a session that starts
+        without it is poorer, not wrong, and a session start that fails because
+        somebody left a half written line in it would teach people to stop
+        keeping the journal at all. What is broken about it is `validate`'s to
+        report, where a person is looking for findings.
+        """
+        try:
+            return journal.parse(self.log_file.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            return []
 
     def readable_entries(self) -> tuple[list[Entry], list[Path]]:
         """Every entry that could be read, and the paths of those that could not."""

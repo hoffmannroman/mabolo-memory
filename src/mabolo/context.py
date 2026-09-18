@@ -14,6 +14,12 @@ Nothing here counts how often an entry was read or what was useful yesterday,
 because a session index that learns cannot be rebuilt at an old commit, and
 rebuilding it at an old commit is what makes a drop in recall traceable.
 
+**The map is not the whole payload.** Above it sit the standing rules, and
+between the two the journal lines of the active project: the map says what
+exists, a rule says what always holds, and a journal line says what was decided
+last week. Each has its own budget, and only the map's is the target this
+module is named after.
+
 **Two orders, on purpose.** `lines` is the order the budget cuts in, safest
 first, and that is the position the eval measures and the baseline stores: it is
 the number that says how close an entry is to falling out. What a reader gets is
@@ -36,6 +42,7 @@ from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 from .index import CHARS_PER_TOKEN, Document, entry_line, estimate_tokens, one_line
+from .journal import Note
 from .schema import PROJECT_PREFIX, as_utc
 
 #: What the session index is meant to cost. A target rather than a limit: the
@@ -53,6 +60,14 @@ DEFAULT_TARGET_TOKENS = 800
 #: fit. That is the real limit on how many standing rules a session can carry,
 #: and it is better said than discovered.
 DEFAULT_CORE_TOKENS = 300
+
+#: What the journal block may cost. Its own budget rather than a share of the
+#: map's, because unlike the core it *can* be cut: the oldest line goes first
+#: and the payload says how many went. So it needs no right of way, only a
+#: ceiling. Deliberately not taken out of `DEFAULT_TARGET_TOKENS`: raising the
+#: map's budget to make room was the one answer ruled out when the core was
+#: built, and taking the room from the map would be the same thing by stealth.
+DEFAULT_PROJECT_TOKENS = 500
 
 #: How long an entry counts as recent. Seven days is a working week: whatever
 #: was decided since the last one is what a session is most likely to be about.
@@ -110,6 +125,25 @@ def over_core(count: int, cost: int, target: int) -> str:
     )
 
 
+#: The heading the journal lines sit under. They are not a part of the map
+#: either: the map says what exists, these say what happened.
+LATELY_HEADING = "## Lately"
+
+
+def lately_footer(dropped: int) -> str:
+    """What the journal block says when its budget cut the oldest lines.
+
+    Written only when something went, unlike the map's footer. The map is a
+    claim about the whole vault and has to say "complete" out loud; this block
+    is openly the newest few of an ever growing file, and a line under every
+    session saying so would cost more than it tells.
+    """
+    return (
+        f"{_plural(dropped, 'older line', 'older lines')} not shown. "
+        "Read the journal for the rest."
+    )
+
+
 def heading(area: str, count: int) -> str:
     """The line that introduces one area. The one place that decides its shape."""
     return f"## {one_line(area)} ({_plural(count, 'entry', 'entries')})"
@@ -149,6 +183,12 @@ class SessionIndex:
 
     #: The standing rules, always present, never cut, in name order.
     core: tuple[Line, ...] = ()
+    #: The journal lines of the active project, newest first, already fitted to
+    #: `project_tokens`. Not entries: they carry no name, they are never
+    #: searched, and they are counted apart from `shown` for that reason.
+    notes: tuple[Note, ...] = ()
+    #: How many journal lines of this project the block's budget cut.
+    notes_cut: int = 0
     #: Chosen entries in cut order, safest first. Not the order they are shown.
     lines: tuple[Line, ...] = ()
     #: Every area in the vault and how many entries it holds, including the
@@ -163,6 +203,7 @@ class SessionIndex:
     project: str | None = None
     target_tokens: int = DEFAULT_TARGET_TOKENS
     core_tokens: int = DEFAULT_CORE_TOKENS
+    project_tokens: int = DEFAULT_PROJECT_TOKENS
 
     @property
     def shown(self) -> tuple[Line, ...]:
@@ -217,6 +258,16 @@ class SessionIndex:
             out.append(CORE_HEADING)
             out.extend(line.render() for line in self.core)
             out.append("")
+        if self.notes:
+            # Between the rules and the map, and before the map's footer, which
+            # is a claim about entries and would read as one about these too.
+            # A rule holds always, a journal line held last Tuesday, and the
+            # map says what exists: that is the order they are useful in.
+            out.append(LATELY_HEADING)
+            out.extend(note.render() for note in self.notes)
+            if self.notes_cut:
+                out.append(lately_footer(self.notes_cut))
+            out.append("")
         for area, total in self.counts:
             out.append(heading(area, total))
             # Sorted by name inside an area: this is the part a person reads,
@@ -269,6 +320,30 @@ def _reason(
     return None
 
 
+def _fit_notes(notes: Sequence[Note], target_tokens: int) -> tuple[list[Note], int]:
+    """As many journal lines as their own budget holds, newest first.
+
+    Same shape as `_fit` and for the same reason: count characters, convert
+    once, and reserve the fixed parts before any line is fitted. The footer is
+    reserved at its longest possible wording, because how it reads depends on
+    how many lines were cut, and reserving the real one is circular.
+
+    Returns what fits and how many were left behind, never a silently short
+    list: the count is what the block's footer is written from.
+    """
+    fixed = len(LATELY_HEADING) + 1 + len(lately_footer(len(notes))) + 1
+    budget = target_tokens * CHARS_PER_TOKEN - fixed
+    kept: list[Note] = []
+    used = 0
+    for note in notes:
+        cost = len(note.render()) + 1
+        if used + cost > budget:
+            break
+        used += cost
+        kept.append(note)
+    return kept, len(notes) - len(kept)
+
+
 def build(
     documents: Iterable[Document],
     *,
@@ -276,6 +351,8 @@ def build(
     as_of: dt.datetime | dt.date | None = None,
     target_tokens: int = DEFAULT_TARGET_TOKENS,
     core_tokens: int = DEFAULT_CORE_TOKENS,
+    notes: Sequence[Note] = (),
+    project_tokens: int = DEFAULT_PROJECT_TOKENS,
 ) -> SessionIndex:
     """The session index for a vault, as a pure function of its arguments.
 
@@ -316,8 +393,14 @@ def build(
     left = target_tokens - estimate_tokens(core_text)
 
     kept = _fit(rest, counts, len(documents), left, project)
+    # The journal lines arrive already picked for this project by the caller,
+    # which is the only reader that knows where `log.md` lives. What is decided
+    # here is how many of them the block's own budget holds.
+    shown_notes, notes_cut = _fit_notes(list(notes), project_tokens)
     return SessionIndex(
         core=core,
+        notes=tuple(shown_notes),
+        notes_cut=notes_cut,
         lines=tuple(kept),
         counts=tuple(sorted(counts.items())),
         omitted=len(documents) - len(core) - len(kept),
@@ -325,6 +408,7 @@ def build(
         project=project,
         target_tokens=target_tokens,
         core_tokens=core_tokens,
+        project_tokens=project_tokens,
     )
 
 

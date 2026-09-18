@@ -8,8 +8,8 @@ the tier itself is built to avoid.
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-from mabolo import context
-from mabolo.index import Document
+from mabolo import context, journal
+from mabolo.index import Document, estimate_tokens
 
 UTC = dt.timezone.utc
 NOW = dt.datetime(2026, 9, 18, 12, 0, tzinfo=UTC)
@@ -507,3 +507,65 @@ def test_a_pinned_entry_of_the_active_project_appears_once_too():
         [doc("rule", area="project/atlas", pin=True, days_ago=1)], project="atlas", as_of=NOW
     )
     assert index.text().count("- rule:") == 1
+
+
+# The journal block: what happened lately in this project
+
+
+def note(text: str, *, day: int = 16, project: str | None = "atlas") -> journal.Note:
+    return journal.Note(at=dt.date(2026, 9, day), text=text, project=project)
+
+
+def test_the_journal_block_sits_between_the_rules_and_the_map():
+    """A rule holds always, a journal line held last Tuesday, the map says what
+    exists. That is the order they are useful in, and the map's footer is a
+    claim about entries that must not read as one about journal lines."""
+    index = context.build(
+        [doc("thing", area="project/atlas", days_ago=1)],
+        project="atlas",
+        as_of=NOW,
+        notes=[note("the release moved to Friday")],
+    )
+    body = index.text()
+    assert context.LATELY_HEADING in body
+    assert body.index(context.LATELY_HEADING) < body.index("## project/atlas")
+    assert body.index("the release moved to Friday") < body.index(context.footer(index.omitted))
+
+
+def test_no_journal_lines_means_no_heading_at_all():
+    """An empty block would spend the width of a heading to say nothing."""
+    index = context.build([doc("thing", days_ago=1)], as_of=NOW, notes=[])
+    assert context.LATELY_HEADING not in index.text()
+
+
+def test_the_journal_block_has_its_own_budget_and_cuts_the_oldest():
+    """Newest first, so the budget takes the far end. A block that cut the
+    newest line would drop the decision the session is most likely about."""
+    lines = [note("x" * 200, day=day) for day in (17, 16, 15)]
+    index = context.build([], project="atlas", as_of=NOW, notes=lines, project_tokens=80)
+    assert [n.at.day for n in index.notes] == [17]
+    assert index.notes_cut == 2
+    assert context.lately_footer(2) in index.text()
+
+
+def test_the_journal_block_stays_inside_its_budget():
+    lines = [note("x" * 120, day=day) for day in range(10, 18)]
+    index = context.build([], project="atlas", as_of=NOW, notes=lines, project_tokens=100)
+    block = "\n".join(
+        [context.LATELY_HEADING, *(n.render() for n in index.notes), context.lately_footer(index.notes_cut)]
+    )
+    assert estimate_tokens(block) <= 100
+
+
+def test_journal_lines_are_not_entries_and_are_counted_apart():
+    """`shown` answers "what does the payload hold" for entries. A journal line
+    has no name, is never searched, and must not move that count."""
+    index = context.build(
+        [doc("thing", area="project/atlas", days_ago=1)],
+        project="atlas",
+        as_of=NOW,
+        notes=[note("a decision")],
+    )
+    assert index.names == ("thing",)
+    assert index.total == 1
+    assert index.omitted == 0
