@@ -1,6 +1,9 @@
 <div align="center">
 
-<img src="assets/logo.png" alt="Mabolo Memory" width="120">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
+  <img src="assets/logo.png" alt="Mabolo Memory" width="120">
+</picture>
 
 # Mabolo Memory
 
