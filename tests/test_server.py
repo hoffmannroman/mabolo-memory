@@ -76,6 +76,7 @@ def test_the_full_server_offers_everything_that_writes(server):
         "mabolo_propose",
         "mabolo_write",
         "mabolo_edit",
+        "mabolo_describe",
         "mabolo_forget",
         "mabolo_decide",
         "journal_add",
@@ -690,3 +691,81 @@ def test_whether_an_edit_verifies_is_read_from_the_change_not_the_call(server, g
     signature = source[source.index("def mabolo_edit("):source.index(")", source.index("def mabolo_edit("))]
     assert "verif" not in signature.lower(), signature
     assert "without_links" in source, "the judgement has to come from the passage"
+
+
+
+# The description: the one line a session is shown before it reads anything
+
+
+def test_a_description_can_be_corrected_which_no_other_tool_can_reach(server, git_vault):
+    """The gap this fills. `mabolo_edit` replaces prose and splits the
+    frontmatter off before it looks, so the line a reader sees first was the
+    one thing an agent could not correct however plainly the person said it.
+    """
+    written(server)
+    path = git_vault.root / "infra" / "deploy-from-main.md"
+    stale = frontmatter.read(path)
+    assert stale.meta["description"] == "Releases are cut from main, never from a tag"
+
+    refused = call(server, "mabolo_edit", {
+        "name": "deploy-from-main", "quote": QUOTE, "revision": stale.revision,
+        "old": "Releases are cut from main, never from a tag", "new": "Anything at all",
+    })
+    assert refused.startswith("refused:"), refused
+
+    answer = call(server, "mabolo_describe", {
+        "name": "deploy-from-main", "description": "Releases come off main only",
+        "quote": QUOTE, "revision": stale.revision,
+    })
+
+    assert "refused" not in answer, answer
+    assert frontmatter.read(path).meta["description"] == "Releases come off main only"
+
+
+def test_a_new_description_lands_in_the_index_a_reader_opens_first(server, git_vault):
+    """A description is a line in an index. One that changed in the entry and
+    not in the index is the shape of bug this vault keeps producing."""
+    written(server)
+    path = git_vault.root / "infra" / "deploy-from-main.md"
+
+    call(server, "mabolo_describe", {
+        "name": "deploy-from-main", "description": "Releases come off main only",
+        "quote": QUOTE, "revision": frontmatter.read(path).revision,
+    })
+
+    index = (git_vault.root / "infra" / "index.md").read_text(encoding="utf-8")
+    assert "Releases come off main only" in index, index
+
+
+def test_a_description_that_would_not_fit_one_line_is_refused(server, git_vault):
+    """The index is curated, and silent truncation is the failure this whole
+    project exists to prevent. Refusing says the number out loud."""
+    written(server)
+    path = git_vault.root / "infra" / "deploy-from-main.md"
+
+    answer = call(server, "mabolo_describe", {
+        "name": "deploy-from-main", "description": "x" * 400,
+        "quote": QUOTE, "revision": frontmatter.read(path).revision,
+    })
+
+    assert "refused" in answer and "400" in answer, answer
+    assert frontmatter.read(path).meta["description"] != "x" * 400
+
+
+def test_correcting_a_description_is_a_claim_and_records_a_verification(server, git_vault, prompts, tmp_path):
+    """Unlike a link. A description says what the entry holds, so somebody
+    standing behind the new one is the whole point of changing it."""
+    written(server)
+    later = "and say the releases come off main only"
+    consent.record(later, cwd=tmp_path, session="s", directory=prompts,
+                   at=dt.datetime.now().astimezone() + dt.timedelta(minutes=1))
+    path = git_vault.root / "infra" / "deploy-from-main.md"
+    before = frontmatter.read(path)
+
+    call(server, "mabolo_describe", {
+        "name": "deploy-from-main", "description": "Releases come off main only",
+        "quote": later, "revision": before.revision,
+    })
+
+    after = frontmatter.read(path)
+    assert len(after.meta["verified"]) > len(before.meta["verified"])

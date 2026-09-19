@@ -87,6 +87,10 @@ INSTRUCTIONS = (
 DEFAULT_LIMIT = 5
 MAX_LIMIT = 25
 
+#: The longest a description may be, borrowed from the validator so that the
+#: tool and the check cannot disagree about what fits in one line of an index.
+MAX_DESCRIPTION = validate.MAX_DESCRIPTION
+
 #: How many entries one read may fetch. A read is the expensive tier, and a
 #: caller asking for twenty at once has stopped choosing.
 MAX_READ = 8
@@ -413,6 +417,53 @@ def _register_writing(
         if result.ok and not wording:
             said += " Only the link changed, so nothing was verified."
         return said
+
+    @server.tool()
+    @_sentence
+    def mabolo_describe(name: str, description: str, quote: str, revision: str) -> str:
+        """Replace an entry's description: the one line a session is shown.
+
+        Its own tool rather than a corner of `mabolo_edit`, because a
+        description is not a passage. `mabolo_edit` replaces prose and cannot
+        reach the frontmatter at all, which left the line a reader sees first
+        as the one thing an agent could not correct however plainly the person
+        said it. A description that has gone wrong is worse than a body that
+        has: it is what the memory offers before anybody asks.
+
+        This is a claim about what the entry holds, so unlike a link it does
+        record a verification.
+        """
+        given = consent_for(quote)
+        if not given.verified:
+            return refuse(given)
+        said = one_line(description)
+        if not said:
+            return "refused: a description is a sentence, and this one is empty."
+        if len(said) > MAX_DESCRIPTION:
+            return (
+                f"refused: that description is {len(said)} characters and the budget is "
+                f"{MAX_DESCRIPTION}. It is one line in an index, so it has to stay one."
+            )
+        path = entry_path(name)
+        document = frontmatter.read(path)
+        if document.revision != revision:
+            return (
+                f"refused: {path.stem} is at revision {document.revision}, not {revision}. "
+                "Read it again and decide."
+            )
+        entry = vault.read_entry(path)
+        if entry.description == said:
+            return f"{relative(path)} already says exactly that, so nothing was written."
+        entry.description = said
+        entry.approve(settings.actor, iso(given.at or now()) or "")
+        target, data = vault.render_entry(entry)
+        where = relative(target)
+        result = commit(
+            [write.Change(path=where, data=data, expect=document.revision)],
+            message(f"describe {where}", given),
+            "edit",
+        )
+        return answer(result, where)
 
     @server.tool()
     @_sentence

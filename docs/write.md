@@ -142,6 +142,7 @@ exist.
 | `mabolo_propose` | always | files a suggestion for you to answer later |
 | `mabolo_write` | full | a new entry, from a sentence you typed |
 | `mabolo_edit` | full | replaces one passage, leaving the rest of the prose alone |
+| `mabolo_describe` | full | replaces the description, the line a session is shown |
 | `mabolo_forget` | full | removes an entry; the history keeps it |
 | `mabolo_decide` | full | answers a proposal you named yourself |
 | `journal_add` | full | one line under today's date in `log.md` |
@@ -175,6 +176,14 @@ what the entries beside it already say, so a rebuild asserts nothing you have
 not approved once. It is still a write, so it is not registered in read mode
 and its commit carries a trailer of its own kind. What it is for, and the one
 case nothing else watches, is in [when something has gone wrong](recovery.md).
+
+**A description has its own tool, because it is not a passage.** `mabolo_edit`
+splits the frontmatter off before it looks for the words you gave it, so the
+line a reader sees first used to be the one thing an agent could not correct,
+however plainly you said it. `mabolo_describe` takes the same gate and the same
+revision check, refuses a description that would not fit one line of an index
+rather than letting it be cut there, and does record a verification: unlike a
+link, a description is a claim about what the entry holds.
 
 **A body keeps its paragraphs.** Trailing whitespace goes, a run of blank lines
 becomes one, an indent the whole body shares is dropped, and nothing else is
