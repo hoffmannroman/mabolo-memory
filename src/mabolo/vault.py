@@ -634,6 +634,14 @@ class Vault:
         the files are not written until the commit is safe.
         """
         named = {change.path for change in changes}
+        # What these changes will put on disk, for the lines that describe them.
+        # The files are not there yet, and `_index_line` would otherwise call
+        # every one of them unreadable.
+        pending = {
+            self.root / change.path: change.data
+            for change in changes
+            if change.data is not None
+        }
         entries = set(self.entry_paths())
         affected: set[Path] = set()
         for change in changes:
@@ -651,6 +659,40 @@ class Vault:
                     break
         if not affected:
             return []
+        return self._derive_indexes(entries, only=affected, pending=pending, named=named)
+
+    def stale_indexes(self) -> list[write.Change]:
+        """Every index that does not match the entries beside it, as changes.
+
+        The same question `index_changes` asks, asked of the whole vault and
+        with nothing to trigger it. A write derives the indexes it made wrong;
+        this finds the ones something else did -- a file created in an editor, a
+        merge, a hand written commit -- which nothing else was watching, because
+        a write only ever touches the folders it wrote into and says so.
+
+        It shares the whole derivation rather than rebuilding a second idea of
+        what an index looks like. Two spellings of that would drift, and the
+        drift would only ever show up as a repair command that disagrees with
+        the writer about what needs repairing, which is a hard thing to see.
+        """
+        return self._derive_indexes(set(self.entry_paths()))
+
+    def _derive_indexes(
+        self,
+        entries: set[Path],
+        *,
+        only: set[Path] | None = None,
+        pending: dict[Path, bytes] | None = None,
+        named: set[str] | None = None,
+    ) -> list[write.Change]:
+        """The indexes these entries imply, as the changes that would write them.
+
+        `only` narrows it to a set of folders, which is what a write wants: an
+        index that was already wrong elsewhere is a repair, and a repair does
+        not belong in the diff of a write that had nothing to do with it.
+        Left out, every folder is considered, which is what a repair wants.
+        """
+        named = named or set()
         by_folder: dict[Path, list[Path]] = defaultdict(list)
         for path in entries:
             by_folder[path.parent].append(path)
@@ -658,9 +700,11 @@ class Vault:
         language = self.language or self.declared_language()
         derived: list[write.Change] = []
         for directory in directories:
-            if directory not in affected:
+            if only is not None and directory not in only:
                 continue
-            target, text = self._render_index(directory, by_folder, directories, language)
+            target, text = self._render_index(
+                directory, by_folder, directories, language, pending
+            )
             if target.relative_to(self.root).as_posix() in named:
                 # The caller already says what this file holds. A revert names
                 # every file of the commit it undoes, index included, and two
@@ -712,6 +756,7 @@ class Vault:
         by_folder: dict[Path, list[Path]],
         directories: list[Path],
         language: str = DEFAULT_LANGUAGE,
+        pending: dict[Path, bytes] | None = None,
     ) -> tuple[Path, str]:
         """One index.md, built from the same file list the validator walks.
 
@@ -749,7 +794,7 @@ class Vault:
 
         if entries:
             lines += ["## Entries", ""]
-            lines += [self._index_line(path) for path in entries]
+            lines += [self._index_line(path, pending) for path in entries]
             lines.append("")
         if subdirs:
             lines.append("## Areas" if is_root else "## Folders")
@@ -795,12 +840,30 @@ class Vault:
             "Move it aside before Mabolo rebuilds the index in this folder."
         )
 
-    def _index_line(self, path: Path) -> str:
+    def _index_line(self, path: Path, pending: dict[Path, bytes] | None = None) -> str:
+        """One entry as its index lists it, read from `pending` before disk.
+
+        **An index is built before the entry it describes exists.** A write
+        commits through plumbing and only writes the person's files once the
+        push is safe, so during `index_changes` the new entry is a path and a
+        pile of bytes and nothing on disk. Reading it from disk raised
+        `FileNotFoundError`, which is an `OSError`, which this caught and turned
+        into `- unreadable frontmatter` -- a true sentence about a file that was
+        never meant to be there yet, written into the one file a reader opens
+        first, in the same commit that was supposed to be getting it right.
+
+        `index_changes` already folded these paths into its entry list for
+        exactly this reason and said so. It folded in the names and not the
+        contents, and the line needs both.
+        """
+        data = (pending or {}).get(path)
         try:
-            doc = frontmatter.read(path)
+            if data is None:
+                meta = frontmatter.read(path).meta or {}
+            else:
+                meta = frontmatter.parse(data.decode("utf-8"))[0] or {}
         except (MaboloError, OSError, UnicodeDecodeError):
             return f"* [{escape_markdown(path.stem)}]({path.name}) - unreadable frontmatter"
-        meta = doc.meta or {}
         raw_title = meta.get("title")
         title = escape_markdown(str(raw_title)) if raw_title else escape_markdown(path.stem)
         raw_description = meta.get("description")

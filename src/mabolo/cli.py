@@ -65,6 +65,7 @@ from . import (
     seen,
     session,
     wiring,
+    write,
 )
 from .config import (
     DEFAULT_BRANCH,
@@ -634,6 +635,47 @@ def cmd_revert(args: argparse.Namespace) -> int:
         actor=actor,
         kind="revert",
         derived=vault.index_changes(list(plan.changes)),
+        remote=remote,
+        branch=branch,
+    )
+    print(result.message)
+    return EXIT_OK if result.ok else EXIT_FINDINGS
+
+
+def cmd_reindex(args: argparse.Namespace) -> int:
+    """Rebuild the indexes that no longer match the entries beside them.
+
+    **The repair for the one way an index goes stale that nothing else sees.**
+    A write derives the indexes it made wrong and commits them alongside the
+    entry, so the tools keep themselves straight. What they cannot see is a
+    change that did not come through them: a file created in Obsidian, a merge,
+    a commit made by hand. That lands next to the entries without deriving
+    anything, and the folder's index quietly describes a vault that no longer
+    exists. `mabolo init` would fix it, but init is for a vault that does not
+    exist yet, and reaching for it to repair a live one is how a person ends up
+    running the wrong command on the right problem.
+
+    It goes through the same door as every other mutation -- lock, commit with
+    a trailer, push with a lease -- because an index is a file in the vault and
+    a repair that wrote it any other way would be a second way to change one.
+    """
+    config, vault = _setup(args)
+    actor, remote, branch = config.target() if config else (default_actor(), None, None)
+    changes = vault.stale_indexes()
+    if not changes:
+        print("every index matches the entries beside it")
+        return EXIT_OK
+    print(f"{len(changes)} index file(s) do not match the entries beside them:")
+    for change in changes:
+        print(f"  {change.path}")
+    if args.dry_run:
+        return EXIT_FINDINGS
+    result = write.apply(
+        vault.root,
+        changes,
+        f"rebuild {len(changes)} index file(s)",
+        actor=actor,
+        kind="reindex",
         remote=remote,
         branch=branch,
     )
@@ -1258,6 +1300,11 @@ def build_parser() -> argparse.ArgumentParser:
     undo.add_argument("--path", dest="path", help="the vault, default is the configured one")
     undo.add_argument("--dry-run", action="store_true", help="print the plan and stop")
     undo.set_defaults(func=cmd_revert)
+
+    again = sub.add_parser("reindex", help="rebuild indexes that no longer match their entries")
+    again.add_argument("path", nargs="?", help="the vault, default is the configured one")
+    again.add_argument("--dry-run", action="store_true", help="print what is stale and stop")
+    again.set_defaults(func=cmd_reindex)
 
     back = sub.add_parser("recover", help="put files back, or push what this clone has")
     kinds = back.add_subparsers(dest="what", required=True)

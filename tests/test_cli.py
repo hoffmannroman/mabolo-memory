@@ -1202,3 +1202,68 @@ def test_the_inbox_brings_itself_up_to_date_before_listing(tmp_path, capsys, git
     assert inbox.pending(second) == [], "the clone starts with no local inbox branch"
     assert main(["--config", str(config), "inbox"]) == 0
     assert filed.id in capsys.readouterr().out
+
+
+# reindex: the repair for an index nothing else was watching
+
+
+def test_reindex_rebuilds_an_index_that_a_hand_written_file_left_behind(tmp_path, capsys, git_identity):
+    """The case this command exists for.
+
+    A write derives the indexes it made wrong and commits them with the entry,
+    so the tools keep themselves straight. A file added in an editor derives
+    nothing, and the folder's index goes on describing a vault that no longer
+    exists. `mabolo init` would rebuild it, but init is for a vault that is not
+    there yet, and reaching for it to repair a live one is the wrong command on
+    the right problem.
+    """
+    config = str(tmp_path / "c.toml")
+    root = tmp_path / "v"
+    main(["--config", config, "init", "--vault", str(root), "--actor", "human:alex", "--yes"])
+    (root / "infra" / "by-hand.md").write_text(
+        entry_text(area="infra", description="added in an editor"), encoding="utf-8"
+    )
+
+    assert main(["--config", config, "reindex", str(root), "--dry-run"]) == 1
+    out = capsys.readouterr().out
+    assert "infra/index.md" in out
+    assert "by-hand" not in (root / "infra" / "index.md").read_text(encoding="utf-8")
+
+    assert main(["--config", config, "reindex", str(root)]) == 0
+    line = next(
+        l
+        for l in (root / "infra" / "index.md").read_text(encoding="utf-8").splitlines()
+        if "by-hand.md" in l
+    )
+    assert "added in an editor" in line, line
+
+
+def test_reindex_says_so_and_changes_nothing_when_every_index_matches(tmp_path, capsys):
+    """A repair that prints the same thing whether or not it repaired anything
+    teaches a reader to stop looking at its output."""
+    config = str(tmp_path / "c.toml")
+    root = tmp_path / "v"
+    main(["--config", config, "init", "--vault", str(root), "--actor", "human:alex", "--yes"])
+    before = (root / "index.md").read_bytes()
+
+    assert main(["--config", config, "reindex", str(root)]) == 0
+    assert "every index matches" in capsys.readouterr().out
+    assert (root / "index.md").read_bytes() == before
+
+
+def test_reindex_commits_through_the_same_door_as_every_other_change(tmp_path, capsys, git_identity):
+    """An index is a file in the vault, so the repair is a commit with a
+    trailer like any other. A second way to change a file is a second way to
+    lose one."""
+    config = str(tmp_path / "c.toml")
+    root = tmp_path / "v"
+    main(["--config", config, "init", "--vault", str(root), "--actor", "human:alex", "--yes"])
+    (root / "infra" / "by-hand.md").write_text(entry_text(area="infra"), encoding="utf-8")
+    Vault(root).git("add", "--", "infra/by-hand.md")
+    Vault(root).git("commit", "-q", "-m", "added by hand")
+
+    assert main(["--config", config, "reindex", str(root)]) == 0
+    message = Vault(root).git("log", "-1", "--format=%B").stdout
+    assert "Mabolo:" in message, message
+    assert "reindex" in message, message
+    assert Vault(root).git("status", "--porcelain").stdout.strip() == "", "nothing left uncommitted"

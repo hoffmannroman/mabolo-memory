@@ -200,6 +200,11 @@ This is early, and the README says only what exists:
   exits 1 on a finding and also on a check it could not run, because a check
   nobody could make is not a clean one. `mabolo lint` is the other half, and
   asks whether the content has gone stale or tangled.
+* `mabolo reindex` rebuilds an index that something outside Mabolo made wrong.
+  Every write derives the indexes it made stale and commits them alongside the
+  entry, so the tools keep themselves straight; a file added in an editor or a
+  commit made by hand derives nothing, and the folder's index goes on describing
+  a vault that no longer exists. `doctor` reports it and names the command.
 * `mabolo revert` and `mabolo recover` are the way back. Everything Mabolo
   writes is one commit, so `git revert` already works; these add the trailer,
   the lease, and a refusal to throw away a hand edit while repairing.

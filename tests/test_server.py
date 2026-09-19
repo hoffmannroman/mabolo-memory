@@ -473,6 +473,28 @@ def test_a_written_entry_reaches_its_area_index_in_the_same_commit(server, git_v
     assert missing == []
 
 
+def test_the_index_line_of_a_new_entry_carries_its_description(server, git_vault):
+    """The index is built before the entry exists on disk, and it has to say
+    what the entry holds anyway.
+
+    A write commits through plumbing and writes the person's files only once the
+    push is safe, so while the index is being derived the new entry is bytes and
+    a path and nothing else. Reading it from disk raised `FileNotFoundError`,
+    which the line caught and rendered as `- unreadable frontmatter`: a sentence
+    about a missing file, in the one file a reader opens first, in the very
+    commit that was adding it. The test above did not see it because a link is
+    still a link when the words after it are wrong.
+    """
+    written(server)
+    line = next(
+        l
+        for l in (git_vault.root / "infra" / "index.md").read_text(encoding="utf-8").splitlines()
+        if "deploy-from-main.md" in l
+    )
+    assert "unreadable" not in line, line
+    assert "Releases are cut from main, never from a tag" in line, line
+
+
 def test_a_forgotten_entry_leaves_no_link_pointing_at_nothing(server, git_vault):
     """A removal that leaves the index naming the file is a broken link in the
     one file a reader starts from, and `validate` reports it as such.

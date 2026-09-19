@@ -530,3 +530,36 @@ def test_the_check_on_what_mabolo_writes_runs_only_where_a_path_list_means_anyth
     assert set(doctor.PATH_KINDS) == {"write", "edit", "forget", "journal", "approve", "reject"}
     assert not set(doctor.PATH_KINDS) & {"foreign", "adopt", "import", "revert"}
     assert doctor.writes(".mabolo/decided.md"), "the ledger is a path Mabolo writes"
+
+
+def test_an_index_that_names_every_entry_can_still_be_wrong_about_them(vault):
+    """Being named is not the same as being described.
+
+    The check asked only whether the link was there, so an index could name
+    every entry and be wrong about all of them without a word from anybody. The
+    shape that produces it is the one this vault is built around: somebody adds
+    a file in an editor, the index is never derived, and the folder goes on
+    describing a vault that no longer exists.
+    """
+    write_entry(vault, "infra/added-by-hand.md", area="infra")
+    vault.rebuild_indexes()
+    index = vault.root / "infra" / "index.md"
+    assert "added-by-hand.md" in index.read_text(encoding="utf-8")
+    assert not [m for m in messages(doctor.examine(root=vault.root), doctor.CONTENT) if "index" in m]
+
+    # The entry changes underneath it: still named, no longer described.
+    write_entry(vault, "infra/added-by-hand.md", area="infra", description="something else now")
+    found = [m for m in messages(doctor.examine(root=vault.root), doctor.CONTENT) if "index" in m]
+    assert any("does not match the entries beside it" in m for m in found), found
+    assert any("mabolo reindex" in m for m in found), "and it names the repair"
+
+
+def test_a_vault_whose_indexes_all_match_says_nothing_about_them(vault):
+    """The check has to be quiet when there is nothing to say, or the sentence
+    it prints when there is means nothing."""
+    write_entry(vault, "infra/one.md", area="infra")
+    vault.rebuild_indexes()
+    assert not [
+        m for m in messages(doctor.examine(root=vault.root), doctor.CONTENT)
+        if "does not match" in m
+    ]

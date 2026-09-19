@@ -88,6 +88,11 @@ KINDS = (
     # The way back, which must not itself look like a commit from nowhere.
     "revert",
     "recover",
+    # Rebuilding a derived file that something outside Mabolo made wrong. Its
+    # own kind rather than a `write`, because a reader of the history has to be
+    # able to tell a commit that changed what the vault knows from one that
+    # only made an index agree with it again.
+    "reindex",
 )
 
 

@@ -1,6 +1,6 @@
 # When something has gone wrong
 
-Three commands, and four procedures that are printed rather than performed.
+Four commands, and four procedures that are printed rather than performed.
 The split is deliberate: a tool that repairs things on your behalf is a tool
 whose repairs you have to audit, and the whole point of this one is that you do
 not have to.
@@ -11,6 +11,7 @@ not have to.
 mabolo revert <commit>            # undo one commit, as a commit of its own
 mabolo recover files <path...>    # put named files back to what the last commit says
 mabolo recover push               # send what this clone has, or show both sides
+mabolo reindex                    # rebuild an index that no longer matches its entries
 ```
 
 **`revert`** is `git revert` with three things added: the undoing carries the
@@ -36,6 +37,26 @@ diverged it stops and prints both lists, because merging or rebasing on your
 behalf is a decision. It never merges, never rebases and never forces: a lease
 alone would not save you here, since a lease permits overwriting a remote that
 sits exactly where you last looked.
+
+**`reindex`** repairs the one file that is derived rather than written, in the
+one case nothing else is watching. Every write works out which indexes it made
+wrong and commits them in the same commit as the entry, so the tools keep
+themselves straight. What they cannot see is a change that did not come through
+them: an entry created in Obsidian, a merge, a commit made by hand. That lands
+next to the entries without deriving anything, and the folder's index goes on
+describing a vault that no longer exists.
+
+`mabolo init` would also rebuild it, and that is the trap this replaces: init
+is for a vault that does not exist yet, so reaching for it to repair a live one
+is the wrong command on the right problem. `reindex` prints what is stale, and
+`--dry-run` stops there. Otherwise it goes out as a commit of its own kind,
+with the trailer and the lease, so the history says plainly which commits
+changed what the vault knows and which only made an index agree with it again.
+
+`doctor` finds them without being asked, by rebuilding every index and seeing
+whether it comes out the same. It used to ask only whether each entry was
+*named* by its index, which an index can do while being wrong about every one
+of them.
 
 ## The procedures
 

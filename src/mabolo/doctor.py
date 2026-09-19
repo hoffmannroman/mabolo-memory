@@ -56,6 +56,7 @@ from typing import Callable, Sequence
 from . import consent, drift, git, proposal, seen, validate, write
 from .config import CONFIG_MODE, Config, default_config_path
 from .errors import MaboloError
+from .vault import Vault
 from .query import fold
 from .schema import FIXED_AREAS, INDEX_FILE
 from .vault import LEDGER_FILE, STATE_DIR
@@ -886,7 +887,7 @@ def _content_checks(
         )
     checks = [Check(names[0], CONTENT, findings=tuple(broken))]
     checks.append(_folding_check(root, found.entries))
-    checks.append(_index_check(root, found.entries))
+    checks.append(_index_check(root, found.entries, areas))
     checks.append(_anchor_check(found.entries, project, repository, now))
     return checks
 
@@ -913,12 +914,22 @@ def _folding_check(root: Path, entries: list) -> Check:
     return Check("content.folding", CONTENT, findings=findings)
 
 
-def _index_check(root: Path, entries: list) -> Check:
-    """Whether every entry is named by the index of the folder it sits in.
+def _index_check(root: Path, entries: list, areas: tuple[str, ...] = ()) -> Check:
+    """Whether every entry is named by the index of the folder it sits in, and
+    whether what the index says about it is still true.
 
     An entry missing from its own index is invisible to anybody reading the
     vault by hand, which is the way out this project promises, and it is the
     shape a half finished rebuild leaves behind.
+
+    **Being named is not the same as being described.** This asked only whether
+    the link was there, so an index could name every entry and be wrong about
+    all of them and no check said a word. It happened: an entry written while
+    its file was not yet on disk got the line `- unreadable frontmatter`, which
+    names the file correctly and describes a vault that does not exist. The
+    second question is asked by rebuilding the indexes and seeing whether they
+    come out the same, which is the only way to ask it that cannot drift from
+    what a write actually produces.
     """
     listed: dict[Path, str | None] = {}
     missing_index: list[Path] = []
@@ -949,6 +960,22 @@ def _index_check(root: Path, entries: list) -> Check:
         _f(CONTENT, f"{_relative(root, folder)} holds entries and has no {INDEX_FILE}")
         for folder in sorted(set(missing_index))
     ] + findings
+    try:
+        stale = Vault(root, areas or None).stale_indexes()
+    except (MaboloError, OSError) as exc:
+        return Check(
+            "content.index",
+            CONTENT,
+            findings=tuple(findings),
+            reason=f"the indexes could not be rebuilt to compare ({exc})",
+        )
+    findings += [
+        _f(
+            CONTENT,
+            f"{change.path} does not match the entries beside it. Run `mabolo reindex`",
+        )
+        for change in stale
+    ]
     return Check("content.index", CONTENT, findings=tuple(findings))
 
 
