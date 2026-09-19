@@ -53,12 +53,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import consent, drift, git, seen, validate, write
+from . import consent, drift, git, proposal, seen, validate, write
 from .config import Config, default_config_path
 from .errors import MaboloError
 from .query import fold
 from .schema import FIXED_AREAS, INDEX_FILE
-from .vault import STATE_DIR
+from .vault import LEDGER_FILE, STATE_DIR
 
 #: The six groups, in the order they are reported. The order is the report:
 #: a broken configuration explains a silent remote, and a person reading top
@@ -78,12 +78,24 @@ EXPECTED_MODE = 0o600
 #: How long a proposal may wait before waiting is the problem. It matches the
 #: expiry the state machine gives a proposal: past this, nobody is going to
 #: decide it, and it will go away on its own without ever being read.
-PROPOSAL_DAYS = 30
+#: How long a proposal waits before it is litter. The number lives with the
+#: proposal, not here: a diagnosis that carried its own copy would go on
+#: reporting the old one after somebody moved it.
+PROPOSAL_DAYS = proposal.EXPIRES_AFTER_DAYS
 
 #: The kinds of commit that mark where Mabolo's own history begins. Before one
 #: of these, the history belonged to somebody else and saying anything about it
 #: would be an accusation rather than a check.
 BOUNDARY_KINDS = ("adopt", "import")
+
+#: The kinds a path list means anything for. A hand edit may add a picture or a
+#: folder, an import writes the whole vault, an adopt writes the skeleton, and a
+#: revert touches whatever the commit it undoes touched. Checking those four
+#: against a list of what Mabolo writes would make every one of them a finding,
+#: which is a report crying wolf about its own tool. Spelled out rather than
+#: derived, so that a new kind cannot arrive without somebody deciding whether
+#: the check applies to it.
+PATH_KINDS = ("write", "edit", "forget", "journal", "approve", "reject")
 
 #: Splits a client configuration into candidate command words. It is deliberately
 #: crude: these files are JSON, TOML and shell in three different shapes, and a
@@ -191,8 +203,8 @@ class Report:
 def writes(path: str) -> bool:
     """Whether a path in the vault is one Mabolo itself could have written.
 
-    Mabolo writes Markdown, the `.gitignore` that `init` lays down, and the
-    eval cases that travel with the entries. A commit that carries Mabolo's
+    Mabolo writes Markdown, the `.gitignore` that `init` lays down, the eval
+    cases that travel with the entries, and the ledger of answered proposals. A commit that carries Mabolo's
     trailer and touches anything else was either hand made under a borrowed
     signature or produced by something that copied the trailer, and either way
     the trailer is no longer evidence of what the commit is.
@@ -200,6 +212,11 @@ def writes(path: str) -> bool:
     if path == ".gitignore":
         return True
     if path == f"{STATE_DIR}/eval" or path.startswith(f"{STATE_DIR}/eval/"):
+        return True
+    if path == LEDGER_FILE:
+        # The ledger. Left out of this list, every approve and every reject was
+        # reported as a commit claiming Mabolo and touching what it never
+        # writes, which is the report crying wolf about its own tool.
         return True
     return path.endswith(".md") and not path.startswith(".")
 
@@ -529,7 +546,7 @@ def _lock_check(root: Path, now: dt.datetime) -> Check:
     is the longest any writer would have waited for it. That is a write that
     died holding it, or one that is stuck.
     """
-    path = write._lock_path(root)
+    path = write.lock_path(root)
     try:
         if not path.exists():
             return Check("repository.lock", REPOSITORY)
@@ -785,7 +802,9 @@ def _history_checks(root: Path | None, blocked: str) -> list[Check]:
                     f"{', '.join(p for p in c.paths if not writes(p))}, which Mabolo never writes",
                 )
                 for c in after
-                if c.kind and len(c.parents) <= 1 and any(not writes(p) for p in c.paths)
+                if c.kind in PATH_KINDS
+                and len(c.parents) <= 1
+                and any(not writes(p) for p in c.paths)
             ),
         )
     )

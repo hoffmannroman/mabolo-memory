@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .consent import normalise, redact
+from .schema import as_utc
 from .errors import MaboloError
 
 #: What a proposal can ask for. The same three verbs as the write tools,
@@ -127,9 +128,10 @@ class Proposal:
         filed = self.filed_on()
         if filed is None:
             return False
-        if filed.tzinfo is None:
-            filed = filed.astimezone()
-        return filed < now - dt.timedelta(days=days)
+        # Read as UTC, not as this machine's local time. `filed_at` travels
+        # between machines on the inbox branch, and reading it locally would
+        # let two clones drop the same proposal on two different days.
+        return as_utc(filed) < as_utc(now) - dt.timedelta(days=days)
 
     def to_json(self) -> str:
         meta: dict[str, Any] = {

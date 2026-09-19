@@ -159,7 +159,7 @@ def dead_links(entries: Sequence[Entry], root: Path) -> list[Finding]:
     for entry in entries:
         if entry.path is None:
             continue
-        for written, relative in _links(entry.body):
+        for written, relative in links_of(entry.body):
             base = root if relative.startswith("/") else entry.path.parent
             destination = base / relative.lstrip("/")
             resolved = _resolve(destination)
@@ -499,7 +499,7 @@ def _grouped(findings: Sequence[Finding]) -> list[str]:
     return out
 
 
-def _links(body: str) -> Iterator[tuple[str, str]]:
+def links_of(body: str) -> Iterator[tuple[str, str]]:
     """Every relative Markdown link of a body, as written and as a path.
 
     External links, fragments and mail addresses are not paths in a vault and
@@ -520,7 +520,7 @@ def _linked(entry: Entry, root: Path) -> set[Path]:
     out: set[Path] = set()
     if entry.path is None:
         return out
-    for _, relative in _links(entry.body):
+    for _, relative in links_of(entry.body):
         base = root if relative.startswith("/") else entry.path.parent
         resolved = _resolve(base / relative.lstrip("/"))
         if resolved is not None:

@@ -26,7 +26,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import frontmatter, git, journal
+from . import PRODUCER, frontmatter, git, journal, write
 from .errors import MaboloError
 from .schema import (
     DEFAULT_LANGUAGE,
@@ -48,6 +48,12 @@ from .validate import Report, area_of, iter_markdown, markdown_files, validate_m
 #: Everything derived lives here. Only the eval cases are versioned with the vault.
 STATE_DIR = ".mabolo"
 EVAL_DIR = f"{STATE_DIR}/eval"
+#: Who answered which proposal. It lives under the state directory and is the
+#: one thing there that is not disposable, which is why the gitignore has an
+#: exception for it and why `doctor` counts it among the paths Mabolo writes.
+#: Spelled once, because three spellings is how the ignore file, the reader and
+#: the diagnosis end up disagreeing about one file.
+LEDGER_FILE = f"{STATE_DIR}/decided.md"
 
 VAULT_GITIGNORE = """\
 # The Markdown files are the only source. Everything else under {state} is
@@ -61,10 +67,10 @@ VAULT_GITIGNORE = """\
 
 # And the ledger: who answered which proposal is an answer about the vault's
 # own entries, so it travels with them rather than with the machine.
-!{state}/decided.md
+!{ledger}
 
 *.log
-""".format(state=STATE_DIR)
+""".format(state=STATE_DIR, ledger=LEDGER_FILE)
 
 LOG_HEADER = "<!-- Newest first, one heading per day, written by Mabolo. -->\n"
 
@@ -647,7 +653,12 @@ class Vault:
     def git(self, *args: str, check: bool = True):
         return git.run(self.root, *args, check=check)
 
-    def git_initialise(self, branch: str = "main", paths: list[Path] | None = None) -> GitResult:
+    def git_initialise(
+        self,
+        branch: str = "main",
+        paths: list[Path] | None = None,
+        actor: str = PRODUCER,
+    ) -> GitResult:
         """Create the repository and commit exactly the files that were created.
 
         The caller gets a result rather than a sentence, because "made no commit
@@ -687,7 +698,13 @@ class Vault:
             return GitResult(True, "nothing to commit")
         # In an index of its own: whatever the person had staged in this
         # repository stays staged and out of this commit.
-        head = git.commit_paths(self.root, relative, "Create vault")
+        # Signed as the commit that starts Mabolo's own history. Without it no
+        # vault this tool creates has a boundary, and `doctor` tells every
+        # fresh one that it was never adopted, which is a report failing on the
+        # very thing it was run to check.
+        head = git.commit_paths(
+            self.root, relative, write.signed("Create vault", "adopt", actor)
+        )
         if head is None:
             return GitResult(True, "nothing to commit, the vault is already in Git")
         return GitResult(True, f"committed the vault skeleton as {head}", revision=head)

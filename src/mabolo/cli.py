@@ -1,10 +1,20 @@
 """The `mabolo` command.
 
-Five commands so far: `init` creates a vault and a configuration, `validate`
-says what is wrong with one, `eval` measures whether the memory actually hands
-over the entry that answers a question, `context` prints what a session would
-start with, and `hook` is what a client calls to be handed it. Everything else
-arrives with the part of the tool that gives it something to talk about.
+Fifteen of them now, and they fall into four kinds. **Setting up**: `init`
+creates a vault, a configuration and the wiring, and `uninstall` takes the
+wiring away again and leaves the vault. **Being used**: `serve` is the MCP
+server a client talks to, `hook` is what a client's own events call, `inbox`
+answers what automation suggested, and `extract` mines the prompts this machine
+wrote down. **Checking**: `validate` against the format, `doctor` for the
+machinery, `lint` for the content, `why` for one entry's provenance, `eval` for
+whether the memory still hands over the entry that answers a question, and
+`context` for what a session would be handed. **Getting back**: `revert` and
+`recover`.
+
+Everything a command decides lives in a module; what is here is the arguments,
+the printing and the exit code. `session.py` is the example to follow: it holds
+the chain from vault to payload that the CLI, the hook and the server all call,
+so none of them can drift into a second answer.
 
 `context` and `hook session-start` build the same payload on purpose, through
 the same arguments and the same code. One prints it for a person to read and
@@ -44,6 +54,7 @@ from . import (
     doctor,
     drift,
     evaluate,
+    extract,
     git,
     inbox,
     lint,
@@ -87,7 +98,7 @@ def _ask(question: str, default: str, interactive: bool) -> str:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    config_path = Path(args.config).expanduser() if args.config else default_config_path()
+    config_path = _config_path(args) or default_config_path()
     existing = Config.load_if_present(config_path)
     interactive = sys.stdin.isatty() and not args.yes
 
@@ -431,11 +442,8 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     shell is the consent: the quote gate stands in front of an agent's tool
     call, not in front of a person's keyboard.
     """
-    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
-    vault = _vault_from(args)
-    remote = "origin" if config and config.remote_url else None
-    branch = config.remote_branch if config else None
-    actor = config.actor if config else default_actor()
+    config, vault = _setup(args)
+    actor, remote, branch = config.target() if config else (default_actor(), None, None)
 
     listing = inbox.read(vault.root)
     for broken in listing.unreadable:
@@ -493,7 +501,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     """
     slots = [one for client in wiring.installed() for one in wiring.slots(client)]
     state = consent.state_home() / "mabolo"
-    config_path = Path(args.config).expanduser() if args.config else default_config_path()
+    config_path = _config_path(args) or default_config_path()
     config = Config.load_if_present(config_path)
 
     print("Plan")
@@ -524,6 +532,55 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_extract(args: argparse.Namespace) -> int:
+    """Mine the prompts this machine wrote down for sentences worth keeping.
+
+    The notes are the transcript, not a client's session file. They are already
+    redacted, capped and expiring, they look the same whatever wrote them, and
+    the gate that insists a quote appears verbatim in a real message compares
+    against exactly these lines rather than across two formats.
+
+    Nothing reaches the vault here. Every sentence that survives the gates is a
+    proposal waiting on the inbox branch for the person to answer, and the id is
+    derived from the sentence, so running this twice over the same notes files
+    nothing twice.
+    """
+    config, vault = _setup(args)
+    if not config or not config.extract_command:
+        raise MaboloError(
+            "extraction has no model configured, so there is nothing to ask. Put the command "
+            "that reads a prompt on stdin and writes JSON on stdout into [extract] command "
+            "in your configuration."
+        )
+    prompts = consent.seen_prompts(session=args.session, window_hours=args.hours, now=now())
+    if not prompts:
+        print(f"no prompts written down in the last {args.hours} hours, nothing to read.")
+        return EXIT_OK
+
+    found = extract.extract(
+        list(reversed(extract.from_notes(prompts))),
+        vault=vault,
+        runner=extract.command_runner(config.extract_command),
+        session=args.session or "",
+    )
+    for line in found.report.lines():
+        print(line)
+    filed = 0
+    for one in found.proposals:
+        # No `branch` here. That argument names the inbox's own branch, and
+        # handing it the branch the vault lives on would rebuild `main` as one
+        # parentless commit holding nothing but proposals.
+        result = inbox.file(
+            vault.root, one, remote=config.target()[1]
+        )
+        if result.outcome == inbox.ALREADY:
+            continue
+        filed += 1
+        print(f"  {one.id} {one.action} {one.target}: {result.message}")
+    print(f"\n{filed} waiting for an answer. Read them with `mabolo inbox`.")
+    return EXIT_OK
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Say whether the machinery is sound, findings first.
 
@@ -531,7 +588,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     could make is not a clean one, and counting it as clean is the exact
     failure this whole report exists to prevent.
     """
-    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
+    config = Config.load_if_present(_config_path(args))
     root = Path(args.path).expanduser() if args.path else (config.vault if config else None)
     folder = repo_root(Path.cwd())
     project = None
@@ -552,7 +609,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             waiting = None
     report = doctor.examine(
         config,
-        config_path=Path(args.config).expanduser() if args.config else None,
+        config_path=_config_path(args),
         root=root,
         clients=[path for one in wiring.installed() for path in wiring.files_of(one)],
         pending=waiting,
@@ -588,8 +645,8 @@ def cmd_lint(args: argparse.Namespace) -> int:
 
 def cmd_revert(args: argparse.Namespace) -> int:
     """Undo one commit, as a commit of its own that says what it is."""
-    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
-    vault = _vault_from(args)
+    config, vault = _setup(args)
+    actor, remote, branch = config.target() if config else (default_actor(), None, None)
     plan = recover.plan_revert(vault.root, args.commit)
     print(plan.render())
     if plan.empty:
@@ -599,10 +656,10 @@ def cmd_revert(args: argparse.Namespace) -> int:
     result = recover.carry_out(
         vault.root,
         plan,
-        actor=config.actor if config else default_actor(),
+        actor=actor,
         kind="revert",
-        remote="origin" if config and config.remote_url else None,
-        branch=config.remote_branch if config else None,
+        remote=remote,
+        branch=branch,
     )
     print(result.message)
     return EXIT_OK if result.ok else EXIT_FINDINGS
@@ -610,14 +667,14 @@ def cmd_revert(args: argparse.Namespace) -> int:
 
 def cmd_recover(args: argparse.Namespace) -> int:
     """Put files back, or push what this clone has, and never decide a merge."""
-    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
-    vault = _vault_from(args)
+    config, vault = _setup(args)
     if args.what == "push":
         branch = args.branch or (config.remote_branch if config else DEFAULT_BRANCH)
         standing = recover.push(vault.root, remote=args.remote, branch=branch)
         print(standing.render())
         return EXIT_OK if standing.pushed else EXIT_FINDINGS
 
+    actor, remote, branch = config.target() if config else (default_actor(), None, None)
     plan = recover.plan_files(vault.root, args.files)
     print(plan.render())
     if plan.empty or args.dry_run:
@@ -625,10 +682,10 @@ def cmd_recover(args: argparse.Namespace) -> int:
     result = recover.carry_out(
         vault.root,
         plan,
-        actor=config.actor if config else default_actor(),
+        actor=actor,
         kind="recover",
-        remote="origin" if config and config.remote_url else None,
-        branch=config.remote_branch if config else None,
+        remote=remote,
+        branch=branch,
     )
     print(result.message)
     return EXIT_OK if result.ok and not plan.note else EXIT_FINDINGS
@@ -669,14 +726,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
     """
     from .server import Settings, build
 
-    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
-    vault = _vault_from(args)
+    config, vault = _setup(args)
     if not vault.is_initialised():
         raise MaboloError(f"{vault.root} is not a Mabolo vault. Run `mabolo init` first.")
+    actor, remote, branch = config.target() if config else (default_actor(), None, None)
     settings = Settings(
-        actor=config.actor if config else default_actor(),
-        remote="origin" if config and config.remote_url else None,
-        branch=config.remote_branch if config else None,
+        actor=actor,
+        remote=remote,
+        branch=branch,
         read_only=bool(args.read_only),
         cwd=Path.cwd(),
         session=args.session or None,
@@ -774,7 +831,7 @@ def _prompt_payload(args: argparse.Namespace) -> str:
         # tying it to the tier that usually stays silent would mean the gate
         # only works on the prompts that happened to find an entry.
         consent.record(prompt, cwd=event.get("cwd"), session=event.get("session_id"))
-    config_path = Path(args.config).expanduser() if args.config else default_config_path()
+    config_path = _config_path(args) or default_config_path()
     if not args.path and not config_path.exists():
         # Silence, not the sentence the session start gives. That one is said
         # once when a session begins; said again on every prompt it would be
@@ -811,7 +868,7 @@ def _pretool_payload(args: argparse.Namespace) -> str:
     where = args.file or _tool_path(event)
     if not where:
         return ""
-    config_path = Path(args.config).expanduser() if args.config else default_config_path()
+    config_path = _config_path(args) or default_config_path()
     if not args.path and not config_path.exists():
         return ""
     vault = _vault_from(args)
@@ -859,7 +916,7 @@ def _hook_output(event: str, text: str) -> dict:
 def _session_payload(args: argparse.Namespace) -> str:
     """The text of the payload, or an empty string when there is nothing to say."""
     event = _hook_event()
-    config_path = Path(args.config).expanduser() if args.config else default_config_path()
+    config_path = _config_path(args) or default_config_path()
     if not args.path and not config_path.exists():
         # A vault named on the command line needs no configuration: that is how
         # the hook is tried out before it is installed, and how a test runs it.
@@ -903,9 +960,29 @@ def _hook_event() -> dict:
     return event if isinstance(event, dict) else {}
 
 
-def _vault_from(args: argparse.Namespace) -> Vault:
+def _config_path(args: argparse.Namespace) -> Path | None:
+    """The configuration a command was pointed at, or None for the default one.
+
+    One expression rather than thirteen copies of it. Thirteen is how a flag
+    ends up working for every command but the one somebody forgot.
+    """
+    return Path(args.config).expanduser() if getattr(args, "config", None) else None
+
+
+def _setup(args: argparse.Namespace) -> tuple[Config | None, Vault]:
+    """The configuration and the vault a command works with, read once.
+
+    Five commands loaded the configuration themselves and then called
+    `_vault_from`, which loaded it again: twice the file, twice the parse, and
+    two objects that a concurrent write could make disagree.
+    """
+    config = Config.load_if_present(_config_path(args))
+    return config, _vault_from(args, config)
+
+
+def _vault_from(args: argparse.Namespace, config: Config | None = None) -> Vault:
     """The vault a command was pointed at, from the argument or the configuration."""
-    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
+    config = config if config is not None else Config.load_if_present(_config_path(args))
     areas = tuple(config.areas) if config else FIXED_AREAS
     root = Path(args.path).expanduser() if args.path else (config.vault if config else None)
     if root is None:
@@ -1173,6 +1250,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"give up after this long, default {PROMPT_SECONDS}",
     )
     touched.set_defaults(func=cmd_hook_pretool)
+
+    mine = sub.add_parser("extract", help="mine the prompts for sentences worth keeping")
+    mine.add_argument("path", nargs="?", help="the vault, default is the configured one")
+    mine.add_argument("--session", help="one session's notes, default is every recent one")
+    mine.add_argument(
+        "--hours",
+        type=int,
+        default=consent.WINDOW_HOURS,
+        help=f"how far back to read, default {consent.WINDOW_HOURS}",
+    )
+    mine.set_defaults(func=cmd_extract)
 
     checkup = sub.add_parser("doctor", help="whether the machinery is sound")
     checkup.add_argument("path", nargs="?", help="the vault, default is the configured one")

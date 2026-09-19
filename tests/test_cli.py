@@ -1110,3 +1110,59 @@ def test_uninstall_prints_its_plan_and_stops(tmp_path, capsys, git_identity):
     assert main(["--config", str(config), "uninstall", "--dry-run"]) == 0
     assert "Dry run" in capsys.readouterr().out
     assert (home / ".claude" / "settings.json").read_bytes() == before
+
+
+# `extract`: the door the pass did not have. The notes this machine wrote are
+# the transcript, and nothing it produces reaches the vault.
+
+
+def test_extract_says_so_when_no_model_is_configured(tmp_path, capsys, git_identity):
+    """A vendor's command line is not something this tool may guess, and a pass
+    that silently did nothing would be worse than one that is switched off."""
+    vault = hook_vault(tmp_path)
+    config = tmp_path / "c.toml"
+    config.write_text(f'vault = "{vault.root}"\nactor = "human:alex"\n', encoding="utf-8")
+    assert main(["--config", str(config), "extract", str(vault.root)]) == 2
+    assert "no model configured" in capsys.readouterr().err
+
+
+def test_extract_reads_nothing_when_nothing_was_written_down(tmp_path, capsys, git_identity):
+    vault = hook_vault(tmp_path)
+    config = tmp_path / "c.toml"
+    config.write_text(
+        f'vault = "{vault.root}"\nactor = "human:alex"\n[extract]\ncommand = ["true"]\n',
+        encoding="utf-8",
+    )
+    assert main(["--config", str(config), "extract", str(vault.root)]) == 0
+    assert "nothing to read" in capsys.readouterr().out
+
+
+def test_extract_files_what_survives_and_writes_nothing_into_the_vault(
+    tmp_path, capsys, git_identity, monkeypatch
+):
+    from mabolo import consent, extract, inbox
+
+    vault = Vault(tmp_path / "ev")
+    vault.initialise()
+    vault.git_initialise()
+    config = tmp_path / "c.toml"
+    config.write_text(
+        f'vault = "{vault.root}"\nactor = "human:alex"\n[extract]\ncommand = ["true"]\n',
+        encoding="utf-8",
+    )
+    consent.record("remember that releases are cut from main only", cwd=tmp_path, session="s")
+    answer = json.dumps({"proposals": [{
+        "action": "write",
+        "area": "infra",
+        "name": "deploy-from-main",
+        "description": "Releases are cut from main",
+        "body": "Releases are cut from main.",
+        "quote": "releases are cut from main only",
+    }]})
+    monkeypatch.setattr(extract, "command_runner", lambda *a, **k: (lambda prompt: answer))
+
+    before = vault.git("rev-parse", "HEAD").stdout
+    assert main(["--config", str(config), "extract", str(vault.root)]) == 0
+    assert "waiting for an answer" in capsys.readouterr().out
+    assert vault.git("rev-parse", "HEAD").stdout == before, "main does not move"
+    assert len(inbox.pending(vault.root)) == 1

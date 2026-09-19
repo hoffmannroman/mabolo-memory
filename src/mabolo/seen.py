@@ -29,7 +29,7 @@ import datetime as dt
 import json
 from pathlib import Path
 
-from .consent import MAX_LINES, RETENTION_DAYS, forget_old, session_id, state_home
+from .consent import RETENTION_DAYS, forget_old, session_id, state_home, trim
 
 SEEN_DIRNAME = "seen"
 
@@ -67,23 +67,11 @@ def remember(keys: list[str], *, session: object, at: dt.datetime | None = None,
                                ensure_ascii=False)
                     + "\n"
                 )
-        _trim(target)
+        trim(target)
         forget_old(where, now=moment, days=RETENTION_DAYS)
     except OSError:
         return None
     return target
-
-
-def _trim(target: Path) -> None:
-    try:
-        lines = target.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError):
-        return
-    if len(lines) <= MAX_LINES:
-        return
-    # The oldest go. What was shown an hour ago may be worth showing again;
-    # what was shown a moment ago is the repetition this exists to prevent.
-    target.write_text("\n".join(lines[-MAX_LINES:]) + "\n", encoding="utf-8")
 
 
 def already(session: object, directory: Path | None = None) -> set[str]:

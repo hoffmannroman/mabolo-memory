@@ -40,6 +40,11 @@ from .schema import (
 )
 
 CONFIG_VERSION = 1
+
+#: What the remote is called. Git's own default, and the only name `init` ever
+#: writes, so every caller that needs it can say the same word rather than
+#: spelling the literal in five places and leaving none of them to say why.
+REMOTE_NAME = "origin"
 DEFAULT_VAULT_DIRNAME = "mabolo-data"
 DEFAULT_BRANCH = "main"
 
@@ -169,6 +174,16 @@ class Config:
     #: True when the vault came from the environment, so `save` refuses to make
     #: a one-run override permanent.
     vault_from_environment: bool = False
+
+    def target(self) -> tuple[str, str | None, str]:
+        """Who is writing, where it goes, and on which branch.
+
+        The three values every mutation needs, derived once. They were worked
+        out at four call sites, and the remote one is the kind of expression
+        that reads like a condition and is really a definition: there is a
+        remote to push to exactly when one was configured.
+        """
+        return self.actor, (REMOTE_NAME if self.remote_url else None), self.remote_branch
 
     @classmethod
     def default(cls, vault: Path | None = None, actor: str | None = None) -> Config:

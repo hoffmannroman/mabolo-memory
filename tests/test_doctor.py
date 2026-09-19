@@ -40,6 +40,18 @@ def check(report, name):
     return next(c for c in report.checks if c.name == name)
 
 
+def unadopted(vault):
+    """A repository whose history does not start with Mabolo.
+
+    `init` signs the first commit as `adopt`, so a vault this tool made always
+    has a boundary. What still has none is a repository that existed before,
+    which is the case these tests are about, and rewriting the first commit's
+    message is the smallest way to produce one.
+    """
+    vault.git("commit", "--quiet", "--amend", "-m", "a repository from before")
+    return vault
+
+
 def commit(vault, message, *, kind=None, path="infra/thing.md", body="text", actor="human:alex"):
     """One commit in a test repository, with or without Mabolo's trailer."""
     target = vault.root / path
@@ -154,7 +166,7 @@ def test_a_detached_head_is_a_finding(git_vault):
 
 def test_a_lock_held_longer_than_the_timeout_is_a_finding(git_vault):
     with write.lock(git_vault.root):
-        path = write._lock_path(git_vault.root)
+        path = write.lock_path(git_vault.root)
         stamp = time.time() - write.LOCK_SECONDS - 60
         os.utime(path, (stamp, stamp))
         report = doctor.examine(root=git_vault.root)
@@ -166,7 +178,7 @@ def test_a_lock_file_nobody_holds_is_not_a_finding(git_vault):
     a check on the file lying there would fire on every vault ever written to."""
     with write.lock(git_vault.root):
         pass
-    path = write._lock_path(git_vault.root)
+    path = write.lock_path(git_vault.root)
     stamp = time.time() - write.LOCK_SECONDS - 60
     os.utime(path, (stamp, stamp))
     assert check(doctor.examine(root=git_vault.root), "repository.lock").clean
@@ -244,6 +256,7 @@ def test_a_remote_tip_this_clone_never_fetched_is_a_finding_and_the_count_is_not
 
 
 def test_a_repository_without_an_adopt_commit_says_so_once(git_vault):
+    unadopted(git_vault)
     commit(git_vault, "one")
     commit(git_vault, "two", path="infra/other.md")
     report = doctor.examine(root=git_vault.root)
@@ -257,6 +270,7 @@ def test_a_repository_without_an_adopt_commit_says_so_once(git_vault):
 
 
 def test_commits_before_the_boundary_are_one_line(git_vault):
+    unadopted(git_vault)
     commit(git_vault, "an older change", path="infra/old.md")
     commit(git_vault, "adopt", kind="adopt", path="infra/a.md")
     found = messages(doctor.examine(root=git_vault.root), doctor.HISTORY)
@@ -427,6 +441,7 @@ def test_a_check_that_did_not_run_makes_the_report_not_ok():
 
 
 def test_the_groups_come_in_the_order_the_report_promises(git_vault, remote, tmp_path):
+    unadopted(git_vault)
     path = configuration(tmp_path, git_vault.root)
     path.chmod(0o644)
     (git_vault.root / ".git" / "MERGE_HEAD").write_text("x", encoding="utf-8")
@@ -494,3 +509,24 @@ def test_a_hook_that_has_run_clears_it(tmp_path, git_vault, monkeypatch):
     )
     assert [c.name for c in report.not_run if c.name == "wiring.seen"] == []
     assert "wiring.seen" in [c.name for c in report.clean]
+
+
+def test_a_vault_this_tool_created_has_a_boundary_from_its_first_commit(git_vault):
+    """Without it, `doctor` told every fresh vault it was never adopted, which
+    is the report failing on the one thing it was run to check."""
+    found = messages(doctor.examine(root=git_vault.root), doctor.HISTORY)
+    assert not any("no adopt commit" in one for one in found)
+    trailer = git_vault.git(
+        "log", "--format=%(trailers:key=Mabolo,valueonly)", "--reverse"
+    ).stdout.strip().splitlines()[0]
+    assert trailer.startswith("adopt by")
+
+
+def test_the_check_on_what_mabolo_writes_runs_only_where_a_path_list_means_anything(git_vault):
+    """A hand edit may add anything, an import writes the whole vault, an adopt
+    writes the skeleton and a revert touches whatever it reverted. A path list
+    is meaningless for those four, and applying it would make each one a
+    finding."""
+    assert set(doctor.PATH_KINDS) == {"write", "edit", "forget", "journal", "approve", "reject"}
+    assert not set(doctor.PATH_KINDS) & {"foreign", "adopt", "import", "revert"}
+    assert doctor.writes(".mabolo/decided.md"), "the ledger is a path Mabolo writes"

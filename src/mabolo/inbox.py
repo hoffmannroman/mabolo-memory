@@ -40,15 +40,15 @@ the sentence in order to say it was refused has remembered it.
 from __future__ import annotations
 
 import datetime as dt
-import os
 import re
-import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import git
 from .errors import MaboloError
 from .proposal import ID_CHARS, Proposal
+from .schema import as_utc
+from .vault import LEDGER_FILE
 from . import PRODUCER
 from .write import CONFLICT, LOCAL, NOTHING, OFFLINE, WRITTEN, lock, signed
 
@@ -56,7 +56,7 @@ from .write import CONFLICT, LOCAL, NOTHING, OFFLINE, WRITTEN, lock, signed
 BRANCH = "inbox"
 
 #: Where the answers live, on `main`, in the vault itself.
-LEDGER = ".mabolo/decided.md"
+LEDGER = LEDGER_FILE
 
 #: What a ledger file starts with when there is not one yet. Prose, because a
 #: person opening the vault in an editor should be able to tell what they are
@@ -145,46 +145,13 @@ class Decision:
 # Reading the branch. Nothing here checks anything out.
 
 
-def _plumbing(root: Path, *args: str) -> bytes:
-    """Run git and keep the answer as bytes.
-
-    `git.run` decodes with the locale's encoding, which is the right thing for
-    a message and the wrong thing for a file: a proposal quoting a sentence
-    with an accent in it would come back mangled on a machine whose locale is
-    not UTF-8, and the id derived from the mangled text would no longer match
-    the file it was read from. This module owns this one primitive because
-    `git.py` has no byte reader for a blob.
-    """
-    environment = dict(os.environ)
-    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_INDEX_FILE"):
-        environment.pop(name, None)
-    environment.update(LC_ALL="C", LANGUAGE="", LANG="C")
-    try:
-        done = subprocess.run(
-            ["git", "-C", str(root), *args],
-            capture_output=True,
-            check=True,
-            timeout=git.TIMEOUT_SECONDS,
-            env=environment,
-        )
-    except subprocess.CalledProcessError as exc:
-        said = (exc.stderr or b"").decode("utf-8", "replace").strip().splitlines()
-        detail = git.redact(said[-1]) if said else f"exit status {exc.returncode}"
-        raise MaboloError(f"git {args[0]} failed: {detail}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise MaboloError(f"git {args[0]} did not finish in time") from exc
-    except OSError as exc:
-        raise MaboloError(f"git could not be run: {exc.strerror}") from exc
-    return done.stdout
-
-
 def _files(root: Path, commit: str | None) -> dict[str, bytes]:
     """Every file in that commit's tree, by name. An empty answer for no commit."""
     if not commit:
         return {}
-    listed = _plumbing(root, "ls-tree", "-z", "--name-only", commit)
+    listed = git.run_bytes(root, "ls-tree", "-z", "--name-only", commit)
     names = [name for name in listed.decode("utf-8", "surrogateescape").split("\0") if name]
-    return {name: _plumbing(root, "cat-file", "blob", f"{commit}:{name}") for name in names}
+    return {name: git.run_bytes(root, "cat-file", "blob", f"{commit}:{name}") for name in names}
 
 
 def _read_one(name: str, data: bytes) -> Proposal:
@@ -219,7 +186,9 @@ def _moment(found: Proposal) -> dt.datetime | None:
     when = found.filed_on()
     if when is None:
         return None
-    return when.astimezone() if when.tzinfo is None else when
+    # The same rule as everywhere: a stamp without an offset is UTC. A file on
+    # this branch was written on whichever machine filed it.
+    return as_utc(when)
 
 
 def read(root: Path, *, branch: str = BRANCH) -> Listing:
@@ -261,8 +230,10 @@ def _fetch_branch(root: Path, remote: str, branch: str) -> tuple[bool, str | Non
     spec = f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
     if git.run(root, "fetch", "--quiet", remote, spec, check=False).returncode == 0:
         return True, git.rev(root, f"refs/remotes/{remote}/{branch}")
-    asked = git.run(root, "ls-remote", "--exit-code", remote, f"refs/heads/{branch}", check=False)
-    return asked.returncode == 2, None
+    # Reachable and no such branch is the ordinary state of a remote that has
+    # never seen a proposal, and it is the one this has to tell from a dead
+    # host. The reading of `--exit-code` lives in `git.reachable`, in one copy.
+    return git.reachable(root, remote, f"refs/heads/{branch}"), None
 
 
 def _earlier(mine: bytes, theirs: bytes) -> bytes:
@@ -377,6 +348,17 @@ def _sync(
         raise MaboloError(
             "the inbox is a branch, so it needs a Git repository. "
             "This vault is a plain folder, and a proposal would have nowhere to wait."
+        )
+    here = git.current_branch(root)
+    if here is not None and branch == here:
+        # The inbox is rebuilt as one parentless commit every time, so pointing
+        # it at the branch the vault lives on would replace the entire history
+        # of that branch with a tree holding nothing but proposals. One caller
+        # passed the configured remote branch here by mistake, which is exactly
+        # how that happens.
+        raise MaboloError(
+            f"the inbox cannot live on {branch!r}, which is the branch this vault is on. "
+            "It is an orphan branch and it is rebuilt from nothing every time."
         )
     now = now or dt.datetime.now().astimezone()
     with lock(root):

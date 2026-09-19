@@ -360,3 +360,15 @@ def test_an_inbox_commit_says_that_mabolo_made_it(git_vault):
         "log", inbox.BRANCH, "--format=%(trailers:key=Mabolo,valueonly)"
     ).stdout.strip().splitlines()[0]
     assert trailer.startswith("unfile by ")
+
+
+def test_the_inbox_refuses_to_be_the_branch_the_vault_lives_on(git_vault):
+    """It is rebuilt as one parentless commit every time, so pointing it at
+    `main` would replace that branch's whole history with a tree holding
+    nothing but proposals. A caller passed the configured remote branch here
+    once, which is exactly how that happens."""
+    before = git.rev(git_vault.root, "refs/heads/main")
+    with pytest.raises(MaboloError) as caught:
+        inbox.file(git_vault.root, made(), branch="main")
+    assert "cannot live on 'main'" in str(caught.value)
+    assert git.rev(git_vault.root, "refs/heads/main") == before

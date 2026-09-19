@@ -51,12 +51,13 @@ from . import (
     frontmatter,
     inbox,
     journal,
+    lint,
     proposal,
     write,
 )
 from .errors import MaboloError
 from . import context
-from .index import Index, estimate_tokens
+from .index import Index, estimate_tokens, one_line
 from .schema import (
     DEFAULT_STATUS,
     KNOWN_TYPES,
@@ -265,7 +266,7 @@ def _moved(vault: Vault, path: Path, settings: Settings) -> str:
     )
     if judged.state == drift.FRESH:
         return ""
-    return f"\n\n> {judged.reason} ({journal.one_line(entry.mabolo.anchor)})"
+    return f"\n\n> {judged.reason} ({one_line(entry.mabolo.anchor)})"
 
 
 def _text_of(path: Path) -> str:
@@ -304,7 +305,7 @@ def _register_writing(
     def with_quote(body: str, quote: str) -> str:
         """The prose, citing the sentence that authorised it."""
         text = body.strip()
-        return f"{text}[^{QUOTE_ID}]\n\n[^{QUOTE_ID}]: \"{journal.one_line(quote)}\"\n"
+        return f"{text}[^{QUOTE_ID}]\n\n[^{QUOTE_ID}]: \"{one_line(quote)}\"\n"
 
     def message(said: str, given: consent.Consent) -> str:
         return f"{said}\n\n{given.source_note()}, approved by {settings.actor}"
@@ -358,7 +359,7 @@ def _register_writing(
         entry = Entry(
             type=type,
             title=title.strip() or None,
-            description=journal.one_line(description),
+            description=one_line(description),
             sources=[source_for(given)],
             generated=Generated(by=PRODUCER, at=iso(now()) or ""),
             verified=[verification(given)],
@@ -435,7 +436,7 @@ def _register_writing(
         where = relative(path)
         said = f"forget {where}"
         if reason.strip():
-            said += f" ({journal.one_line(reason)})"
+            said += f" ({one_line(reason)})"
         linking = _linking_to(vault, path.stem)
         result = commit(
             [write.Change(path=where, data=None, expect=document.revision)],
@@ -534,11 +535,18 @@ def _register_writing(
 
 
 def _linking_to(vault: Vault, name: str) -> list[str]:
-    """The entries whose text points at this one."""
+    """The entries whose text points at this one.
+
+    Through the same reader `lint` uses, and not a substring test of its own.
+    Two readers of what a link is means `forget` and `lint` can disagree about
+    who points at a removed entry, and then one report contradicts the other
+    about the same vault.
+    """
     out: list[str] = []
     for entry in vault.entries():
         if entry.path is None or entry.path.stem == name:
             continue
-        if f"{name}.md" in entry.body or f"[[{name}]]" in entry.body:
+        targets = {Path(target).name for _, target in lint.links_of(entry.body)}
+        if f"{name}.md" in targets or f"[[{name}]]" in entry.body:
             out.append(entry.path.stem)
     return sorted(out)

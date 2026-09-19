@@ -179,22 +179,26 @@ def record(text: str, *, cwd: str | Path | None = None, session: object = None,
         where.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
-        _trim(target)
+        trim(target)
         forget_old(where, now=moment)
     except OSError:
         return None
     return target
 
 
-def _trim(target: Path) -> None:
-    """Keep the newest lines of one session's file and drop the rest."""
+def trim(target: Path, limit: int = MAX_LINES) -> None:
+    """Keep the newest lines of one session's file and drop the rest.
+
+    Public, because the other disposable notes have the same cap for the same
+    reason and a second copy of two lines is still a second place to change.
+    """
     try:
         lines = target.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
         return
-    if len(lines) <= MAX_LINES:
+    if len(lines) <= limit:
         return
-    target.write_text("\n".join(lines[-MAX_LINES:]) + "\n", encoding="utf-8")
+    target.write_text("\n".join(lines[-limit:]) + "\n", encoding="utf-8")
 
 
 def forget_old(directory: Path | None = None, *, now: dt.datetime | None = None,

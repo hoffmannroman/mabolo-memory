@@ -729,6 +729,23 @@ def _body_with_footnote(body: str, quote: str) -> str:
     return f"{prose} [^{FOOTNOTE_ID}]\n\n[^{FOOTNOTE_ID}]: \"{said}\"\n"
 
 
+def from_notes(prompts: Sequence[object]) -> list[Message]:
+    """The prompt notes as a transcript this pass can read.
+
+    The notes are the one record of a conversation this tool controls: written
+    by its own hook, already redacted, capped and expiring, and in one shape
+    whatever client produced them. Parsing a vendor's session file instead
+    would be two parsers to keep working and a silent failure on every format
+    change, and gate five, which insists a quote appears verbatim in a real
+    message, is exact here by construction rather than across two formats.
+
+    There are no assistant turns in them. That is what the window loses and it
+    loses nothing that matters: the model's own words are data anyway, and the
+    sentence worth quoting is the person's.
+    """
+    return [Message(role=USER, text=getattr(one, "text", "")) for one in prompts]
+
+
 def extract(
     transcript: Sequence[Message],
     *,

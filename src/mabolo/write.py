@@ -137,7 +137,7 @@ class Result:
         return self.outcome in (WRITTEN, LOCAL, OFFLINE, NOTHING)
 
 
-def _lock_path(root: Path) -> Path:
+def lock_path(root: Path) -> Path:
     """One lock per vault, kept outside it.
 
     Keyed by the resolved path, so two names for the same directory take the
@@ -154,7 +154,7 @@ def _lock_path(root: Path) -> Path:
 @contextmanager
 def lock(root: Path, seconds: float = LOCK_SECONDS) -> Iterator[None]:
     """Hold the write lock for this vault, or say who has it."""
-    path = _lock_path(root)
+    path = lock_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     deadline = time.monotonic() + seconds

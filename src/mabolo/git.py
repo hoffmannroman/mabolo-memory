@@ -269,6 +269,22 @@ def fast_forward(root: Path, ref: str) -> bool:
     return run(root, "merge", "--ff-only", "--quiet", ref, check=False).returncode == 0
 
 
+def reachable(root: Path, remote: str, ref: str | None = None) -> bool:
+    """Whether the remote answered at all, which is a different question from
+    whether it has what was asked for.
+
+    `--exit-code` gives 2 for "reachable, and no such ref", and that reading is
+    the whole difference between a refusal and an absence. It was spelled out
+    in three places, which is three chances for one of them to drift into
+    treating an empty remote as a dead one.
+
+    This never fetches. A diagnosis that moves refs in the repository it is
+    diagnosing is not one.
+    """
+    asked = [ref] if ref else []
+    return run(root, "ls-remote", "--exit-code", remote, *asked, check=False).returncode in (0, 2)
+
+
 def fetch(root: Path, remote: str, branch: str) -> bool:
     """Ask the remote where it is. False only when nobody was there.
 
@@ -281,67 +297,52 @@ def fetch(root: Path, remote: str, branch: str) -> bool:
     """
     if run(root, "fetch", "--quiet", remote, branch, check=False).returncode == 0:
         return True
-    return run(root, "ls-remote", "--exit-code", remote, check=False).returncode in (0, 2)
+    return reachable(root, remote)
 
 
 def hash_object(root: Path, data: bytes) -> str:
     """Write these bytes into the object store and return their id."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "hash-object", "-w", "--stdin"],
-            input=data,
-            capture_output=True,
-            check=True,
-            timeout=TIMEOUT_SECONDS,
-            env=_environment(),
-        )
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or b"").decode("utf-8", "replace").strip().splitlines()
-        raise MaboloError(f"git hash-object failed: {redact(detail[-1]) if detail else exc.returncode}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise MaboloError("git hash-object did not finish in time") from exc
-    except OSError as exc:
-        raise MaboloError(f"git could not be run: {exc.strerror}") from exc
-    return result.stdout.decode("utf-8").strip()
+    return run_bytes(root, "hash-object", "-w", "--stdin", stdin=data).decode("utf-8").strip()
 
 
-def read_blob(root: Path, spec: str) -> bytes:
-    """The bytes of one object, kept as bytes.
+def run_bytes(root: Path, *args: str, stdin: bytes | None = None, check: bool = True) -> bytes:
+    """Git's answer as bytes, for the calls where decoding it would be wrong.
 
-    Not through `run`, which decodes with the locale's encoding: an entry is
-    UTF-8 and a machine whose locale is not would hand back a different file
-    than the one that was committed.
+    `run` decodes with the locale's encoding. An entry is UTF-8, a proposal is
+    UTF-8, and a machine whose locale is not would hand back a different file
+    than the one that was committed, with an id derived from the difference.
+    So every call that moves file content rather than a message comes through
+    here, in one copy: this was four copies of the same scrubbed environment,
+    timeout and redaction, and one of them had already drifted.
     """
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), "cat-file", "blob", spec],
+            ["git", "-C", str(root), *args],
+            input=stdin,
             capture_output=True,
-            check=True,
+            check=check,
             timeout=TIMEOUT_SECONDS,
             env=_environment(),
         )
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or b"").decode("utf-8", "replace").strip().splitlines()
-        raise MaboloError(f"git cat-file failed: {redact(detail[-1]) if detail else spec}") from exc
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        raise MaboloError(f"git cat-file could not be run: {exc}") from exc
+        message = (exc.stderr or exc.stdout or b"").decode("utf-8", "replace").strip().splitlines()
+        detail = redact(message[-1]) if message else f"exit status {exc.returncode}"
+        raise MaboloError(f"git {args[0]} failed: {detail}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise MaboloError(f"git {args[0]} did not finish within {TIMEOUT_SECONDS} seconds") from exc
+    except OSError as exc:
+        raise MaboloError(f"git could not be run: {exc.strerror}") from exc
     return result.stdout
+
+
+def read_blob(root: Path, spec: str) -> bytes:
+    """The bytes of one object, kept as bytes."""
+    return run_bytes(root, "cat-file", "blob", spec)
 
 
 def hash_object_id(root: Path, data: bytes) -> str:
     """What these bytes would be called as a blob, without writing them."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "hash-object", "--stdin"],
-            input=data,
-            capture_output=True,
-            check=True,
-            timeout=TIMEOUT_SECONDS,
-            env=_environment(),
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-        raise MaboloError(f"git hash-object could not be run: {exc}") from exc
-    return result.stdout.decode("utf-8").strip()
+    return run_bytes(root, "hash-object", "--stdin", stdin=data).decode("utf-8").strip()
 
 
 def build_commit(root: Path, base: str | None, changes: dict[str, bytes | None], message: str) -> str:
@@ -391,8 +392,7 @@ def push(root: Path, remote: str, branch: str, commit: str, expect: str | None) 
     # which one in the user's own language, so the words are the wrong
     # evidence. `--exit-code` gives 2 for "reachable, no such ref", which is
     # still reachable.
-    asked = run(root, "ls-remote", "--exit-code", remote, target, check=False)
-    return "rejected" if asked.returncode in (0, 2) else "unreachable"
+    return "rejected" if reachable(root, remote, target) else "unreachable"
 
 
 def update_ref(root: Path, ref: str, new: str, old: str | None) -> None:
