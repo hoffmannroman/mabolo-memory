@@ -321,6 +321,20 @@ class Vault:
           says it reports every finding itself, which is what `allow_findings`
           means.
         """
+        target, data = self.render_entry(entry, path, allow_findings=allow_findings)
+        frontmatter.write_file(target, data)
+        return target
+
+    def render_entry(
+        self, entry: Entry, path: Path | None = None, *, allow_findings: bool = False
+    ) -> tuple[Path, bytes]:
+        """Where this entry goes and what its file would say, without writing it.
+
+        The same three checks as `write_entry`, because a caller that commits
+        through Git still has to be stopped by them: a transaction that writes
+        the file only after the commit is safe would otherwise be the one way
+        into the vault that the validator never sees.
+        """
         target = self.resolve_write_target(entry, path)
         meta = entry.to_meta()
         if not allow_findings:
@@ -348,8 +362,7 @@ class Vault:
                     f"{target.name} has {len(problems)} error(s) and was not written: "
                     + "; ".join(p.message for p in problems[:3])
                 )
-        frontmatter.write(target, meta, entry.body)
-        return target
+        return target, frontmatter.dump(meta, entry.body).encode("utf-8")
 
     def resolve_write_target(self, entry: Entry, path: Path | None = None) -> Path:
         """Where this entry may be written, or an error saying why it may not."""

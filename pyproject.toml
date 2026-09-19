@@ -20,7 +20,10 @@ classifiers = [
 
 # YAML is the frontmatter format the Open Knowledge Format is written in, so a
 # parser is unavoidable. Everything else stays in the standard library.
-dependencies = ["pyyaml>=6,<7"]
+dependencies = [
+    "mcp>=2.2,<3",
+    "pyyaml>=6,<7",
+]
 
 [project.urls]
 Homepage = "https://github.com/hoffmannroman/mabolo-memory"

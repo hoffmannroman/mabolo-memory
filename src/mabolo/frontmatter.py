@@ -231,11 +231,21 @@ def normalise_target(path: Path) -> Path:
 
 def write(path: Path, meta: dict[str, Any] | None, body: str) -> str:
     """Write a document and return its revision."""
-    target = normalise_target(Path(path))
+    return write_file(Path(path), dump(meta, body).encode("utf-8"))
+
+
+def write_file(path: Path, data: bytes) -> str:
+    """Write these bytes as a file of the vault, and return their revision.
+
+    Every writer goes through here, including the one that commits first and
+    writes afterwards. The symlink refusal is the reason: it is the one check
+    that stands between a path inside the vault and a file outside it, and a
+    second writing path without it would be a way around the first.
+    """
+    target = normalise_target(path)
     if target.is_symlink() or target.parent.is_symlink():
         raise FrontmatterError(f"{target} is a symlink, and the vault does not write through those")
     target.parent.mkdir(parents=True, exist_ok=True)
-    data = dump(meta, body).encode("utf-8")
     write_bytes(target, data)
     return revision(data)
 

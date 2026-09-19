@@ -124,9 +124,11 @@ there is nothing on that host to attack, to update or to pay for. Your vault can
 equally stay on one machine and never leave it: a remote is one answer in
 `init`, not the price of entry.
 
-Today the syncing itself is plain `git pull` and `git push` in the vault, and
-the tool only wires up the remote. Doing that safely while two sessions write at
-the same time is being built.
+Two sessions writing at the same time is what the write path is built around:
+every change is one commit, pushed synchronously with a lease on the commit the
+remote was on when the change started. If the remote moved meanwhile, the push
+is refused, nothing local changes, and you are told to read the entry again.
+Pulling by hand is still plain `git pull`.
 
 ## What works today
 
@@ -155,15 +157,23 @@ This is early, and the README says only what exists:
   whatever happens and give up on a deadline: a memory that can stop a session
   from starting is worse than no memory.
   See [quiet recall](docs/recall.md).
+* `mabolo serve` runs the MCP server your client talks to. It offers
+  `mabolo_search` and `mabolo_read`, which are two calls on purpose so that the
+  price of a payload is known before it arrives, and four tools that change the
+  vault: `mabolo_write`, `mabolo_edit`, `mabolo_forget` and `journal_add`. Each
+  of the first three takes the sentence that authorised it, word for word, and
+  the server checks that sentence against what you actually typed. Every change
+  is one commit, taken through a lock, a revision check and a push with a lease,
+  and your working tree is never reset or cleaned.
+  With `--read-only` the write tools are not registered at all, which is what an
+  unattended agent gets. See [writing](docs/write.md).
 * The entry schema and its validator, with the example vault as the reference.
 * A Git remote, if you want one: `init` sets it, and the vault is an ordinary
   repository you can pull and push yourself.
 
-The MCP server, and with it reading an entry in full on demand, is still being
-built. The budget is already the point: a session should pay for a short index,
-not for everything you ever wrote down. The measurement came first on purpose,
-because it is the only thing that can show that a short index replaced the long
-text instead of quietly losing half of it.
+Proposals are not built yet: an agent that has no sentence of yours to quote
+cannot write, and cannot leave a suggestion either. Nor is the extraction pass
+that would mine one from a finished transcript.
 
 ## Try it
 
@@ -186,6 +196,9 @@ echo '{}' | uv run mabolo hook session-start examples/vault
 echo '{"prompt": "raising the job count on the build server"}' \
   | uv run mabolo hook prompt examples/vault
 
+# The MCP server, as a client starts it. Add --read-only for the tools alone.
+uv run mabolo serve examples/vault
+
 # A throwaway vault and a throwaway configuration to go with it. Without
 # --config, `init` writes the real one in your config directory.
 uv run mabolo --config /tmp/mabolo-demo.toml init --vault /tmp/my-vault --yes
@@ -197,7 +210,13 @@ uv run mabolo --config /tmp/mabolo-demo.toml init --vault /tmp/my-vault --yes
   NFC on write, so an entry keeps one identity across sync tools.
 * **A vault belongs to one person.** There is no team mode and no cloud.
 * **The approval gate holds for Mabolo's own tools.** Any program on your
-  machine can still edit a Markdown file.
+  machine can still edit a Markdown file. What the gate adds is that a tool
+  call has to carry a sentence you typed, and that Mabolo's own writes are one
+  commit each, so `git log` shows where every belief came from.
+* **The quote is checked against prompts, not against a conversation.** Unless
+  your client tells the server which session it is in, a quote counts when it
+  was typed in the same directory within twelve hours.
+  [The write page](docs/write.md) says why and what that does not prove.
 * **The search index is SQLite**, which is a database. It is derived from the
   files, built in memory and never stored, so there is nothing to delete and
   nothing that can disagree with what is on disk.

@@ -1,6 +1,7 @@
 import io
 import time
 import json
+from pathlib import Path
 
 import pytest
 
@@ -742,3 +743,72 @@ def test_a_budget_may_be_lowered_from_the_command_line_but_not_raised(vault, cap
     assert main(["context", str(vault.root), "--budget", "200"]) == 0
     assert main(["context", str(vault.root), "--budget", "5000"]) == 2
     assert "can be lowered here, not raised" in capsys.readouterr().err
+
+
+# The prompt hook writes down what it was handed, which is the only evidence a
+# write tool has that a person said anything at all.
+
+
+def prompt_notes(tmp_path) -> str:
+    where = Path.home() / ".local" / "state" / "mabolo" / "prompts"
+    return "".join(p.read_text(encoding="utf-8") for p in sorted(where.glob("*.jsonl")))
+
+
+def test_the_prompt_hook_writes_the_prompt_down(tmp_path, capsys, monkeypatch):
+    event = json.dumps({"prompt": "remember that we deploy on fridays", "session_id": "abc-1",
+                        "cwd": str(tmp_path)})
+    code, _, _ = prompt_hook(tmp_path, capsys, monkeypatch, event)
+    assert code == 0
+    notes = prompt_notes(tmp_path)
+    assert "remember that we deploy on fridays" in notes
+    assert str(tmp_path) in notes
+    assert (Path.home() / ".local/state/mabolo/prompts/abc-1.jsonl").exists()
+
+
+def test_the_prompt_hook_can_be_told_not_to(tmp_path, capsys, monkeypatch):
+    event = json.dumps({"prompt": "remember that we deploy on fridays", "session_id": "abc-2"})
+    prompt_hook(tmp_path, capsys, monkeypatch, event, extra=["--no-record"])
+    assert prompt_notes(tmp_path) == ""
+
+
+def test_a_prompt_is_written_down_even_when_the_memory_stays_quiet(tmp_path, capsys, monkeypatch):
+    """Recall answers one prompt in twenty. The note has to be written on the
+    other nineteen too, or the write gate would only work on the prompts that
+    happened to find an entry."""
+    event = json.dumps({"prompt": "what is for dinner tonight", "session_id": "abc-3"})
+    code, out, _ = prompt_hook(tmp_path, capsys, monkeypatch, event)
+    assert code == 0 and out is None
+    assert "what is for dinner tonight" in prompt_notes(tmp_path)
+
+
+def test_a_prompt_is_written_down_before_anything_else_is_decided(tmp_path, capsys, monkeypatch):
+    """Even with no configuration at all. The note is not a by-product of the
+    recall tier: it is the evidence a write tool checks a quote against, and a
+    machine that has not been set up yet is exactly where the first sentence
+    worth remembering gets typed."""
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "remember the fridays rule"})))
+    assert main(["--config", str(tmp_path / "missing.toml"), "hook", "prompt"]) == 0
+    assert "remember the fridays rule" in prompt_notes(tmp_path)
+
+
+def test_serve_says_so_when_there_is_no_vault(tmp_path, capsys):
+    (tmp_path / "empty").mkdir()
+    assert main(["serve", str(tmp_path / "empty")]) == 2
+    assert "not a Mabolo vault" in capsys.readouterr().err
+
+
+def test_serve_builds_the_server_from_the_configuration(tmp_path, monkeypatch, capsys):
+    """The command is wired to the real settings: the actor from the
+    configuration, the remote when there is one, and read mode when asked."""
+    vault = hook_vault(tmp_path)
+    seen = {}
+
+    class Fake:
+        def run(self, transport):
+            seen["transport"] = transport
+
+    monkeypatch.setattr("mabolo.server.build", lambda v, s: seen.setdefault("settings", s) and None or Fake())
+    assert main(["serve", str(vault.root), "--read-only", "--session", "s-9"]) == 0
+    assert seen["transport"] == "stdio"
+    assert seen["settings"].read_only is True
+    assert seen["settings"].session == "s-9"

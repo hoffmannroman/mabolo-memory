@@ -34,8 +34,8 @@ from typing import Callable
 
 from dataclasses import dataclass, replace
 
-from . import __version__, context, evaluate, git, recall, session
-from .config import Config, default_config_path, default_vault_path, is_approver
+from . import __version__, consent, context, evaluate, git, recall, session
+from .config import Config, default_actor, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
 from .index import Index
 from .schema import FIXED_AREAS, PROJECT_PREFIX, now, parse_moment, parse_time
@@ -361,6 +361,31 @@ def cmd_hook_prompt(args: argparse.Namespace) -> int:
     return _run_hook(args, PROMPT, _prompt_payload)
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Run the MCP server on stdin and stdout until the client goes away.
+
+    The import of the SDK happens here rather than at the top of the file. It
+    costs a third of a second, and the prompt hook, which shares this module,
+    has two seconds in total to say something useful.
+    """
+    from .server import Settings, build
+
+    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
+    vault = _vault_from(args)
+    if not vault.is_initialised():
+        raise MaboloError(f"{vault.root} is not a Mabolo vault. Run `mabolo init` first.")
+    settings = Settings(
+        actor=config.actor if config else default_actor(),
+        remote="origin" if config and config.remote_url else None,
+        branch=config.remote_branch if config else None,
+        read_only=bool(args.read_only),
+        cwd=Path.cwd(),
+        session=args.session or None,
+    )
+    build(vault, settings).run("stdio")
+    return EXIT_OK
+
+
 def _run_hook(
     args: argparse.Namespace,
     contract: HookContract,
@@ -438,6 +463,13 @@ def _prompt_payload(args: argparse.Namespace) -> str:
     prompt = args.prompt or event.get("prompt") or ""
     if not isinstance(prompt, str) or not prompt.strip():
         return ""
+    if not args.no_record:
+        # Before anything else, and regardless of what this hook goes on to
+        # say. Quiet recall is off by default and returns nothing most of the
+        # time; the note is what a write tool checks a quote against later, and
+        # tying it to the tier that usually stays silent would mean the gate
+        # only works on the prompts that happened to find an entry.
+        consent.record(prompt, cwd=event.get("cwd"), session=event.get("session_id"))
     config_path = Path(args.config).expanduser() if args.config else default_config_path()
     if not args.path and not config_path.exists():
         # Silence, not the sentence the session start gives. That one is said
@@ -759,7 +791,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=PROMPT_SECONDS,
         help=f"give up after this long, default {PROMPT_SECONDS}",
     )
+    prompt.add_argument(
+        "--no-record",
+        action="store_true",
+        help="do not write the prompt down, and give up verifying quotes against it",
+    )
     prompt.set_defaults(func=cmd_hook_prompt)
+
+    serve = sub.add_parser("serve", help="run the MCP server a client talks to")
+    serve.add_argument("path", nargs="?", help="the vault, default is the configured one")
+    serve.add_argument(
+        "--read-only",
+        action="store_true",
+        help="offer only the reading tools, which is what an unattended agent gets",
+    )
+    serve.add_argument("--session", help="the session id, when the client knows one")
+    serve.set_defaults(func=cmd_serve)
 
     return parser
 

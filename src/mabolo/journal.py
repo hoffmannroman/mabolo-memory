@@ -177,3 +177,69 @@ def recent(notes: list[Note], project: str | None, as_of: dt.date | None = None)
     picked = [n for n in notes if n.project == project and (as_of is None or n.at <= as_of)]
     # Stable: same day keeps file order, which is the order they were written.
     return sorted(picked, key=lambda n: n.at, reverse=True)
+
+
+def line_for(text: str, project: str | None = None) -> str:
+    """One bullet, with the link that says which project it belongs to.
+
+    The link is the whole convention: a line without one belongs to no project
+    and never reaches a payload built for one. `one_line` is what keeps a
+    newline in the text from writing a heading of its own into the file.
+    """
+    said = one_line(text).strip()
+    if not said:
+        raise ValueError("a journal line says something or it is not written")
+    if project:
+        return f"- [{project}]({PROJECT_PREFIX}{project}/index.md): {said}"
+    return f"- {said}"
+
+
+def add_line(text: str, day: dt.date, line: str) -> str:
+    """The journal with one bullet added under `day`, newest first throughout.
+
+    Two things this has to get right, because the validator checks both and a
+    file it rejects is a file the session index stops reading:
+
+    * **One group per day.** A second heading for a day that is already there
+      is an error, so an existing day is added to rather than repeated.
+    * **Newest first.** A new day goes above every older one and below every
+      newer one, which is also where a reader looks for it.
+
+    Inside a day the new line goes first. The file has one rule about order and
+    it reads better if it holds everywhere, not only between days.
+    """
+    lines = text.splitlines()
+    fenced = False
+    days: list[tuple[int, dt.date]] = []
+    for number, raw in enumerate(lines):
+        if _FENCE.match(raw.rstrip()):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        heading = _DAY.match(raw.rstrip())
+        if heading:
+            try:
+                days.append((number, dt.date.fromisoformat(heading.group(1))))
+            except ValueError:
+                continue
+
+    for number, found in days:
+        if found == day:
+            at = number + 1
+            while at < len(lines) and not lines[at].strip():
+                at += 1
+            lines[at:at] = [line]
+            return "\n".join(lines).rstrip("\n") + "\n"
+
+    later = [number for number, found in days if found < day]
+    # No day is older, so this one is the oldest and goes at the end. No day at
+    # all means the file is still only its preamble, and the same place is right.
+    at = later[0] if later else len(lines)
+    block = [f"## {day.isoformat()}", "", line]
+    if at < len(lines) and lines[at].strip():
+        block.append("")
+    if at > 0 and lines[at - 1].strip():
+        block.insert(0, "")
+    lines[at:at] = block
+    return "\n".join(lines).rstrip("\n") + "\n"

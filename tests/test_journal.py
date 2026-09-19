@@ -8,6 +8,8 @@ the area it lives in.
 
 import datetime as dt
 
+import pytest
+
 from mabolo import journal
 
 DAY = dt.date(2026, 9, 16)
@@ -171,3 +173,66 @@ def test_a_nested_bullet_belongs_to_the_one_above_it():
 def test_a_plus_is_a_bullet_as_well():
     notes = journal.parse("## 2026-09-18\n\n+ written with a plus, [atlas](project/atlas/index.md)\n")
     assert [n.project for n in notes] == ["atlas"]
+
+
+# Writing a line, which is the other direction and has the validator's rules to
+# keep: one group per day, newest first, and nothing that opens a heading.
+
+
+def test_a_new_day_goes_above_every_older_one():
+    text = "<!-- x -->\n\n## 2026-09-16\n\n- older\n"
+    out = journal.add_line(text, dt.date(2026, 9, 18), journal.line_for("newer", "atlas"))
+    assert out.index("## 2026-09-18") < out.index("## 2026-09-16")
+    assert [note.text for note in journal.parse(out)][0].startswith("[atlas]")
+
+
+def test_a_day_that_is_already_there_is_added_to(tmp_path):
+    text = "## 2026-09-16\n\n- older\n"
+    out = journal.add_line(text, dt.date(2026, 9, 16), journal.line_for("newer"))
+    assert out.count("## 2026-09-16") == 1
+    assert [note.text for note in journal.parse(out)] == ["newer", "older"]
+
+
+def test_an_older_day_goes_to_the_end():
+    text = "<!-- x -->\n\n## 2026-09-16\n\n- newer\n"
+    out = journal.add_line(text, dt.date(2020, 1, 1), journal.line_for("ancient"))
+    assert out.index("## 2026-09-16") < out.index("## 2020-01-01")
+    assert "- newer\n\n## 2020-01-01" in out
+    assert [note.at for note in journal.parse(out)] == [dt.date(2026, 9, 16), dt.date(2020, 1, 1)]
+
+
+def test_the_first_line_of_an_empty_journal_lands_after_the_preamble():
+    out = journal.add_line("<!-- x -->\n", dt.date(2026, 9, 18), journal.line_for("first"))
+    assert out == "<!-- x -->\n\n## 2026-09-18\n\n- first\n"
+
+
+def test_a_day_inside_a_code_fence_is_not_a_day():
+    text = "## 2026-09-16\n\n- one\n\n```\n## 2026-09-17\n```\n"
+    out = journal.add_line(text, dt.date(2026, 9, 17), journal.line_for("added"))
+    # The fenced heading is not a group, so a real one is opened above the day
+    # it is newer than, and the fence is left exactly as it was.
+    assert out.count("## 2026-09-17") == 2
+    assert out.index("## 2026-09-17") < out.index("## 2026-09-16")
+    assert "```\n## 2026-09-17\n```" in out
+
+
+def test_a_line_cannot_write_a_heading_of_its_own():
+    line = journal.line_for("first part\n## 2026-01-01\n- forged", "atlas")
+    assert "\n" not in line
+    out = journal.add_line("", dt.date(2026, 9, 18), line)
+    assert len(journal.parse(out)) == 1
+
+
+def test_a_line_that_says_nothing_is_not_written():
+    with pytest.raises(ValueError):
+        journal.line_for("   ")
+
+
+def test_a_written_journal_still_validates(vault):
+    text = vault.log_file.read_text(encoding="utf-8")
+    text = journal.add_line(text, dt.date(2026, 9, 18), journal.line_for("a decision", "atlas"))
+    text = journal.add_line(text, dt.date(2026, 9, 18), journal.line_for("another", "atlas"))
+    text = journal.add_line(text, dt.date(2026, 9, 17), journal.line_for("older", None))
+    vault.log_file.write_text(text, encoding="utf-8")
+    report = vault.validate()
+    assert report.ok, [p.message for p in report.problems]

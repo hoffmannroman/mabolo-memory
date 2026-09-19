@@ -43,3 +43,26 @@ def entry_text(area: str = "infra", body: str = "text", **meta) -> str:
     block = {"area": area, **meta.pop("mabolo", {})}
     head = {"type": "reference", "title": "t", "description": "d", **meta, "mabolo": block}
     return frontmatter.dump(head, body)
+
+
+@pytest.fixture
+def git_vault(tmp_path, git_identity):
+    """A vault that is a Git repository, with no remote."""
+    made = Vault(tmp_path / "gv")
+    made.initialise()
+    made.git_initialise()
+    return made
+
+
+@pytest.fixture
+def remote(tmp_path, git_vault):
+    """A bare repository the vault pushes to, already in step with it."""
+    import subprocess
+
+    where = tmp_path / "remote.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-q", "--initial-branch=main", str(where)], check=True
+    )
+    git_vault.git_set_remote(str(where))
+    git_vault.git("push", "-q", "origin", "main")
+    return where

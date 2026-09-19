@@ -130,3 +130,173 @@ def commit_paths(root: Path, paths: list[str], message: str) -> str | None:
     # everything else, staged or not, exactly as it was.
     run(root, "reset", "--quiet", "--", *paths, check=False)
     return run(root, "rev-parse", "--short", "HEAD", check=False).stdout.strip() or None
+
+
+# Everything below is what a mutation needs: the state of the branch, a commit
+# built without a working tree, and a push that cannot overwrite somebody else.
+
+
+def current_branch(root: Path) -> str | None:
+    """The branch HEAD is on, or None when it is detached."""
+    result = run(root, "symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+    name = result.stdout.strip()
+    return name if result.returncode == 0 and name else None
+
+
+def rev(root: Path, ref: str) -> str | None:
+    """The commit a ref points at, or None when there is no such ref."""
+    result = run(root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False)
+    text = result.stdout.strip()
+    return text if result.returncode == 0 and text else None
+
+
+def has_remote(root: Path, name: str) -> bool:
+    result = run(root, "remote", "get-url", name, check=False)
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def mutation_in_progress(root: Path) -> str | None:
+    """The name of the Git operation already running here, or None.
+
+    The one condition that stops a write. Committing into a half finished merge
+    produces a commit nobody asked for, and the way out of it is not something
+    a memory tool should decide for the person.
+    """
+    git_dir = repository_dir(root)
+    if git_dir is None:
+        return None
+    for marker, what in (
+        ("MERGE_HEAD", "a merge"),
+        ("rebase-merge", "a rebase"),
+        ("rebase-apply", "a rebase"),
+        ("CHERRY_PICK_HEAD", "a cherry-pick"),
+        ("REVERT_HEAD", "a revert"),
+        ("BISECT_LOG", "a bisect"),
+    ):
+        if (git_dir / marker).exists():
+            return what
+    return None
+
+
+def foreign_changes(root: Path) -> list[str]:
+    """Paths a person changed in the vault without going through Mabolo.
+
+    Untracked files count. Somebody writing a new note in an editor is the
+    normal way a vault grows, and leaving it out of the commit would mean the
+    next mutation carries it along silently under a message about something
+    else.
+    """
+    result = run(root, "status", "--porcelain", "-z", "--untracked-files=all", check=False)
+    if result.returncode != 0:
+        return []
+    fields = [f for f in result.stdout.split("\0") if f]
+    paths: list[str] = []
+    skip_next = False
+    for field in fields:
+        if skip_next:
+            skip_next = False
+            continue
+        status, _, path = field.partition(" ")
+        # A rename reports the old path in the field after it.
+        if status.startswith("R") or status.startswith("C"):
+            skip_next = True
+        if len(field) > 3:
+            paths.append(field[3:])
+    return paths
+
+
+def is_ancestor(root: Path, earlier: str, later: str) -> bool:
+    return run(root, "merge-base", "--is-ancestor", earlier, later, check=False).returncode == 0
+
+
+def fast_forward(root: Path, ref: str) -> bool:
+    """Move the branch forward to `ref`, or leave everything as it was.
+
+    `--ff-only` is the whole point: it refuses rather than merging, and it
+    refuses rather than overwriting a file somebody is working on.
+    """
+    return run(root, "merge", "--ff-only", "--quiet", ref, check=False).returncode == 0
+
+
+def fetch(root: Path, remote: str, branch: str) -> bool:
+    """Ask the remote where it is. False when it could not be reached."""
+    result = run(root, "fetch", "--quiet", remote, branch, check=False)
+    return result.returncode == 0
+
+
+def hash_object(root: Path, data: bytes) -> str:
+    """Write these bytes into the object store and return their id."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "hash-object", "-w", "--stdin"],
+            input=data,
+            capture_output=True,
+            check=True,
+            timeout=TIMEOUT_SECONDS,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+        raise MaboloError(f"git hash-object failed: {redact(detail[-1]) if detail else exc.returncode}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise MaboloError("git hash-object did not finish in time") from exc
+    except OSError as exc:
+        raise MaboloError(f"git could not be run: {exc.strerror}") from exc
+    return result.stdout.decode("utf-8").strip()
+
+
+def build_commit(root: Path, base: str | None, changes: dict[str, bytes | None], message: str) -> str:
+    """One commit, built from `base`, without touching the working tree.
+
+    The bytes go straight into the object store and the tree is assembled in an
+    index of its own. Nothing is written into the directory the person has
+    open, and nothing is written there later either unless this commit reaches
+    the remote, which is what makes a refused push cost nothing.
+    """
+    if identity_missing(root):
+        raise MaboloError(
+            "git has no user.email here, so a commit would have no author. "
+            "Set one with `git config --global user.email`."
+        )
+    scratch_parent = repository_dir(root) or root
+    with tempfile.TemporaryDirectory(dir=scratch_parent) as scratch:
+        index = Path(scratch) / "index"
+        if base:
+            run(root, "read-tree", base, index=index)
+        for path, data in changes.items():
+            if data is None:
+                run(root, "update-index", "--force-remove", "--", path, index=index)
+                continue
+            blob = hash_object(root, data)
+            run(root, "update-index", "--add", "--cacheinfo", f"100644,{blob},{path}", index=index)
+        tree = run(root, "write-tree", index=index).stdout.strip()
+    parents = ["-p", base] if base else []
+    return run(root, "commit-tree", tree, *parents, "-m", message).stdout.strip()
+
+
+def push(root: Path, remote: str, branch: str, commit: str, expect: str | None) -> str:
+    """Push this commit, refusing to overwrite anything the lease did not cover.
+
+    Three answers, because three different things happen and a caller that
+    cannot tell them apart will report the wrong one: `pushed`, `rejected`
+    when the remote has moved, and `unreachable` when there was nobody to ask.
+    """
+    target = f"refs/heads/{branch}"
+    lease = [f"--force-with-lease={target}:{expect}"] if expect else []
+    result = run(root, "push", *lease, remote, f"{commit}:{target}", check=False)
+    if result.returncode == 0:
+        return "pushed"
+    text = f"{result.stderr}\n{result.stdout}".lower()
+    if "stale info" in text or "rejected" in text or "non-fast-forward" in text:
+        return "rejected"
+    return "unreachable"
+
+
+def update_ref(root: Path, ref: str, new: str, old: str | None) -> None:
+    """Move a branch, and only from where it was last seen."""
+    run(root, "update-ref", ref, new, old or "")
+
+
+def reset_paths(root: Path, paths: list[str]) -> None:
+    """Line the person's index up with HEAD for these paths and nothing else."""
+    if paths:
+        run(root, "reset", "--quiet", "--", *paths, check=False)
