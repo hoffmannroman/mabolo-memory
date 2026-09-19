@@ -99,6 +99,10 @@ KINDS = (
     # rather than a `write`, because it changes nothing the memory knows: it
     # changes what a measurement is compared with.
     "baseline",
+    # An area renamed, which is what happens when a project is. It moves files
+    # and readdresses links and changes nothing about what the memory knows, so
+    # a reader of the history can tell it from a commit that does.
+    "move",
 )
 
 

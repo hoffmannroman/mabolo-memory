@@ -206,6 +206,14 @@ This is early, and the README says only what exists:
   entry, so the tools keep themselves straight; a file added in an editor or a
   commit made by hand derives nothing, and the folder's index goes on describing
   a vault that no longer exists. `doctor` reports it and names the command.
+* `mabolo move-area` renames an area, which is what happens when a project is.
+  A session finds a project's memory by the folder it is running in, so a
+  renamed repository and an unrenamed area is a memory that is all still there
+  and none of which arrives, with nothing to report it. It moves the entries,
+  renames the one named after the area, readdresses the links that pointed into
+  the folder, and does it in one commit. It does not rewrite prose and it never
+  touches the journal: what the journal says was true on the day it was
+  written. Those it lists instead, for a person to decide about.
 * `mabolo revert` and `mabolo recover` are the way back. Everything Mabolo
   writes is one commit, so `git revert` already works; these add the trailer,
   the lease, and a refusal to throw away a hand edit while repairing.

@@ -59,6 +59,7 @@ from . import (
     git,
     inbox,
     lint,
+    move,
     provenance,
     proposal,
     recall,
@@ -681,6 +682,30 @@ def cmd_reindex(args: argparse.Namespace) -> int:
         branch=branch,
     )
     print(result.message)
+    return EXIT_OK if result.ok else EXIT_FINDINGS
+
+
+def cmd_move_area(args: argparse.Namespace) -> int:
+    """Rename an area, because the project that keeps its memory there was.
+
+    A session finds a project's memory by the folder it is running in, so a
+    renamed repository with an unrenamed area is a memory that is all still
+    there and none of which arrives. Nothing reports that on its own, which is
+    what makes it worth a command rather than a careful afternoon.
+
+    The plan is printed before anything is written, and `--dry-run` stops
+    there, because the last section of it is the part a person has to read: the
+    sentences that still say the old name and that this command refuses to
+    decide about.
+    """
+    config, vault = _setup(args)
+    actor, remote, branch = config.target() if config else (default_actor(), None, None)
+    made = move.plan(vault, args.old, args.new)
+    print(made.render())
+    if args.dry_run:
+        return EXIT_FINDINGS
+    result = move.carry_out(vault, made, actor=actor, remote=remote, branch=branch)
+    print(f"\n{result.message}")
     return EXIT_OK if result.ok else EXIT_FINDINGS
 
 
@@ -1324,6 +1349,13 @@ def build_parser() -> argparse.ArgumentParser:
     again.add_argument("path", nargs="?", help="the vault, default is the configured one")
     again.add_argument("--dry-run", action="store_true", help="print what is stale and stop")
     again.set_defaults(func=cmd_reindex)
+
+    shift = sub.add_parser("move-area", help="rename an area, and readdress what pointed into it")
+    shift.add_argument("old", help="the area as it is called now, for example project/atlas")
+    shift.add_argument("new", help="what it should be called, for example project/beacon")
+    shift.add_argument("--path", dest="path", help="the vault, default is the configured one")
+    shift.add_argument("--dry-run", action="store_true", help="print the plan and stop")
+    shift.set_defaults(func=cmd_move_area)
 
     back = sub.add_parser("recover", help="put files back, or push what this clone has")
     kinds = back.add_subparsers(dest="what", required=True)
