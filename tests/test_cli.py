@@ -283,7 +283,7 @@ def test_context_prints_the_payload_and_what_it_costs(vault, capsys):
     assert "also here: old-news" in out, "and still a name to ask with"
     assert "1 entry above is named only" in out
     assert "1 of 2 entries described, 1 named only" in out
-    assert "budget 800" in out
+    assert f"budget {context.DEFAULT_TARGET_TOKENS}" in out
 
 
 def test_context_can_be_told_not_to_read_the_clock(vault, capsys):
@@ -673,7 +673,9 @@ def test_context_can_say_why_an_entry_has_no_line(vault, capsys):
     assert main(["context", str(vault.root), "--as-of", "2026-09-18", "--why-not"]) == 0
     out = capsys.readouterr().out
     assert "old-news  no rule chose it" in out
-    assert "working-hours" not in out.split("budget 800")[1], "it has a line, so nothing to explain"
+    assert "working-hours" not in out.split(f"budget {context.DEFAULT_TARGET_TOKENS}")[1], (
+        "it has a line, so nothing to explain"
+    )
 
 
 # What two audits found in the hooks

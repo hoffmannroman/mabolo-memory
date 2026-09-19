@@ -51,6 +51,7 @@ also here: reviews-need-a-diff
 - atlas-uses-postgres: One Postgres database, no second store and no cache that outlives a request
 
 ## project/beacon (2 entries)
+also here: beacon, beacon-runs-on-a-schedule
 
 11 entries above are named only. Search the memory by name or topic to read them.
 ```
@@ -88,6 +89,35 @@ above, listed where it belongs rather than twice.
 The last line accounts for all three, and it says which is which. "Every entry
 is listed above" with eleven bare names under it would be the quiet stop this
 tier exists against, in a politer wording.
+
+## An area with nothing under it costs a name, not a heading
+
+Every area used to get a heading whether or not anything stood under it. In a
+vault with a folder per project that is most of them, and the cost is not small.
+At 48 areas with 44 of them empty, the headings alone come to 340 of the map's
+789 tokens: nearly half of it spent saying that something exists somewhere,
+which is the one thing the count in the heading already said.
+
+So an area the map writes no line and no name under is gathered into one line
+instead:
+
+```
+44 more areas hold 63 entries, none described above: project/aurora,
+project/beacon, project/cinder, ..., and 9 more.
+```
+
+The names stay, because **a count is not a search key** -- the same reason bare
+names exist one level down. A reader who does not already suspect
+`project/cinder` is in there cannot ask for it, and "44 more areas" will not
+tell them. What goes is only the shape: a heading, a blank line and a count
+repeated once per empty folder.
+
+That line has a ceiling of its own, 800 characters. Past it the names are cut
+and the line says how many went, so the map cannot grow without bound as
+projects are added and cannot go quiet about it either. Below the ceiling a new
+project folder costs a name; above it, nothing. Before this, it cost a heading
+and a blank line in every session in every project, and that is how a session
+index measured at 900 tokens quietly grew past it.
 
 ## Why an entry has no line
 
@@ -130,7 +160,7 @@ Three rules hold this block:
 * **Only the active project.** No project, no block. Handing a session the
   newest lines of somebody else's project would be worse than silence.
 * **Newest first, and the budget takes the far end.** It has a budget of its
-  own, 500 tokens, which is neither taken from the map nor added to it. When
+  own, 300 tokens, which is neither taken from the map nor added to it. When
   lines are cut the block says how many, because a list that quietly stops
   reads like a complete one.
 * **Nothing dated later than the session counts.** One typo, or one machine
@@ -225,6 +255,11 @@ newline would otherwise write its own heading and its own closing sentence into
 the middle of a payload that is injected into a prompt automatically. The words
 survive, the structure does not bend.
 
+An **area name** goes through the same fold, in both places it is written: the
+heading and the line that gathers the empty ones. An area is a folder name off
+disk, and a folder name may hold a newline on both supported systems, so a
+folder could otherwise write a standing rule into that payload.
+
 ## Seats, not a budget
 
 The core has **twelve seats**, and one line per seat holds **160 characters**.
@@ -276,10 +311,19 @@ session cheaper than promised; raising is how a ceiling stops being one.
 
 ## The budget, and the one it does not apply to
 
-The target is about 800 tokens, estimated, and it is a target rather than a
-limit: the hard ceiling belongs to whichever client receives the payload, and
+The map's target is about 600 tokens, estimated, and it is a target rather than
+a limit: the hard ceiling belongs to whichever client receives the payload, and
 clients disagree about it. `--budget` changes it for one run, which is the
 quickest way to see what a smaller session would lose.
+
+**What a session is handed is the sum of the two: about 900 tokens.** That is
+the figure worth quoting, because a payload costs about what its budgets allow
+-- whatever the entry lines do not spend is bought back as bare names, so the
+map does not come in under its target, it comes in at it. The two numbers were
+once 800 and 500 while the eval case asked for 900, and nothing held the
+difference shut: a payload happened to sit below it until the areas of a vault
+reached 48, and then the case failed without anything having broken. Changing
+either number changes what a session is handed, so change both.
 
 An entry the budget cut is counted separately from one the rule never chose.
 They are different problems: the first is fixed by a larger budget, the second

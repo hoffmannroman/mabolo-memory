@@ -30,9 +30,15 @@ its entries are.
 that reads the clock itself produces a different answer tomorrow from the same
 commit, and then no measurement of it holds for longer than a week.
 
-One limit worth naming rather than discovering: every area gets a heading, so a
-vault with hundreds of projects would spend its budget on headings. The shape
-this is built for is a handful of fixed areas plus a folder per project.
+**An area with nothing under it costs one name, not one heading.** The shape
+this is built for is a handful of fixed areas plus a folder per project, and
+that shape turns against the map as the projects accumulate: at 48 areas with 44
+of them holding nothing the map described, 340 of its 789 tokens went on
+headings introducing nothing. So an area the map writes no line and no name
+under is not given a heading of its own: they are gathered into the single line
+`elsewhere` writes, which keeps every count and every name, cuts the names to a
+ceiling of its own and says how many it cut. The map still says what exists.
+What it no longer does is grow by a line each time a project folder appears.
 """
 
 from __future__ import annotations
@@ -45,12 +51,22 @@ from .index import CHARS_PER_TOKEN, Document, entry_line, estimate_tokens, one_l
 from .journal import Note
 from .schema import PROJECT_PREFIX, as_utc
 
-#: What the session index is meant to cost. A target rather than a limit: the
-#: hard ceiling belongs to whichever client receives it, and those disagree.
-#: At the time of writing Claude Code truncates a hook payload above 10,000
-#: characters and Codex injects about 2,500 tokens by default, so budgeting to
-#: the smaller of the two is the only number that is right in both.
-DEFAULT_TARGET_TOKENS = 800
+#: What the map is meant to cost. A target rather than a limit: the hard ceiling
+#: belongs to whichever client receives it, and those disagree. At the time of
+#: writing Claude Code truncates a hook payload above 10,000 characters and
+#: Codex injects about 2,500 tokens by default, so budgeting to the smaller of
+#: the two is the only number that is right in both.
+#:
+#: **It is half of a promise, and the other half is `DEFAULT_PROJECT_TOKENS`.**
+#: A payload costs about what its budgets allow, because whatever the lines do
+#: not spend is bought back as names. So what a session is handed is the sum of
+#: the two, and that sum is the number worth stating: 900, which is what the
+#: eval case measures. It used to be 1300 against an eval that asked for 900,
+#: and nothing held the difference shut -- a payload simply happened to sit
+#: below it until the areas of a vault reached 48, and then the case failed
+#: without anything having broken. Changing either number changes the promise, so
+#: change both, and move the eval case with them.
+DEFAULT_TARGET_TOKENS = 600
 
 #: How many standing rules a session can carry, and how long each may be.
 #:
@@ -75,7 +91,12 @@ SEAT_CHARS = 160
 #: ceiling. Deliberately not taken out of `DEFAULT_TARGET_TOKENS`: raising the
 #: map's budget to make room was the one answer ruled out when the core was
 #: built, and taking the room from the map would be the same thing by stealth.
-DEFAULT_PROJECT_TOKENS = 500
+#:
+#: Three hundred holds about five journal lines at the length these run to,
+#: which is more than a session start has been measured showing. The two budgets
+#: stay separate for the reason above and are chosen together for the reason in
+#: `DEFAULT_TARGET_TOKENS`: their sum is the promise.
+DEFAULT_PROJECT_TOKENS = 300
 
 #: How long an entry counts as recent. Seven days is a working week: whatever
 #: was decided since the last one is what a session is most likely to be about.
@@ -86,13 +107,19 @@ FRESH_DAYS = 7
 #: which order: a new reason, a different cut order, a different window, a
 #: different meaning for one of the three states an entry can end in.
 #:
+#: A budget counts, which is what raised it to 5: the rule that picks entries
+#: did not change, but the room it picks into did, and that moves both which
+#: entries a session is handed and how close to the cut the survivors sit. A
+#: baseline measured before it reads the shift as a slip, which is the one
+#: reading this number exists to prevent.
+#:
 #: **It is not a version of this file.** A comment, a rename or a faster loop
 #: leaves it alone. What it buys is one sentence in the eval: a baseline
 #: measured under another policy is not evidence that the memory got worse, it
 #: is evidence that the question changed, and those two deserve different
 #: reactions. Without it, the day the rule improves reads exactly like the day
 #: it regresses.
-POLICY = 4
+POLICY = 5
 
 #: Why a line is in the index, strongest first. The order is the rule: it
 #: decides both what survives a tight budget and what the baseline compares.
@@ -181,6 +208,68 @@ def lately_footer(dropped: int) -> str:
 def heading(area: str, count: int) -> str:
     """The line that introduces one area. The one place that decides its shape."""
     return f"## {one_line(area)} ({_plural(count, 'entry', 'entries')})"
+
+
+#: How much the line about the areas nothing was written for may cost, in
+#: characters. A ceiling rather than a share of the map's budget, for the same
+#: reason the journal block has one: it *can* be cut, the payload says how many
+#: names went, and so it needs no right of way. 800 characters is about 200
+#: tokens and holds roughly 45 area names, which is the size a vault reaches
+#: with a folder per project. The point is not the number but that there is
+#: one: without it the map grew by a line with every new project folder, in
+#: every session, and nothing said so.
+ELSEWHERE_CHARS = 800
+
+
+def elsewhere(counts: Sequence[tuple[str, int]], limit: int = ELSEWHERE_CHARS) -> str:
+    """The one line for every area the map wrote nothing under.
+
+    **This is the answer to the limit the module docstring names.** Every area
+    used to get a heading whether or not anything stood under it, so a vault
+    with a folder per project spent its budget introducing empty rooms: at 48
+    areas with 44 of them empty, that is 340 of 789 tokens saying only that
+    something exists somewhere. The count is kept, the names are kept, and what
+    goes is the one thing that carried no information, which is the shape.
+
+    The names stay because a count is not a search key -- the same argument
+    that `_fit_names` makes for a bare entry name, and it holds one level up: a
+    reader who does not already suspect `project/cinder` exists cannot ask for
+    it, and "44 more areas" will not tell them.
+
+    The names are cut to fit and the line says how many went, so the payload
+    cannot grow without bound and cannot go quiet about it either. Reserving
+    the closing clause at its longest is the same move `_fit` makes for the
+    footer: how it reads depends on how much fits, so reserving the real one
+    would be circular.
+
+    Every name goes through `one_line`, because an area is a folder name off
+    disk and a folder name may hold a newline. `heading` folds for that reason
+    and this is the same text arriving by a different road.
+    """
+    if not counts:
+        return ""
+    total = len(counts)
+    entries = sum(count for _, count in counts)
+    opening = (
+        f"{_plural(total, 'more area holds', 'more areas hold')} "
+        f"{_plural(entries, 'entry', 'entries')}, none described above"
+    )
+    names: list[str] = []
+    used = 0
+    for area, _ in counts:
+        name = one_line(area)
+        cost = len(name) + (2 if names else 0)  # ", "
+        # The closing clause at its longest: every name could still be dropped.
+        closing = len(f", and {total} more.")
+        if len(opening) + 2 + used + cost + closing > limit:
+            break
+        used += cost
+        names.append(name)
+    if not names:
+        return f"{opening}."
+    dropped = total - len(names)
+    tail = f", and {dropped} more." if dropped else "."
+    return f"{opening}: {', '.join(names)}{tail}"
 
 
 def footer(omitted: int, named: int = 0) -> str:
@@ -350,6 +439,11 @@ class SessionIndex:
         for line in self.named:
             named.setdefault(line.area, []).append(line.name)
         for area, total in self.counts:
+            if area not in shown and area not in named:
+                # A heading with nothing under it says only that the area
+                # exists, and `elsewhere` says that for all of them at once,
+                # in one line that cannot grow with the number of projects.
+                continue
             out.append(heading(area, total))
             # Sorted by name inside an area: this is the part a person reads,
             # and cut order would look arbitrary to them.
@@ -357,10 +451,25 @@ class SessionIndex:
             if area in named:
                 out.append(also_here(sorted(named[area])))
             out.append("")
+        empty = elsewhere(self.empty_areas)
+        if empty:
+            out.append(empty)
+            out.append("")
         out.append(footer(self.omitted, len(self.named)))
         if self.unseated:
             out.append(unseated_line(self.unseated))
         return "\n".join(out)
+
+    @property
+    def empty_areas(self) -> tuple[tuple[str, int], ...]:
+        """Every area the map wrote no line and no name under, with its count.
+
+        Asked by `text` to build the one line that stands in for all of them.
+        A property rather than a field because it is a statement about what was
+        rendered, and a field would be a second place for it to be true.
+        """
+        live = {line.area for line in self.lines} | {line.area for line in self.named}
+        return tuple((area, count) for area, count in self.counts if area not in live)
 
     def cost(self) -> int:
         return estimate_tokens(self.text())
@@ -696,7 +805,9 @@ def build(
         if d.name not in shown_names and d.name not in {line.name for line in rest} and not d.pin
     ]
     never_chosen.sort(key=lambda line: (line.area, line.name))
-    named = _fit_names([*cut_first, *never_chosen], spare)
+    named = _fit_names(
+        [*cut_first, *never_chosen], spare, counts, {line.area for line in kept}
+    )
     # The journal lines arrive already picked for this project by the caller,
     # which is the only reader that knows where `log.md` lives. What is decided
     # here is how many of them the block's own budget holds.
@@ -768,19 +879,44 @@ def _fit(
     does not even hold those yields a payload with no entries in it, which is a
     true statement about a budget that small.
 
-    **That is also the one way the target can be exceeded.** The header, one
-    heading per area and the last line are written whatever the budget says,
-    because a map that dropped its own headings would be a list that stops
-    without saying so. So a vault with many areas and a budget of a few dozen
-    tokens costs more than it was given, and no arrangement of entries would
-    have helped: the floor is the shape of the map, not its contents. At the
-    shipped budget of 800 it is far below anything a vault reaches.
+    **Only the areas a candidate could land in are reserved for.** An area the
+    renderer writes nothing under gets no heading any more, so reserving one for
+    it would be holding back budget against a line that will never be written.
+    What stands in for all of them is `elsewhere`, reserved here at its longest,
+    and an area that later takes a bare name pays for its own heading inside
+    `_fit_names`.
+
+    **That is also the one way the target can be exceeded.** The header, the
+    headings that do get written, that one line and the last line are written
+    whatever the budget says, because a map that dropped them would be a list
+    that stops without saying so. So a vault with many areas and a budget of a
+    few dozen tokens costs more than it was given, and no arrangement of entries
+    would have helped: the floor is the shape of the map, not its contents. At
+    the shipped budget of 800 it is far below anything a vault reaches.
     """
     fixed = len(header(project)) + 2  # the line, its newline, and the blank one
     # The core is already paid for by the caller, which subtracted it from the
     # target. What is left here is the map.
-    fixed += sum(len(heading(area, count)) + 1 for area, count in sorted(counts.items()))
-    fixed += len(counts)  # the blank line after each area
+    candidate_areas = {line.area for line in chosen}
+    fixed += sum(
+        len(heading(area, count)) + 2  # the heading and the blank line after the area
+        for area, count in sorted(counts.items())
+        if area in candidate_areas
+    )
+    # The names in that line are the areas no candidate could open. Reserving
+    # for every area instead would hold back the whole line's worth of budget
+    # against names that will not be written, which at a small target is the
+    # difference between a map with entries in it and one without.
+    #
+    # Two ways this reserves a little less than the renderer spends, both
+    # bounded and both deliberate. An area whose candidates all get cut falls
+    # into that line unreserved, and an area counted there that was not counted
+    # here moves the opening by a digit or two. The first is the budget being
+    # too small for the map's own shape, which this function documents and a
+    # test pins down; the second is smaller than the rounding in a token count.
+    empty = sorted((a, c) for a, c in counts.items() if a not in candidate_areas)
+    if empty:
+        fixed += min(ELSEWHERE_CHARS, len(elsewhere(empty))) + 2
     longest_footer = max(len(footer(0)), len(footer(total)), len(footer(total, total)))
     budget = target_tokens * CHARS_PER_TOKEN - fixed - longest_footer
 
@@ -814,7 +950,12 @@ def also_here(names: Sequence[str]) -> str:
     return ALSO_HERE + ", ".join(one_line(name) for name in names)
 
 
-def _fit_names(candidates: Sequence[Line], budget: int) -> list[Line]:
+def _fit_names(
+    candidates: Sequence[Line],
+    budget: int,
+    counts: dict[str, int] | None = None,
+    headed: set[str] | None = None,
+) -> list[Line]:
     """As many bare names as the leftover budget holds, in the order given.
 
     **This is the middle answer, and the reason it exists.** A count is not a
@@ -828,7 +969,16 @@ def _fit_names(candidates: Sequence[Line], budget: int) -> list[Line]:
     pay for one. Reserving all of them up front would be reserving for areas
     that turn out to hold nothing, which in a vault with a folder per project
     is most of them.
+
+    **And it pays for its heading too, when the name is what opens the area.**
+    `_fit` reserves a heading only for an area some candidate line could land
+    in. An area that gets no line and then takes a bare name is written out
+    here for the first time, heading and all, and charging only for the
+    introduction would put the payload over its target by one heading per such
+    area, silently, in exactly the vault shape this is built for.
     """
+    counts = counts or {}
+    headed = set(headed or ())
     kept: list[Line] = []
     used = 0
     paid_for: set[str] = set()
@@ -836,6 +986,8 @@ def _fit_names(candidates: Sequence[Line], budget: int) -> list[Line]:
         cost = len(line.name)
         if line.area not in paid_for:
             cost += len(ALSO_HERE) + 1  # the introduction and the line break
+            if line.area not in headed:
+                cost += len(heading(line.area, counts.get(line.area, 0))) + 2
         else:
             cost += 2  # ", "
         if used + cost > budget:
