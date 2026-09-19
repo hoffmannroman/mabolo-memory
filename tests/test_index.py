@@ -387,3 +387,71 @@ def test_a_question_this_vault_cannot_answer_is_not_answered_from_its_grammar(va
     assert [hit.name for hit in found.hits] == [], [
         (hit.name, hit.matched) for hit in found.hits
     ]
+
+
+# An entry that says it is no longer current, in the one place that shows it
+
+
+def test_a_preview_says_when_an_entry_is_no_longer_current(vault):
+    """The gap this closes.
+
+    A description describes what a thing *is*, so "self-hosted messenger"
+    stays true of a project abandoned in September. The field that knows it was
+    abandoned is `status`, and a preview is the one place a reader meets a
+    description with none of the frontmatter around it. Measured in a real
+    vault: three searches, three abandoned projects at rank one, not a word to
+    say so.
+    """
+    index = build(vault, {
+        "beacon-messenger": entry_text(
+            title="Beacon", description="Self-hosted messenger, Python and WebSocket",
+            body="It spoke a protocol of its own.", status="deprecated"),
+    })
+
+    line = index.preview(index.search("self-hosted messenger")[:1])
+
+    assert line.endswith("[deprecated]"), line
+    assert "Self-hosted messenger" in line, "the description still says what it was"
+
+
+def test_a_current_entry_carries_no_mark(vault):
+    index = build(vault, {
+        "beacon-messenger": entry_text(
+            title="Beacon", description="Self-hosted messenger, Python and WebSocket",
+            body="It speaks a protocol of its own."),
+    })
+
+    assert "deprecated" not in index.preview(index.search("self-hosted messenger")[:1])
+
+
+def test_being_deprecated_does_not_change_where_an_entry_ranks(vault):
+    """Found like any other, because what it records still happened. The mark
+    is a caveat on the answer, not a thumb on the scale."""
+    index = build(vault, {
+        "beacon-messenger": entry_text(
+            title="Beacon", description="Self-hosted messenger, Python and WebSocket",
+            body="A protocol of its own, spoken over WebSocket.", status="deprecated"),
+        "harbour-rota": entry_text(
+            title="Harbour", description="Who is on call", body="A messenger is paged."),
+    })
+
+    assert [h.name for h in index.search("self-hosted messenger")][0] == "beacon-messenger"
+
+
+def test_the_session_index_is_left_exactly_as_it_was(vault):
+    """Deliberate, and this test is the note that says so. `entry_line` is
+    shared with the payload a session starts with, and marking there would
+    change what a session is handed. No deprecated entry was in that payload
+    when this was measured, so it would be a policy change and a new baseline
+    for a case that does not arise."""
+    index = build(vault, {
+        "beacon-messenger": entry_text(
+            area="persona", title="Beacon", description="Self-hosted messenger",
+            body="It spoke a protocol of its own.", status="deprecated"),
+    })
+    document = next(d for d in index.documents if d.name == "beacon-messenger")
+
+    assert document.deprecated is True
+    assert entry_line(document.name, document.description, document.title) == (
+        "- beacon-messenger: Self-hosted messenger"
+    )

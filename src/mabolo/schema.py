@@ -24,7 +24,10 @@ from typing import Any
 OKF_VERSION = "0.2"
 
 #: OKF lifecycle values.
-STATUSES = ("draft", "stable", "deprecated")
+#: The one status that means "this is no longer current". Named, because a
+#: reader of the index should not have to know which of three strings it is.
+DEPRECATED = "deprecated"
+STATUSES = ("draft", "stable", DEPRECATED)
 DEFAULT_STATUS = "stable"
 
 #: Entry types Mabolo knows about. OKF allows any descriptive string, so an

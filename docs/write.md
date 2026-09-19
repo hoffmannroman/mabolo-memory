@@ -148,6 +148,15 @@ exist.
 | `journal_add` | full | one line under today's date in `log.md` |
 | `mabolo_reindex` | full | rebuilds an index that no longer matches its entries |
 
+**A search says when an entry is no longer current.** A description describes
+what a thing *is*, so "self-hosted messenger, Python and WebSocket" stays true
+of a project abandoned in September, and the field that knows it was abandoned
+is `status`. A preview is the one place a reader meets a description with none
+of the frontmatter around it, so the line carries `[deprecated]` there. Ranking
+is untouched: a deprecated entry is found like any other, because what it
+records still happened. The mark is a caveat on the answer, not a thumb on the
+scale.
+
 `mabolo_search` and `mabolo_read` are two calls on purpose. A single call cannot
 announce the price of its own payload: by the time the answer arrives, the
 payload is already in the context.

@@ -43,7 +43,7 @@ from typing import Iterable
 
 from . import query as q
 from .errors import MaboloError
-from .schema import PROJECT_PREFIX, Entry
+from .schema import DEPRECATED, PROJECT_PREFIX, Entry
 
 #: The searchable fields and their BM25 weight, in one place. The column list,
 #: the insert statement and the weight arguments are all built from this, so a
@@ -68,6 +68,12 @@ DEFAULT_LIMIT = 5
 #: the real count depends on the tokeniser of whichever model reads it, and
 #: every number this produces is presented as an estimate.
 CHARS_PER_TOKEN = 4
+
+#: What a preview adds to a line whose entry says it is no longer current.
+#: Short because it is paid for on every such hit, and in the vault's own
+#: vocabulary rather than a symbol, because a reader has to know what it means
+#: without being told.
+DEPRECATED_MARK = "[deprecated]"
 
 #: The score of an entry that was named and matched no word. Worse than any
 #: BM25 score, which is negative, so a named entry never pushes a real match
@@ -145,6 +151,12 @@ class Document:
     #: When the entry was last touched, in UTC. See `Entry.touched_at`, which is
     #: where that is decided; nothing here interprets a timestamp of its own.
     at: dt.datetime | None = None
+    #: Whether the entry says it is no longer current. Not searched and not
+    #: ranked on: a deprecated entry is found like any other, because what it
+    #: records still happened. It is carried so that a preview can say so,
+    #: which is the one place a reader meets a description without the
+    #: frontmatter that qualifies it.
+    deprecated: bool = False
     #: Every word of the entry, folded and split the way a query is, sorted so
     #: that a prefix can be found without walking the list.
     words: tuple[str, ...] = field(default_factory=tuple)
@@ -193,8 +205,25 @@ class Hit:
         return self.document.path
 
     def line(self) -> str:
-        """The one line a preview of a search result would show for this entry."""
-        return entry_line(self.name, self.description, self.title)
+        """The one line a preview of a search result would show for this entry.
+
+        A deprecated entry says so here, and only here. A description describes
+        what a thing *is*, so "Direct Instant Group Network: self-hosted
+        messenger" stays true of a project that was abandoned in September; the
+        field that knows it was abandoned is `status`, and a preview is the one
+        place a reader meets the description with none of the frontmatter
+        around it. Measured in a real vault: three searches, three entries at
+        rank one, every one of them a project that no longer exists and not a
+        word to say so.
+
+        Not in `entry_line`, which the session index shares. No deprecated
+        entry was in that payload when this was measured, so marking there
+        would change what a session is handed for a case that does not arise,
+        and that is a policy change and a new baseline for nothing. When one
+        does arise, this is the note that says what to do about it.
+        """
+        said = entry_line(self.name, self.description, self.title)
+        return f"{said} {DEPRECATED_MARK}" if self.document.deprecated else said
 
 
 @dataclass(frozen=True)
@@ -294,6 +323,7 @@ def _document(entry: Entry) -> Document:
         pin=bool(entry.mabolo.pin),
         pinned_at=entry.mabolo.pin if isinstance(entry.mabolo.pin, dt.date) else None,
         at=entry.touched_at(),
+        deprecated=entry.status == DEPRECATED,
         words=tuple(words),
         fields=fields,
     )
