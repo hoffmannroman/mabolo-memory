@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import textwrap
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -396,6 +397,38 @@ QUOTE_ID = "q1"
 #: about whether an entry has its evidence.
 FOOTNOTE_DEFINITION = re.compile(r"^\[\^([^\]]+)\]:[ \t]*(.*)$", re.MULTILINE)
 
+#: Lines the quote marker must not be appended to, because a space and a
+#: footnote after them mean something else: a fence stops closing the block it
+#: opened, and a table row grows a cell.
+MARKER_REFUSED_AFTER = ("```", "~~~", "|")
+
+
+def tidy_prose(prose: str) -> str:
+    """The body with its whitespace tidied and its paragraphs left standing.
+
+    Paragraphs are the difference between a rule somebody reads and a wall of
+    text they skip past, and a feedback entry whose **Why:** ran into the
+    sentence before it is the second one. This collapsed every body to a single
+    line until 19.09.2026, which nothing noticed until the first entry written
+    through the tool sat next to the imported ones.
+
+    So only trailing whitespace goes, a run of blank lines becomes one, and
+    nothing inside a line is touched: a table, a list and an indented code
+    block all reach the file the way they were written. An indent the whole
+    body shares is dropped, because a caller that passed a triple quoted string
+    meant prose and would get four spaces of Markdown code block; an indent one
+    line has on its own is kept, because there it means something.
+    """
+    kept: list[str] = []
+    for line in textwrap.dedent(str(prose)).splitlines():
+        line = line.rstrip()
+        if not line and (not kept or not kept[-1]):
+            continue
+        kept.append(line)
+    while kept and not kept[-1]:
+        kept.pop()
+    return "\n".join(kept)
+
 
 def quoted_body(prose: str, quote: str) -> str:
     """The prose with the sentence that authorised it in a footnote under it.
@@ -410,10 +443,16 @@ def quoted_body(prose: str, quote: str) -> str:
     password ***" the moment the marker was attached: the redactor saw a
     keyword followed by eight characters and did its job, and the entry was
     refused for a secret that was never there.
+
+    A body that ends in a fence or a table row gets the marker as a paragraph
+    of its own instead. Appended there it would be read as part of the fence or
+    as another cell, and the evidence would stop being evidence.
     """
-    text = " ".join(str(prose).split()) or " ".join(str(quote).split())
     said = " ".join(str(quote).split()).replace('"', "'")
-    return f"{text} [^{QUOTE_ID}]\n\n[^{QUOTE_ID}]: \"{said}\"\n"
+    text = tidy_prose(prose) or " ".join(str(quote).split())
+    last = text.rsplit("\n", 1)[-1]
+    separator = "\n\n" if last.startswith(MARKER_REFUSED_AFTER) else " "
+    return f"{text}{separator}[^{QUOTE_ID}]\n\n[^{QUOTE_ID}]: \"{said}\"\n"
 
 
 @dataclass

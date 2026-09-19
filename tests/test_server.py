@@ -7,7 +7,7 @@ import pytest
 from mcp import Client
 
 from conftest import entry_text
-from mabolo import consent, frontmatter, inbox, validate
+from mabolo import consent, doctor, frontmatter, inbox, validate
 from mabolo.server import MAX_READ, Settings, build
 
 QUOTE = "releases are cut from main only"
@@ -91,6 +91,26 @@ def test_a_quoted_sentence_is_written_and_carries_its_evidence(server, git_vault
     assert document.meta["sources"][0]["id"] == "q1"
     assert f'[^q1]: "{QUOTE}"' in document.body
     assert "[^q1]" in document.body.split("\n")[0]
+    assert git_vault.validate().ok
+
+
+def test_a_written_entry_keeps_the_paragraphs_it_was_given(server, git_vault):
+    """A rule and its reason are two paragraphs, and they stay two.
+
+    Every entry in the vault sets its reason off from the rule, and a reader
+    skips a wall of text. The body went through a whitespace collapse that made
+    one paragraph of whatever it was handed, and no test looked at the shape of
+    the prose, only at the footnote under it.
+    """
+    body = "The rule.\n\n**Why:** the reason.\n\n**How to apply:** the habit."
+    written(server, body=body)
+    document = frontmatter.read(git_vault.root / "infra" / "deploy-from-main.md")
+    prose = document.body.split("\n\n[^q1]:")[0]
+    assert prose.split("\n\n") == [
+        "The rule.",
+        "**Why:** the reason.",
+        "**How to apply:** the habit. [^q1]",
+    ]
     assert git_vault.validate().ok
 
 
@@ -430,3 +450,73 @@ def test_a_verdict_somewhere_else_in_the_sentence_is_not_an_answer(
     answer = call(server, "mabolo_decide", {"id": waiting.id, "verdict": "yes", "quote": said})
     assert "no prompt on this machine answers" in answer
     assert not (git_vault.root / "infra" / "deploy-from-main.md").exists()
+
+
+def test_a_written_entry_reaches_its_area_index_in_the_same_commit(server, git_vault):
+    """The index is derived from the entries, and it was derived once, by `init`.
+
+    So every entry written through a tool was missing from the file a reader
+    opens first, and `doctor` said so after every single write. It goes into the
+    same commit, because an index that is right in the next commit is wrong in
+    this one, and a clone that fetched only this one holds a broken vault.
+    """
+    written(server)
+    index = (git_vault.root / "infra" / "index.md").read_text(encoding="utf-8")
+    assert "[deploy-from-main](deploy-from-main.md)" in index
+    touched = git_vault.git("show", "--name-only", "--format=", "HEAD").stdout.split()
+    assert sorted(touched) == ["index.md", "infra/deploy-from-main.md", "infra/index.md"]
+    missing = [
+        f.message
+        for f in doctor.examine(root=git_vault.root).findings
+        if "index.md" in f.message
+    ]
+    assert missing == []
+
+
+def test_a_forgotten_entry_leaves_no_link_pointing_at_nothing(server, git_vault):
+    """A removal that leaves the index naming the file is a broken link in the
+    one file a reader starts from, and `validate` reports it as such.
+
+    The index has to hold the entry first, or this passes in a version that
+    never put it there: no link, and therefore no broken one.
+    """
+    written(server)
+    index = git_vault.root / "infra" / "index.md"
+    assert "deploy-from-main.md" in index.read_text(encoding="utf-8")
+    call(
+        server,
+        "mabolo_forget",
+        {
+            "name": "deploy-from-main",
+            "quote": QUOTE,
+            "revision": frontmatter.read(
+                git_vault.root / "infra" / "deploy-from-main.md"
+            ).revision,
+        },
+    )
+    assert "deploy-from-main.md" not in index.read_text(encoding="utf-8")
+    assert git_vault.validate().ok
+
+
+def test_a_written_entry_carries_a_title_because_a_list_has_nothing_else(server, git_vault):
+    """Every entry in a vault has one, and a tool that left it out wrote an
+    entry `validate` warns about, every write, with no way for a caller to do
+    better than the name it had just chosen."""
+    written(server)
+    document = frontmatter.read(git_vault.root / "infra" / "deploy-from-main.md")
+    assert document.meta["title"] == "deploy-from-main"
+    report = git_vault.validate()
+    assert [p.code for p in report.problems if "title" in p.code] == []
+
+
+def test_a_write_does_not_carry_an_index_it_had_nothing_to_do_with(server, git_vault):
+    """An index that was already wrong is a repair, and a repair belongs in its
+    own commit. Rebuilding every index on every write would put somebody else's
+    folder into the diff of this one."""
+    stale = git_vault.root / "persona" / "index.md"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("# persona\n\n## Entries\n\n* [gone](gone.md) - not here any more\n", encoding="utf-8")
+    written(server)
+    touched = git_vault.git("show", "--name-only", "--format=", "HEAD").stdout.split()
+    assert "persona/index.md" not in touched
+    assert "gone.md" in stale.read_text(encoding="utf-8")

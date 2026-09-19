@@ -159,6 +159,13 @@ frontmatter is re-rendered, because that part is structured data the tool owns.
 claim about you, and it is never read as a rule. Requiring a quote there would
 mean approving a sentence you never said.
 
+**A body keeps its paragraphs.** Trailing whitespace goes, a run of blank lines
+becomes one, an indent the whole body shares is dropped, and nothing else is
+touched: a rule and its reason stay two paragraphs, and a table, a list and an
+indented code block survive. The sentence that authorised the entry is added
+under it as a footnote, with the marker at the end of the last paragraph, or on
+a line of its own when that paragraph ends in a fence or a table row.
+
 ## Proposals: what an agent may do alone
 
 An agent with nothing of yours to quote cannot write. It can suggest.

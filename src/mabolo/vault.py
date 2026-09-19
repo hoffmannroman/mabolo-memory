@@ -23,7 +23,8 @@ The rules that make it safe to point this at a directory:
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import PRODUCER, frontmatter, git, journal, write
@@ -398,6 +399,12 @@ class Vault:
         into the vault that the validator never sees.
         """
         target = self.resolve_write_target(entry, path)
+        if not entry.title:
+            # The name, which is the title every entry in a vault already
+            # carries and the one thing a list can show. A tool that left it out
+            # wrote an entry `validate` warns about, every time, and a caller
+            # cannot supply a better one than the name it just chose.
+            entry = replace(entry, title=target.stem)
         meta = entry.to_meta()
         if not allow_findings:
             expected = area_of(self.root, target)
@@ -515,15 +522,19 @@ class Vault:
             for item in self._skeleton()
         ]
 
-    def _index_directories(self) -> list[Path]:
+    def _index_directories(self, entries: Iterable[Path] | None = None) -> list[Path]:
         """Every folder that gets an index.md, deepest first.
 
         Deepest first because a folder index has to exist before the index above
         it counts what is in it.
+
+        `entries` is the entry list to derive the folders from, which a write in
+        flight passes because the file it is about to add is not on disk yet and
+        its folder may not be either.
         """
         directories = {self.root}
         if self.root.is_dir():
-            for path in self.entry_paths():
+            for path in self.entry_paths() if entries is None else entries:
                 directories.add(path.parent)
             for area in (*self.areas, "project"):
                 directory = self.area_dir(area)
@@ -582,6 +593,94 @@ class Vault:
 
     # The bundle index, which the spec reserves and defines
 
+    def _index_meta(self, directory: Path, language: str) -> dict | None:
+        """The frontmatter an index carries. Only the root has any: it is the
+        bundle index the spec defines, and it declares the vault's language."""
+        if directory != self.root:
+            return None
+        return {"okf_version": OKF_VERSION, "mabolo": {"language": language}}
+
+    def _counts_as_entry(self, path: str) -> bool:
+        """Whether this path is one of the files an index lists.
+
+        The same rule the walker uses, and it has to stay the same rule: a
+        hidden folder is not part of the vault, so the ledger under `.mabolo/`
+        is not an entry. Counting it as one gave that folder an `index.md` of
+        its own, in the commit that answered a proposal.
+        """
+        parts = Path(path).parts
+        if any(part.startswith(".") for part in parts):
+            return False
+        return parts[-1] not in (INDEX_FILE, LOG_FILE) and Path(path).suffix.lower() == ".md"
+
+    def index_changes(self, changes: list[write.Change]) -> list[write.Change]:
+        """The derived indexes that these entry changes make wrong, as changes.
+
+        An index is derived from the entries, and until 19.09.2026 only `init`
+        ever rebuilt one. So every entry written through a tool was missing from
+        its area's index and every forgotten one left a link pointing at
+        nothing: `doctor` reported both, one write after the other, and the file
+        a reader opens first was the one thing a write never touched.
+
+        They go into the **same** commit as the entry, because an index that is
+        right in a second commit is wrong in the first, and a clone that fetched
+        only the first would hold a vault `doctor` calls broken. The cost is
+        that two machines writing two entries in one area now touch one file
+        each way, so the second one is told to read again rather than pushing.
+        That is the conflict path doing its job, and it is cheaper than a
+        session being shown an index that forgot an entry.
+
+        The entry list is the one on disk with these changes folded in, since
+        the files are not written until the commit is safe.
+        """
+        named = {change.path for change in changes}
+        entries = set(self.entry_paths())
+        affected: set[Path] = set()
+        for change in changes:
+            if not self._counts_as_entry(change.path):
+                continue
+            path = self.root / change.path
+            entries.discard(path) if change.data is None else entries.add(path)
+            # The folder it is in, and every one above it, because those count
+            # what lies below them. No further: an index that was already wrong
+            # elsewhere is a repair, and a repair does not belong in the diff of
+            # a write that had nothing to do with it.
+            for folder in (path.parent, *path.parent.parents):
+                affected.add(folder)
+                if folder == self.root:
+                    break
+        if not affected:
+            return []
+        by_folder: dict[Path, list[Path]] = defaultdict(list)
+        for path in entries:
+            by_folder[path.parent].append(path)
+        directories = self._index_directories(entries)
+        language = self.language or self.declared_language()
+        derived: list[write.Change] = []
+        for directory in directories:
+            if directory not in affected:
+                continue
+            target, text = self._render_index(directory, by_folder, directories, language)
+            if target.relative_to(self.root).as_posix() in named:
+                # The caller already says what this file holds. A revert names
+                # every file of the commit it undoes, index included, and two
+                # changes for one path in one transaction is a contradiction.
+                continue
+            try:
+                self._refuse_to_overwrite_hand_written(target)
+            except MaboloError:
+                # Somebody wrote this index themselves. A write of an entry is
+                # not the moment to take that away from them, and `doctor` says
+                # so on its own.
+                continue
+            data = frontmatter.dump(self._index_meta(directory, language), text).encode("utf-8")
+            if target.exists() and target.read_bytes() == data:
+                continue
+            path = target.relative_to(self.root).as_posix()
+            expect = frontmatter.revision(target.read_bytes()) if target.exists() else None
+            derived.append(write.Change(path=path, data=data, expect=expect))
+        return derived
+
     def rebuild_indexes(self) -> list[Path]:
         """Write `index.md` for the root and every folder that holds entries."""
         by_folder: dict[Path, list[Path]] = defaultdict(list)
@@ -601,6 +700,19 @@ class Vault:
         directories: list[Path],
         language: str = DEFAULT_LANGUAGE,
     ) -> Path:
+        """One index.md on disk. `_render_index` decides what is in it."""
+        target, text = self._render_index(directory, by_folder, directories, language)
+        self._refuse_to_overwrite_hand_written(target)
+        frontmatter.write(target, self._index_meta(directory, language), text)
+        return target
+
+    def _render_index(
+        self,
+        directory: Path,
+        by_folder: dict[Path, list[Path]],
+        directories: list[Path],
+        language: str = DEFAULT_LANGUAGE,
+    ) -> tuple[Path, str]:
         """One index.md, built from the same file list the validator walks.
 
         `by_folder` is that list, grouped. Reaching for `glob` here instead meant
@@ -612,7 +724,6 @@ class Vault:
         """
         is_root = directory == self.root
         target = self.ensure_inside(directory / INDEX_FILE)
-        self._refuse_to_overwrite_hand_written(target)
         entries = sorted(by_folder.get(directory, []), key=lambda p: p.name)
         # An area with no entries in it is still listed: a fresh vault would
         # otherwise show nothing at all, and the areas are what a reader needs
@@ -654,11 +765,7 @@ class Vault:
         if not entries and not subdirs:
             lines += ["Nothing here yet.", ""]
 
-        meta = (
-            {"okf_version": OKF_VERSION, "mabolo": {"language": language}} if is_root else None
-        )
-        frontmatter.write(target, meta, "\n".join(lines))
-        return target
+        return target, "\n".join(lines)
 
     def _refuse_to_overwrite_hand_written(self, target: Path) -> None:
         """Only replace an index.md that Mabolo could have written itself.

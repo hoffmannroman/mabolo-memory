@@ -169,3 +169,32 @@ def test_an_unreadable_pin_is_still_a_pin_rather_than_a_crash():
     """The readers render what is on disk. A typo in one entry's pin must not
     cost a session its whole payload; `validate` is where it gets reported."""
     assert MaboloBlock.from_meta({"pin": "someday"}).pin is True
+
+
+def test_a_body_keeps_its_paragraphs_and_loses_only_stray_whitespace():
+    """What the person wrote, tidied, not reflowed.
+
+    A list, a table and an indented block all mean something by their line
+    breaks, and a collapse to one line costs every one of them its meaning.
+    """
+    body = "\n  The rule.  \n\n\n\n  **Why:** the reason.\n\n  - one\n    - deeper\n\n\n"
+    assert schema.tidy_prose(body) == "The rule.\n\n**Why:** the reason.\n\n- one\n  - deeper"
+
+
+def test_the_quote_marker_lands_at_the_end_of_the_last_paragraph():
+    written = schema.quoted_body("The rule.\n\n**Why:** the reason.", "somebody said so here")
+    assert written.startswith("The rule.\n\n**Why:** the reason. [^q1]\n\n")
+    assert written.endswith('[^q1]: "somebody said so here"\n')
+
+
+def test_a_body_that_ends_in_a_fence_gets_the_marker_on_its_own():
+    """Appended to the closing fence it would stop closing the block, and the
+    footnote would be printed as code instead of read as evidence."""
+    written = schema.quoted_body("Run it:\n\n```sh\nmabolo doctor\n```", "somebody said so here")
+    assert "```\n\n[^q1]\n" in written
+    assert "``` [^q1]" not in written
+
+
+def test_a_body_that_ends_in_a_table_row_gets_the_marker_on_its_own():
+    written = schema.quoted_body("| host | role |\n|---|---|\n| atlas | web |", "somebody said so")
+    assert "| atlas | web |\n\n[^q1]\n" in written

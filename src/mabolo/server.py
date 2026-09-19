@@ -151,9 +151,11 @@ def build(vault: Vault, settings: Settings) -> MCPServer:
         )
 
     def commit(changes: list[write.Change], message: str, kind: str = "write") -> write.Result:
+        # The area index is derived from the entries, so it belongs to the same
+        # commit as the entry that changed it. See `Vault.index_changes`.
         return write.apply(
             vault.root,
-            changes,
+            changes + vault.index_changes(changes),
             message,
             actor=settings.actor,
             kind=kind,

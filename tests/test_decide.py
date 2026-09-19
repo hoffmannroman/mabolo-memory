@@ -47,7 +47,15 @@ def test_a_yes_writes_the_entry_and_the_answer_in_one_commit(git_vault):
     assert (git_vault.root / "infra" / "deploy-from-main.md").exists()
     assert f"{one.id} " in ledger(git_vault)
     touched = git_vault.git("show", "--name-only", "--format=", "HEAD").stdout.split()
-    assert sorted(touched) == [".mabolo/decided.md", "infra/deploy-from-main.md"]
+    # The two the claim is about, plus the indexes the new entry belongs in:
+    # derived files travel with the entry, or the commit before them holds a
+    # vault whose index has forgotten it.
+    assert sorted(touched) == [
+        ".mabolo/decided.md",
+        "index.md",
+        "infra/deploy-from-main.md",
+        "infra/index.md",
+    ]
 
 
 def test_a_yes_records_who_approved_it_on_the_entry(git_vault):

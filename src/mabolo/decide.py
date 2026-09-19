@@ -165,9 +165,11 @@ def answer(
         changes.insert(0, change)
 
     said = "approve" if approved else "reject"
+    # An approved proposal adds or removes an entry, so the derived index goes
+    # into the same commit. See `Vault.index_changes`.
     result = write.apply(
         vault.root,
-        changes,
+        changes + vault.index_changes(changes),
         f"{said} {proposal.id}: {proposal.action} {proposal.target}",
         actor=by,
         kind=said,

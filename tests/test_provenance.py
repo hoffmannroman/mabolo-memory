@@ -334,3 +334,17 @@ def test_the_report_answers_all_four_questions_in_one_read(vault):
         "anchor",
         "history",
     ]
+
+
+def test_a_quote_the_file_already_spelled_in_quotes_is_not_quoted_twice(vault):
+    """`why` shows the sentence a person typed, and the one place a reader
+    checks the evidence must not look like it garbled it. Mabolo writes the
+    footnote quoted, so wrapping it again printed a doubled pair."""
+    write(
+        vault,
+        sources=[{"id": "q1", "resource": "session://2026-09-19"}],
+        body='Releases are cut from `main`. [^q1]\n\n[^q1]: "releases are cut from main only"\n',
+    )
+    printed = provenance.of(vault, "beacon-ci").render()
+    assert '"releases are cut from main only"' in printed
+    assert '""' not in printed

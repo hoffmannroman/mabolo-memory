@@ -139,6 +139,19 @@ class Commit:
     previous: str | None = None
 
 
+def _in_quotes(said: str) -> str:
+    """The sentence in one pair of quotation marks, however the file spells it.
+
+    An entry Mabolo wrote stores the sentence quoted, so wrapping it again
+    printed `""like this""`, which reads like a transcription error in the
+    evidence that is meant to be the trustworthy part. A footnote somebody
+    added by hand without quotation marks still gets them here.
+    """
+    if len(said) > 1 and said.startswith('"') and said.endswith('"'):
+        return said
+    return f'"{said}"'
+
+
 @dataclass(frozen=True)
 class Provenance:
     """Everything `mabolo why` knows about one entry, ready to be printed."""
@@ -199,7 +212,7 @@ class Provenance:
             head = f"  {one_line(quote.id or '-'):<{width}}  {quote.status:<{status}}"
             resource = one_line(quote.resource) if quote.resource else ""
             out.append(f"{head}  {resource}".rstrip())
-            said = f'"{one_line(quote.text)}"' if quote.text else _INSTEAD[quote.status]
+            said = _in_quotes(one_line(quote.text)) if quote.text else _INSTEAD[quote.status]
             out.append(f"      {said}")
         return out
 

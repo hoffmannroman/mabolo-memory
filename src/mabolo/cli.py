@@ -633,6 +633,7 @@ def cmd_revert(args: argparse.Namespace) -> int:
         plan,
         actor=actor,
         kind="revert",
+        derived=vault.index_changes(list(plan.changes)),
         remote=remote,
         branch=branch,
     )
@@ -659,6 +660,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
         plan,
         actor=actor,
         kind="recover",
+        derived=vault.index_changes(list(plan.changes)),
         remote=remote,
         branch=branch,
     )
