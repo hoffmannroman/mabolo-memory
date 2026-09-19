@@ -36,6 +36,16 @@ matches. The words have to be yours. A quote shorter than twelve characters is
 refused outright, because "yes" appears in half of all prompts and there is
 nothing there to recognise.
 
+**What the gate holds against, exactly.** A model that has only the tool call:
+a quote has to match a note the hook wrote. Anything that can write into the
+state directory, which includes an agent with a shell, can write a note and
+then quote it. There is no lock here that would hold against that: a key in a
+file the same user can read is a lock with the key taped to it. What remains is
+detection rather than prevention, and it is the same thing that protects you
+from everything else here: every write is one commit, carrying the sentence in
+its message and in a footnote, so a forged sentence is one you can read and did
+not say, and `git revert` is the way back.
+
 **What it cannot claim.** A client starts the MCP server without telling it
 which session it belongs to. So unless the client sets `MABOLO_SESSION_ID`, the
 server cannot honestly say "this sentence, in this conversation". What it can
@@ -86,13 +96,18 @@ the working tree is only touched after the push succeeded. A refused push costs
 nothing: the commit object is unreferenced and Git collects it.
 
 **Your working tree is never reset and never cleaned.** The only files touched
-are the ones the change names. A change you made by hand in an editor is
-committed first, in a commit of its own, so that the diff of a write holds only
-what the write did. Your staged work stays staged.
+are the ones the change names. Whatever you changed by hand, staged or not, is
+committed first in a commit of its own, so the diff of a write holds only what
+the write did. Staging is not a hiding place: a file Mabolo looked away from
+would never reach your other machines, and the next write of that path would
+overwrite it.
 
-**The only thing that stops a mutation outright** is a merge, rebase,
-cherry-pick, revert or bisect already running in the vault, or a detached HEAD.
-Neither is something a memory tool should decide for you.
+**Three things stop a mutation outright**, and each is a state where somebody
+is in the middle of something a memory tool should not decide for them: a
+merge, rebase, cherry-pick, revert or bisect already running; a detached HEAD,
+or a branch other than the one that syncs; and a file you have staged and then
+edited again, where Git holds two versions and committing the one on disk would
+throw away the one you put there on purpose.
 
 ### What a tool can answer
 
@@ -103,7 +118,7 @@ Neither is something a memory tool should decide for you.
 | `offline` | committed, and the remote could not be reached, so it is only here |
 | `conflict` | the remote moved, nothing was written, read it again |
 | `stale` | the entry changed since you read it, nothing was written |
-| `blocked` | Git is busy in the vault, nothing was touched |
+| `blocked` | somebody is mid change in the vault, nothing was touched |
 | `nothing` | the vault already says exactly that |
 
 `offline` is a deliberate answer rather than a failure. Refusing to remember
@@ -185,11 +200,15 @@ in the vault beside the entries so that the answer travels with them. The
 sentence a proposal quoted is never written there: a refusal is often precisely
 "I do not want this remembered".
 
-Through MCP the same answer needs the sentence you typed, and that sentence has
-to name the proposal: `mabolo_decide` accepts "a3f2 yes" and refuses a bare
-"yes". A machine generated id in a prompt is a signature of having looked at
-the inbox; "yes" is a signature of nothing. This is the one place the twelve
-character floor is lowered, and the shape stands in for the length.
+Through MCP the same answer needs the sentence you typed, and the answer is read
+out of that sentence rather than taken from the call. The word has to stand next
+to the id, so "a3f2 yes" answers and "a3f2 yesterday we looked at it" does not,
+and one sentence answering two proposals answers each the way you wrote it: a
+call claiming yes for the one you refused is turned down naming what you said.
+An id you answered both ways is refused rather than resolved. A machine
+generated id in a prompt is a signature of having looked at the inbox; "yes" is
+a signature of nothing, which is why this is the one place the twelve character
+floor is lowered and the shape stands in for the length.
 
 ## Extraction: where proposals come from
 

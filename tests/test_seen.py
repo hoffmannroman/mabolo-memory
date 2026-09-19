@@ -51,6 +51,6 @@ def test_a_note_that_cannot_be_written_is_not_an_error(tmp_path):
 
 def test_a_broken_line_is_skipped_rather_than_fatal(tmp_path):
     seen.remember(["a-rule@1"], session="s", at=at(), directory=tmp_path)
-    with (tmp_path / "s.jsonl").open("a", encoding="utf-8") as handle:
+    with (tmp_path / f"{consent.session_id('s')}.jsonl").open("a", encoding="utf-8") as handle:
         handle.write("{not json\n")
     assert seen.already("s", directory=tmp_path) == {"a-rule@1"}

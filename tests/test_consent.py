@@ -97,7 +97,7 @@ def test_old_notes_are_forgotten(tmp_path):
     where = tmp_path / "p"
     consent.record("remember the thing that happened", cwd=tmp_path, at=at(), session="s",
                    directory=where)
-    note = where / "s.jsonl"
+    note = where / f"{consent.session_id('s')}.jsonl"
     # The age is the file's, so the test sets it rather than waiting a week.
     # Without it this would pass or fail depending on the day it is run on.
     stamp = at().timestamp()
@@ -114,7 +114,7 @@ def test_a_long_session_does_not_grow_without_end(tmp_path):
     for number in range(consent.MAX_LINES + 20):
         consent.record(f"sentence number {number}", cwd=tmp_path, at=at(), session="s",
                        directory=where)
-    lines = (where / "s.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    lines = (where / f"{consent.session_id('s')}.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == consent.MAX_LINES
     assert json.loads(lines[-1])["text"].endswith(str(consent.MAX_LINES + 19))
 
@@ -129,7 +129,7 @@ def test_a_broken_note_is_skipped_not_fatal(tmp_path):
     where = tmp_path / "p"
     consent.record("remember that the pilot runs in one region", cwd=tmp_path, at=at(),
                    session="s", directory=where)
-    with (where / "s.jsonl").open("a", encoding="utf-8") as handle:
+    with (where / f"{consent.session_id('s')}.jsonl").open("a", encoding="utf-8") as handle:
         handle.write("{not json at all\n")
     assert consent.check("the pilot runs in one region", cwd=tmp_path, now=at(1),
                          directory=where).verified

@@ -763,7 +763,11 @@ def test_the_prompt_hook_writes_the_prompt_down(tmp_path, capsys, monkeypatch):
     notes = prompt_notes(tmp_path)
     assert "remember that we deploy on fridays" in notes
     assert str(tmp_path) in notes
-    assert (Path.home() / ".local/state/mabolo/prompts/abc-1.jsonl").exists()
+    from mabolo import consent
+
+    assert (
+        Path.home() / ".local/state/mabolo/prompts" / f"{consent.session_id('abc-1')}.jsonl"
+    ).exists()
 
 
 def test_the_prompt_hook_can_be_told_not_to(tmp_path, capsys, monkeypatch):

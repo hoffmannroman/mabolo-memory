@@ -211,18 +211,49 @@ def foreign_changes(root: Path) -> list[str]:
         return []
     fields = [f for f in result.stdout.split("\0") if f]
     paths: list[str] = []
-    skip_next = False
+    rename = False
     for field in fields:
-        if skip_next:
-            skip_next = False
+        if rename:
+            # A rename reports the path it came from in the field after it, and
+            # that path is half of the change. Skipping it committed the new
+            # file while leaving the old one in the tree, so both existed in
+            # the commit and the old one reappeared on the next machine to
+            # pull. Both halves go in, and Git works out that it is a rename.
+            rename = False
+            paths.append(field)
             continue
-        status, _, path = field.partition(" ")
-        # A rename reports the old path in the field after it.
-        if status.startswith("R") or status.startswith("C"):
-            skip_next = True
         if len(field) > 3:
+            status = field[:2]
+            rename = status[0] in "RC" or status[1] in "RC"
             paths.append(field[3:])
     return paths
+
+
+def staged_and_edited(root: Path) -> list[str]:
+    """Paths the person has both staged and changed again since.
+
+    The one hand made state that is not simply a change to carry along. Git
+    holds two versions of such a file, and committing what is on disk throws
+    the staged one away for good, which is a version the person put there on
+    purpose. It is only reachable with a shell, so a shell exists to resolve
+    it, and it means somebody is in the middle of building a commit by hand.
+    """
+    result = run(root, "status", "--porcelain", "-z", "--untracked-files=all", check=False)
+    if result.returncode != 0:
+        return []
+    out: list[str] = []
+    rename = False
+    for field in [f for f in result.stdout.split("\0") if f]:
+        if rename:
+            rename = False
+            continue
+        if len(field) <= 3:
+            continue
+        status = field[:2]
+        rename = status[0] in "RC" or status[1] in "RC"
+        if status[0] not in " ?" and status[1] not in " ":
+            out.append(field[3:])
+    return out
 
 
 def is_ancestor(root: Path, earlier: str, later: str) -> bool:
@@ -239,9 +270,18 @@ def fast_forward(root: Path, ref: str) -> bool:
 
 
 def fetch(root: Path, remote: str, branch: str) -> bool:
-    """Ask the remote where it is. False when it could not be reached."""
-    result = run(root, "fetch", "--quiet", remote, branch, check=False)
-    return result.returncode == 0
+    """Ask the remote where it is. False only when nobody was there.
+
+    A remote that answers and has no such branch yet is reachable. Reading the
+    failed fetch as "unreachable" made a brand new bare repository offline for
+    good: every write said "only here", the push never happened, and the backup
+    the README recommends setting up stayed empty while the tool reported
+    success. `--exit-code` gives 2 for "reachable, no such ref", which is the
+    whole difference.
+    """
+    if run(root, "fetch", "--quiet", remote, branch, check=False).returncode == 0:
+        return True
+    return run(root, "ls-remote", "--exit-code", remote, check=False).returncode in (0, 2)
 
 
 def hash_object(root: Path, data: bytes) -> str:

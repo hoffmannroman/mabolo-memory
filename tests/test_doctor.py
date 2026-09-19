@@ -460,3 +460,37 @@ def test_a_vault_with_nothing_wrong_reports_only_the_closing_line(git_vault, tmp
     assert report.not_run == []
     assert report.ok
     assert report.render() == f"0 findings, {len(report.clean)} checks clean, 0 not run"
+
+
+def test_a_wired_client_whose_hooks_have_never_run_is_not_reported_as_fine(tmp_path, git_vault):
+    """A plugin whose hooks are never discovered starts the MCP server and runs
+    none of them, with no error anywhere. The only thing that can speak to it is
+    whether a note has ever arrived, and "nothing seen yet" is not "it works"."""
+    wiring_file = tmp_path / "settings.json"
+    wiring_file.write_text('{"hooks": {"SessionStart": [{"hooks": [{"command": "mabolo hook '
+                           'session-start"}]}]}}', encoding="utf-8")
+    report = doctor.examine(
+        config_path=configuration(tmp_path, git_vault.root),
+        clients=[wiring_file],
+        executable="mabolo",
+        pending=[],
+    )
+    waiting = [c for c in report.not_run if c.name == "wiring.seen"]
+    assert waiting and "no prompt note has ever arrived" in waiting[0].reason
+
+
+def test_a_hook_that_has_run_clears_it(tmp_path, git_vault, monkeypatch):
+    from mabolo import consent
+
+    wiring_file = tmp_path / "settings.json"
+    wiring_file.write_text('{"hooks": {"SessionStart": [{"hooks": [{"command": "mabolo hook '
+                           'session-start"}]}]}}', encoding="utf-8")
+    consent.record("remember that the pilot runs in one region", cwd=tmp_path, session="s")
+    report = doctor.examine(
+        config_path=configuration(tmp_path, git_vault.root),
+        clients=[wiring_file],
+        executable="mabolo",
+        pending=[],
+    )
+    assert [c.name for c in report.not_run if c.name == "wiring.seen"] == []
+    assert "wiring.seen" in [c.name for c in report.clean]

@@ -277,6 +277,11 @@ uv run mabolo --config /tmp/mabolo-demo.toml init --vault /tmp/my-vault --yes
   your client tells the server which session it is in, a quote counts when it
   was typed in the same directory within twelve hours.
   [The write page](docs/write.md) says why and what that does not prove.
+* **The gate holds against a model that has only the tool call.** The prompts
+  it checks against are a file on your disk, so anything that can write there,
+  which includes an agent with a shell, can write a note and quote it. What
+  holds against that is not a lock but a record: every write is one commit
+  carrying the sentence, so a sentence you did not say is one you can read.
 * **The search index is SQLite**, which is a database. It is derived from the
   files, built in memory and never stored, so there is nothing to delete and
   nothing that can disagree with what is on disk.

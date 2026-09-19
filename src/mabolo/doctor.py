@@ -408,7 +408,40 @@ def _wiring_checks(clients: ClientSource, executable: str | None) -> list[Check]
         if not any(_points_here(word, expect) for word in found)
     )
     checks.append(Check("wiring.executable", CONFIGURATION, findings=wrong))
+    if paths:
+        # Registered only when somebody wired a client up, the same way the
+        # remote group is absent from a vault that has no remote: nothing is
+        # unknown about hooks nobody asked for.
+        checks.append(_hooks_seen_check())
     return checks
+
+
+def _hooks_seen_check() -> Check:
+    """Whether a hook has ever actually run on this machine.
+
+    A wired client whose hooks are never discovered starts the MCP server and
+    runs none of them: no prompt notes, no session context, no rule raised by a
+    file, and no error anywhere. That is the quietest failure this tool has, and
+    the one thing that can speak to it is whether a note has ever arrived. It is
+    reported as a check that could not be run rather than as a clean one,
+    because "nothing has been seen yet" is not "it works", and the person's
+    next session answers it either way.
+    """
+    notes = consent.prompt_dir()
+    try:
+        arrived = any(notes.glob("*.jsonl"))
+    except OSError:
+        arrived = False
+    if arrived:
+        return Check("wiring.seen", CONFIGURATION)
+    return Check(
+        "wiring.seen",
+        CONFIGURATION,
+        reason=(
+            "the hooks are wired and no prompt note has ever arrived, so nothing can say "
+            "whether they run. Your next session in a wired client answers this"
+        ),
+    )
 
 
 def _points_here(word: str, expect: str) -> bool:

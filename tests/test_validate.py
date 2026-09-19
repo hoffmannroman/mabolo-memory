@@ -457,3 +457,27 @@ def test_a_pin_that_is_neither_a_day_nor_a_boolean_is_an_error(vault):
     )
     report = validate_vault(vault.root)
     assert any(p.code == "mabolo.pin.invalid" for p in report.problems)
+
+
+def test_a_missing_description_shows_the_sentence_the_text_begins_with():
+    """Shown, never written in. A converter that filled the field from the body
+    would be smoothing over an error in the source; handing the sentence to the
+    person who has to write the line is the honest half of the same idea."""
+    meta = {"type": "reference", "status": "stable", "mabolo": {"area": "infra"}}
+    body = "The build server runs the nightly job. It has run out of memory twice."
+    found = [p for p in validate_meta(meta, body=body) if p.code == "mabolo.description.missing"]
+    assert found and "The build server runs the nightly job" in found[0].message
+    assert "It has run out of memory twice" not in found[0].message, "one sentence, not the body"
+
+
+def test_a_missing_description_with_no_prose_says_only_what_is_wrong():
+    meta = {"type": "reference", "status": "stable", "mabolo": {"area": "infra"}}
+    found = [p for p in validate_meta(meta, body="") if p.code == "mabolo.description.missing"]
+    assert found and "The text begins" not in found[0].message
+
+
+def test_the_suggestion_skips_a_heading_and_a_code_fence():
+    meta = {"type": "reference", "status": "stable", "mabolo": {"area": "infra"}}
+    body = "# A heading\n\n```\nnot prose at all\n```\n\nThe real first sentence is here."
+    found = [p for p in validate_meta(meta, body=body) if p.code == "mabolo.description.missing"]
+    assert "The real first sentence is here" in found[0].message

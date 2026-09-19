@@ -9,10 +9,18 @@ payload: by the time the answer arrives the payload is already in the context.
 
 **The write side is the gate.** Every write tool takes a `quote`, the sentence
 that authorised it, and the sentence is checked against what the prompt hook
-actually saw a person type. A model can write a quote nobody said; it cannot
-make one appear in the hook's notes. A server started in read mode does not
-register the write tools at all, which is what "an agent acting on its own
-never writes" means in code rather than in a docstring.
+actually saw a person type. A server started in read mode does not register the
+write tools at all, which is what "an agent acting on its own never writes"
+means in code rather than in a docstring.
+
+**What the gate holds against, exactly.** A model that has only the tool call:
+a quote has to match a note the hook wrote. Anything that can write into the
+state directory, which includes an agent with a shell, can write a note and
+then quote it. What remains against that is not prevention but detection:
+every write is one commit carrying the sentence in its message and in a
+footnote, so a forged sentence is a sentence the person can read and did not
+say, and `git revert` is the way back. A barrier this could not keep would be
+worse than none.
 
 **Nothing here talks to Git.** A tool builds the bytes of a file and hands them
 to `write.apply`, which owns the lock, the revision check, the commit and the
@@ -455,18 +463,10 @@ def _register_writing(
         the answer, and the sentence the proposal quoted is never recorded.
         """
         wanted = verdict.strip().lower()
-        if wanted not in ("yes", "no"):
-            return "refused: a verdict is yes or no."
+        if wanted not in consent.VERDICTS:
+            return f"refused: a verdict is {' or '.join(consent.VERDICTS)}."
         waiting = inbox.read(vault.root).proposals
         one = proposal.resolve(id, waiting)
-        said = consent.normalise(quote).casefold()
-        if one.id[: proposal.MIN_PREFIX] not in said:
-            return (
-                f"nothing was written: the sentence does not name {one.id}. "
-                "A proposal is answered by the person naming it, not by a yes on its own."
-            )
-        if wanted not in said:
-            return f"nothing was written: the sentence does not say {wanted!r} about {one.id}."
         given = consent.check(
             quote,
             cwd=settings.cwd,
@@ -476,10 +476,27 @@ def _register_writing(
         )
         if not given.verified:
             return refuse(given)
+        # The answer is read out of what the person typed, never taken from
+        # this call. A check that the id occurs and the word occurs let one
+        # sentence answering two proposals approve the one that was refused,
+        # and let "a3f2 yesterday we reviewed it" pass for a yes.
+        said = consent.verdict_for(
+            one.id,
+            cwd=settings.cwd,
+            session=settings.session,
+            directory=settings.prompts,
+        )
+        if not said.given:
+            return f"nothing was written: {said.reason}"
+        if said.answer != wanted:
+            return (
+                f"nothing was written: the person said {said.answer!r} about {one.id} "
+                f"and this call says {wanted!r}. Pass on what they said."
+            )
         answered = decide.answer(
             vault,
             one,
-            approved=wanted == "yes",
+            approved=said.answer == "yes",
             by=settings.actor,
             remote=settings.remote,
             branch=settings.branch,

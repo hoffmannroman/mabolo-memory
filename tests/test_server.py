@@ -290,7 +290,55 @@ def test_a_verdict_without_the_id_in_it_decides_nothing(server, git_vault, promp
     answer = call(server, "mabolo_decide", {
         "id": waiting.id, "verdict": "yes", "quote": "yes go ahead with that",
     })
-    assert "does not name" in answer
+    assert "no prompt on this machine answers" in answer
+    assert not (git_vault.root / "infra" / "deploy-from-main.md").exists()
+
+
+def test_the_word_has_to_stand_next_to_the_id(server, git_vault, prompts, tmp_path):
+    """"a3f2 yesterday we reviewed it" holds the id and holds "yes", and means
+    neither. The neighbours are what a person means by an answer."""
+    propose(server)
+    waiting = inbox.pending(git_vault.root)[0]
+    said = f"{waiting.id} yesterday we reviewed it"
+    consent.record(said, cwd=tmp_path, session="s", directory=prompts)
+    answer = call(server, "mabolo_decide", {"id": waiting.id, "verdict": "yes", "quote": said})
+    assert "no prompt on this machine answers" in answer
+    assert not (git_vault.root / "infra" / "deploy-from-main.md").exists()
+
+
+def test_one_sentence_answering_two_proposals_answers_each_as_it_was_written(
+    server, git_vault, prompts, tmp_path
+):
+    """The documented shape is "a3f2 yes, 7c01 no". Reading the id and the word
+    as two independent facts let a call approve the one the person refused."""
+    propose(server)
+    propose(
+        server,
+        target="infra/other-entry",
+        entry=ENTRY_TEXT.replace("Deploy from main only", "Other").replace(
+            "Releases are cut from main, never from a tag", "Something else entirely"
+        ),
+    )
+    waiting = inbox.pending(git_vault.root)
+    yes, no = waiting[0], waiting[1]
+    said = f"{yes.id} yes, {no.id} no"
+    consent.record(said, cwd=tmp_path, session="s", directory=prompts)
+
+    wrong = call(server, "mabolo_decide", {"id": no.id, "verdict": "yes", "quote": said})
+    assert "the person said 'no'" in wrong
+    right = call(server, "mabolo_decide", {"id": yes.id, "verdict": "yes", "quote": said})
+    assert "approved" in right
+
+
+def test_an_id_answered_both_ways_is_refused_rather_than_resolved(
+    server, git_vault, prompts, tmp_path
+):
+    propose(server)
+    waiting = inbox.pending(git_vault.root)[0]
+    said = f"{waiting.id} yes, on second thought {waiting.id} no"
+    consent.record(said, cwd=tmp_path, session="s", directory=prompts)
+    answer = call(server, "mabolo_decide", {"id": waiting.id, "verdict": "yes", "quote": said})
+    assert "answered both ways" in answer
     assert not (git_vault.root / "infra" / "deploy-from-main.md").exists()
 
 
@@ -307,7 +355,7 @@ def test_a_verdict_nobody_typed_decides_nothing(server, git_vault, prompts, tmp_
 def test_a_verdict_the_person_typed_writes_the_entry(server, git_vault, prompts, tmp_path):
     propose(server)
     waiting = inbox.pending(git_vault.root)[0]
-    said = f"{waiting.id[:4]} yes"
+    said = f"{waiting.id[:4]}: yes"
     consent.record(said, cwd=tmp_path, session="s", directory=prompts)
     answer = call(server, "mabolo_decide", {
         "id": waiting.id[:4], "verdict": "yes", "quote": said,
@@ -367,3 +415,18 @@ def test_a_read_of_an_entry_that_watches_nothing_says_nothing_extra(server, git_
     written(server)
     answer = call(server, "mabolo_read", {"names": ["deploy-from-main"]})
     assert ">" not in answer.split("---")[-1]
+
+
+def test_a_verdict_somewhere_else_in_the_sentence_is_not_an_answer(
+    server, git_vault, prompts, tmp_path
+):
+    """"yes" has to stand next to the id. A sentence that says yes about
+    something else entirely, and mentions a proposal in passing, is not an
+    answer to that proposal."""
+    propose(server)
+    waiting = inbox.pending(git_vault.root)[0]
+    said = f"yes I saw {waiting.id} and I will look at it tomorrow"
+    consent.record(said, cwd=tmp_path, session="s", directory=prompts)
+    answer = call(server, "mabolo_decide", {"id": waiting.id, "verdict": "yes", "quote": said})
+    assert "no prompt on this machine answers" in answer
+    assert not (git_vault.root / "infra" / "deploy-from-main.md").exists()

@@ -127,6 +127,13 @@ def line(entry: Entry) -> str:
     `instead_of` is appended rather than given a line of its own: two lines per
     rule doubles the cost of the tier that fires most often, and the sentence
     is only useful next to the rule it belongs to.
+
+    **Nothing is cut here.** A rule is executed as an instruction, and half an
+    instruction reads exactly like a whole one: cutting at the limit dropped
+    `instead_of` first, which is the half that carries the point, and left no
+    mark that anything had gone. A rule too long for its line gets no line and
+    is named instead, the same answer the core gives a rule too long for its
+    seat. `fits` is what decides; this only renders.
     """
     said = entry_line(
         entry.path.stem if entry.path else "",
@@ -136,7 +143,12 @@ def line(entry: Entry) -> str:
     if entry.mabolo.instead_of:
         stop = "" if said.endswith((".", "!", "?")) else "."
         said += f"{stop} Instead of: {one_line(entry.mabolo.instead_of)}."
-    return said[:CHARS].rstrip()
+    return said
+
+
+def fits(entry: Entry) -> bool:
+    """Whether this rule can be said in one line at all."""
+    return len(line(entry)) <= CHARS
 
 
 def block(rules: list[Entry], path: str, limit: int = LIMIT) -> str:
@@ -148,14 +160,23 @@ def block(rules: list[Entry], path: str, limit: int = LIMIT) -> str:
     """
     if not rules:
         return ""
-    shown = rules[:limit]
+    sayable = [entry for entry in rules if fits(entry)]
+    too_long = [entry for entry in rules if not fits(entry)]
+    shown = sayable[:limit]
+    if not shown and not too_long:
+        return ""
     lines = [HEADING, "", f"About `{one_line(path)}`:", ""]
     lines += [line(entry) for entry in shown]
-    left = len(rules) - len(shown)
+    left = len(sayable) - len(shown)
     if left:
         # Never silently. A rule that did not fit is a rule nobody is following,
         # and the count is the only way anybody finds out.
         lines.append(f"- {left} more rule(s) apply and are not shown here.")
+    if too_long:
+        named = ", ".join(entry.path.stem if entry.path else "" for entry in too_long)
+        lines.append(
+            f"- {len(too_long)} rule(s) too long for a line and left out whole: {named}. Read them."
+        )
     return "\n".join(lines)
 
 

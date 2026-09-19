@@ -20,6 +20,9 @@ text
 """
 
 
+CHANGED = ENTRY.replace(b"text", b"other text")
+
+
 def change(path: str = "infra/thing.md", data: bytes | None = ENTRY, expect: str | None = None):
     return write.Change(path=path, data=data, expect=expect)
 
@@ -275,3 +278,132 @@ def test_a_kind_nobody_defined_is_refused(git_vault):
     with pytest.raises(MaboloError):
         write.apply(git_vault.root, [change()], "x", actor="human:alex", kind="whatever")
     assert not (git_vault.root / "infra/thing.md").exists()
+
+
+def test_a_file_that_is_staged_and_edited_since_blocks_the_write(git_vault):
+    """Git holds two versions of it, and committing the one on disk throws away
+    the one the person staged on purpose. It is the same class as a merge in
+    progress: somebody is building a commit by hand."""
+    path = git_vault.root / "infra" / "mine.md"
+    path.write_bytes(ENTRY)
+    git_vault.git("add", "infra/mine.md")
+    path.write_bytes(CHANGED)
+    result = write.apply(git_vault.root, [change()], "write a thing", actor="human:alex")
+    assert result.outcome == write.BLOCKED
+    assert "staged and has been edited since" in result.message
+    assert not (git_vault.root / "infra/thing.md").exists()
+    assert path.read_bytes() == CHANGED, "and neither version was touched"
+
+
+def test_a_file_that_is_only_staged_is_carried_along(git_vault):
+    """Staging is not a hiding place. A file Mabolo looked away from would
+    never reach the other machines and would be overwritten by the next write
+    of that path."""
+    (git_vault.root / "infra" / "mine.md").write_bytes(ENTRY)
+    git_vault.git("add", "infra/mine.md")
+    result = write.apply(git_vault.root, [change()], "write a thing", actor="human:alex")
+    assert result.ok
+    assert trailers(git_vault)[1].startswith("foreign by")
+    assert not git_vault.git("status", "--porcelain").stdout.strip()
+
+
+def test_a_rename_by_hand_does_not_leave_the_old_file_behind(git_vault):
+    """Skipping the path a rename came from committed the new file and kept the
+    old one, so both stood in the tree and the old one came back from the dead
+    on the next machine to pull."""
+    (git_vault.root / "infra" / "old.md").write_bytes(ENTRY)
+    git_vault.git("add", "infra/old.md")
+    git_vault.git("commit", "-qm", "the file before the rename")
+    git_vault.git("mv", "infra/old.md", "infra/new.md")
+    write.apply(git_vault.root, [change()], "write a thing", actor="human:alex")
+    tree = git_vault.git("ls-tree", "-r", "--name-only", "HEAD").stdout.split()
+    assert "infra/new.md" in tree
+    assert "infra/old.md" not in tree
+    assert not git_vault.git("status", "--porcelain").stdout.strip()
+
+
+def test_the_revision_is_checked_after_the_clone_has_caught_up(git_vault, remote, tmp_path):
+    """The order is the guarantee. Asking before the fast forward compares the
+    caller's revision against a file that is already out of date, so the entry
+    somebody else edited is overwritten without anybody being told."""
+    first = write.apply(git_vault.root, [change()], "write a thing", actor="human:alex",
+                        remote="origin", branch="main")
+    other = clone(tmp_path, remote)
+    (other / "infra" / "thing.md").write_bytes(CHANGED)
+    subprocess.run(["git", "-C", str(other), "commit", "-qam", "edited on another machine"],
+                   check=True)
+    subprocess.run(["git", "-C", str(other), "push", "-q"], check=True)
+
+    # This clone has not seen that edit and still holds the first revision.
+    result = write.apply(
+        git_vault.root,
+        [change(data=ENTRY.replace(b"text", b"a third version"),
+                expect=first.revisions["infra/thing.md"])],
+        "write over it",
+        actor="human:alex",
+        remote="origin",
+        branch="main",
+    )
+    assert result.outcome == write.STALE
+    assert (git_vault.root / "infra/thing.md").read_bytes() == CHANGED, "their edit stands"
+
+
+def test_a_commit_that_is_safe_says_so_when_the_files_cannot_be_written(git_vault):
+    """The commit goes first on purpose. A failure after it leaves a repository
+    that is right about itself, and the message names the commit and the one
+    command that puts the files back; the caller must not hear "refused" about
+    a change that is committed and pushed."""
+    write.apply(git_vault.root, [change()], "write a thing", actor="human:alex")
+    before = head(git_vault)
+    area = git_vault.root / "infra"
+    area.chmod(0o555)
+    try:
+        with pytest.raises(MaboloError) as caught:
+            write.apply(
+                git_vault.root,
+                [change(data=CHANGED, expect=write.current_revision(git_vault.root,
+                                                                    "infra/thing.md"))],
+                "write again",
+                actor="human:alex",
+            )
+    finally:
+        area.chmod(0o755)
+    said = str(caught.value)
+    assert "is committed" in said and "recover files" in said
+    assert head(git_vault) != before, "the commit stands, which is what the message promises"
+
+
+def test_a_vault_on_another_branch_is_not_written_to(git_vault, remote):
+    """The commit is built on whatever is checked out and pushed to the branch
+    that syncs. A scratch branch in the vault would have published its commits
+    into the shared one, left the local branch behind its own push, and shown
+    the person a raw Git error instead of any of that."""
+    git_vault.git("checkout", "-q", "-b", "scratch")
+    (git_vault.root / "infra" / "scratch.md").write_bytes(ENTRY)
+    git_vault.git("add", "infra/scratch.md")
+    git_vault.git("commit", "-qm", "scratch work nobody pushed")
+    before = git_vault.git("rev-parse", "refs/remotes/origin/main").stdout.strip()
+
+    result = write.apply(git_vault.root, [change()], "write a thing", actor="human:alex",
+                         remote="origin", branch="main")
+    assert result.outcome == write.BLOCKED
+    assert "scratch" in result.message and "main" in result.message
+    assert not (git_vault.root / "infra/thing.md").exists()
+    git_vault.git("fetch", "-q", "origin", "main")
+    assert git_vault.git("rev-parse", "refs/remotes/origin/main").stdout.strip() == before
+
+
+def test_a_remote_that_is_still_empty_is_pushed_to(git_vault, tmp_path):
+    """A bare repository with no branch yet answers a fetch with a failure, and
+    reading that as unreachable made a brand new remote offline for good: every
+    write said "only here" while the backup the README recommends stayed
+    empty."""
+    bare = tmp_path / "fresh.git"
+    subprocess.run(["git", "init", "--bare", "-q", "--initial-branch=main", str(bare)], check=True)
+    git_vault.git_set_remote(str(bare))
+    result = write.apply(git_vault.root, [change()], "write a thing", actor="human:alex",
+                         remote="origin", branch="main")
+    assert result.outcome == write.WRITTEN
+    there = subprocess.run(["git", "-C", str(bare), "rev-parse", "main"],
+                           capture_output=True, text=True, check=True).stdout.strip()
+    assert there == head(git_vault)

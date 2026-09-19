@@ -29,6 +29,7 @@ Four things that are not obvious:
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -123,10 +124,22 @@ def prompt_dir() -> Path:
 
 
 def session_id(value: object = None) -> str:
-    """A file name for a session, from whatever the client called it."""
+    """A file name for a session, from whatever the client called it.
+
+    The readable part is what a person sees in the directory; the eight
+    characters after it are what make it a name. Folding alone collided in
+    three ways at once: `team/a` and `team?a` both became `team-a`, two ids
+    differing past the sixty-fourth character were cut to the same stem, and
+    everything unprintable became `unnamed`. Two sessions sharing one file
+    means one session's sentences authorise the other's writes, which is the
+    one thing this whole directory exists to prevent.
+    """
     raw = value if isinstance(value, str) and value.strip() else os.environ.get(ENV_SESSION, "")
-    cleaned = _SAFE_ID.sub("-", str(raw).strip().lower())[:64].strip("-")
-    return cleaned or "unnamed"
+    text = str(raw).strip()
+    if not text:
+        return "unnamed"
+    cleaned = _SAFE_ID.sub("-", text.lower())[:40].strip("-") or "session"
+    return f"{cleaned}-{hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}"
 
 
 def redact(text: str) -> str:
@@ -253,7 +266,7 @@ def _read(path: Path) -> list[Prompt]:
     return out
 
 
-def seen(*, cwd: str | Path | None = None, session: object = None, now: dt.datetime | None = None,
+def seen_prompts(*, cwd: str | Path | None = None, session: object = None, now: dt.datetime | None = None,
          window_hours: int = WINDOW_HOURS, directory: Path | None = None) -> list[Prompt]:
     """The prompts a quote may be checked against, newest first.
 
@@ -287,6 +300,106 @@ def seen(*, cwd: str | Path | None = None, session: object = None, now: dt.datet
     return sorted(prompts, key=lambda p: p.at, reverse=True)
 
 
+#: The two words that answer a proposal. Only these two: every softer word
+#: ("ok", "fine", "not that one") is a word a model can find somewhere in a
+#: sentence and call an answer.
+VERDICTS = ("yes", "no")
+
+_HEX = re.compile(r"^[0-9a-f]+$")
+_PUNCTUATION = ".,:;!?()[]{}<>\"'`"
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """What the person said about one proposal, read out of their own sentence."""
+
+    answer: str = ""
+    at: dt.datetime | None = None
+    session: str | None = None
+    reason: str = ""
+
+    @property
+    def given(self) -> bool:
+        return self.answer in VERDICTS
+
+
+def _tokens(text: str) -> list[str]:
+    """One sentence as words, with the punctuation around them dropped.
+
+    Dropped rather than kept, so that "a3f2: yes" reads the way a person means
+    it, and split on whitespace only, so that "a3f2 is a yes" cannot.
+    """
+    return [word.strip(_PUNCTUATION).casefold() for word in text.split() if word.strip(_PUNCTUATION)]
+
+
+def _answers_beside(words: list[str], position: int) -> list[str]:
+    """The verdicts that belong to the id at `position`, and not to another one.
+
+    The word after it always counts. The word before it counts only when no
+    other id is claiming it, which is the case the documented sentence makes
+    unavoidable: in "a3f2 yes, 7c01 no" the second id has "yes" in front of it
+    and "no" behind it, and reading both would make every such sentence
+    ambiguous and refuse itself. The "yes" plainly belongs to the id before it.
+    """
+    found: list[str] = []
+    after = words[position + 1] if position + 1 < len(words) else ""
+    if after in VERDICTS:
+        found.append(after)
+    before = words[position - 1] if position >= 1 else ""
+    if before in VERDICTS:
+        claimed = position >= 2 and _HEX.match(words[position - 2]) and len(words[position - 2]) >= 4
+        if not claimed:
+            found.append(before)
+    return found
+
+
+def verdict_for(id: str, *, cwd: str | Path | None = None, session: object = None,
+                now: dt.datetime | None = None, directory: Path | None = None) -> Verdict:
+    """The answer the person gave to one proposal, or why there is none.
+
+    The answer is read out of the notes and never taken from the call. That is
+    the whole difference: a check that the id occurs and the word occurs lets
+    one sentence answering two proposals approve the one that was refused, and
+    lets "a3f2 yesterday we reviewed it" count as a yes. Here the word has to
+    stand next to the id with nothing between, which is what a person means
+    when they write "a3f2 yes, 7c01 no".
+
+    An id answered twice with different words is refused rather than resolved.
+    Two answers in one sentence is a sentence nobody should have to reread.
+    """
+    wanted = id.strip().lower()
+    if len(wanted) < 4 or not _HEX.match(wanted):
+        return Verdict(reason=f"{id!r} is not a proposal id")
+    seen: dict[str, tuple[Prompt, str]] = {}
+    for prompt in seen_prompts(cwd=cwd, session=session, now=now, directory=directory):
+        words = _tokens(prompt.text)
+        for position, word in enumerate(words):
+            # The person types as much of the id as they need, so the word is a
+            # prefix of the id rather than the other way round. Four characters
+            # is the floor the inbox already refuses below.
+            if len(word) < 4 or not _HEX.match(word) or not wanted.startswith(word):
+                continue
+            for said in _answers_beside(words, position):
+                seen.setdefault(said, (prompt, said))
+    if not seen:
+        return Verdict(
+            reason=(
+                f"no prompt on this machine answers {wanted}. A proposal is answered by the "
+                f"person writing its id and {' or '.join(VERDICTS)} next to it, as in "
+                f"\"{wanted} yes\""
+            )
+        )
+    if len(seen) > 1:
+        return Verdict(
+            reason=(
+                f"{wanted} was answered both ways in what the person typed, so nothing "
+                "was written. Ask them which one they meant."
+            )
+        )
+    answer, (prompt, _) = next(iter(seen.items()))
+    return Verdict(answer=answer, at=prompt.at, session=prompt.session)
+
+
 def check(quote: str, *, cwd: str | Path | None = None, session: object = None,
           now: dt.datetime | None = None, directory: Path | None = None,
           minimum: int = MIN_QUOTE_CHARS) -> Consent:
@@ -311,7 +424,7 @@ def check(quote: str, *, cwd: str | Path | None = None, session: object = None,
             ),
         )
     wanted = text.casefold()
-    for prompt in seen(cwd=cwd, session=session, now=now, directory=directory):
+    for prompt in seen_prompts(cwd=cwd, session=session, now=now, directory=directory):
         if wanted in normalise(prompt.text).casefold():
             return Consent(quote=text, verified=True, at=prompt.at, session=prompt.session)
     return Consent(

@@ -75,10 +75,23 @@ def test_a_new_repository_lands_on_the_branch_it_was_asked_for(tmp_path, git_ide
     assert made.git("log", "-1", "--format=%s").stdout.strip()
 
 
-def test_two_spellings_of_one_session_are_one_session(tmp_path):
-    """A file system that does not tell `abc` from `ABC` would otherwise let one
-    session's sentences authorise another session's writes."""
-    assert consent.session_id("ABC-1") == consent.session_id("abc-1") == "abc-1"
+def test_a_session_file_is_readable_and_still_a_name(tmp_path):
+    """The readable part is what a person sees in the directory; the eight
+    characters after it are what make it a name. Folding the case alone was the
+    first answer to a case insensitive file system, and it was the wrong one:
+    it made two different ids one file everywhere instead of nowhere."""
+    assert consent.session_id("abc-1").startswith("abc-1-")
+    assert consent.session_id("ABC-1") != consent.session_id("abc-1")
+
+
+def test_two_sessions_never_share_one_file(tmp_path):
+    """Folding alone collided three ways: `team/a` and `team?a` became one name,
+    two ids differing past the sixty-fourth character were cut to one stem, and
+    everything unprintable became `unnamed`. One shared file means one session's
+    sentences authorise the other's writes."""
+    pairs = [("team/a", "team?a"), ("A" * 64 + "x", "A" * 64 + "y"), ("???", "---")]
+    for one, other in pairs:
+        assert consent.session_id(one) != consent.session_id(other), (one, other)
 
 
 def test_the_same_directory_written_two_ways_is_the_same_directory(tmp_path):

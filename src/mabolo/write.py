@@ -271,6 +271,18 @@ def apply(
         return Result(LOCAL, "written, but this vault is not a Git repository", revisions=revisions)
 
     with lock(root):
+        half_made = git.staged_and_edited(root)
+        if half_made:
+            # The same class as a merge in progress: somebody is building a
+            # commit by hand. Git holds two versions of such a file, and
+            # committing the one on disk would throw away the one they staged
+            # on purpose. Refusing costs a sentence; the other way costs a
+            # version that no command can bring back.
+            return Result(
+                BLOCKED,
+                f"{', '.join(sorted(half_made))} is staged and has been edited since. "
+                "Commit it or unstage it in the vault, then try again; nothing was written.",
+            )
         busy = git.mutation_in_progress(root)
         if busy:
             return Result(
@@ -284,6 +296,18 @@ def apply(
                 "the vault is on a detached HEAD, so there is no branch to write to.",
             )
         target_branch = branch or here
+        if here != target_branch:
+            # The commit is built on whatever is checked out and pushed to the
+            # configured branch, so a person who made a scratch branch in their
+            # vault would have published its commits into the shared one, ended
+            # up with a local branch behind its own push, and seen a raw Git
+            # error rather than any of that. It is the detached HEAD case
+            # wearing a different name.
+            return Result(
+                BLOCKED,
+                f"the vault is on {here!r} and this writes to {target_branch!r}. "
+                f"Switch back with `git switch {target_branch}` in the vault; nothing was written.",
+            )
 
         reachable = False
         remote_at: str | None = None
@@ -352,11 +376,17 @@ def apply(
         try:
             revisions = _materialise(root, todo)
             git.reset_paths(root, [c.path for c in todo])
-        except OSError as exc:
+        except (OSError, MaboloError) as exc:
+            # `MaboloError` as well, and that is the whole point of this branch:
+            # `frontmatter.write_file` turns every `OSError` into one, so a
+            # catch on `OSError` alone never fired. The change was committed
+            # and pushed, the caller was told "refused", and the next mutation
+            # committed the stale file back as a hand edit nobody made.
+            names = " ".join(change.path for change in todo)
             raise MaboloError(
-                f"the change is committed as {commit[:12]}, but writing the files failed "
-                f"({exc.strerror or exc}). Recover them with `git restore --source=HEAD -- .` "
-                "in the vault."
+                f"the change is committed as {commit[:12]} and is safe, but writing the files "
+                f"failed ({getattr(exc, 'strerror', None) or exc}). Put them back with "
+                f"`mabolo recover files {names}`."
             ) from exc
 
     short = commit[:12]

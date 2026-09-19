@@ -206,14 +206,22 @@ CODEX = Client(
     label="Codex",
     plugin_dir="codex",
     manifest_path=".codex-plugin/plugin.json",
-    plugin_hooks_path="hooks.json",
+    #: `hooks/hooks.json`, the path the client looks in by default, and the
+    #: same layout the other client uses. It was written at the plugin root
+    #: first, from the CLI's embedded specification; the vendor's published
+    #: packaging rules say the default is `hooks/hooks.json` and that a plugin
+    #: storing them there needs no manifest entry, and a plugin whose hooks are
+    #: never discovered is the silent half wiring this project is against.
+    #: One file only: the client loads every hook source it finds, so a second
+    #: copy would run every hook twice and write every prompt note twice.
+    plugin_hooks_path="hooks/hooks.json",
     manifest_names_hooks=False,
     stdio_type=None,
-    #: UNCERTAIN. Codex's own configuration is TOML and holds a `hooks` key,
-    #: and the binary also carries the name `hooks.json` next to its Codex home
-    #: paths. This is the reading that keeps the hook block identical to the
-    #: plugin's, and it is the one thing here established from an installed
-    #: binary rather than from documentation or a file on disk.
+    #: UNCERTAIN, and the only thing here that still is. Codex's own
+    #: configuration is TOML and holds a `hooks` key, and the binary also
+    #: carries the name `hooks.json` next to its Codex home paths. This is the
+    #: reading that keeps the hook block identical to the plugin's. If it is
+    #: wrong, this line is the whole correction: nothing else depends on it.
     hooks_file=".codex/hooks.json",
     hooks_form=JSON_FORM,
     server_file=".codex/config.toml",
@@ -276,6 +284,12 @@ def _json_text(value: Any) -> str:
     rendering has to be the one a person's editor would leave behind.
     """
     return json.dumps(value, indent=2, ensure_ascii=False) + "\n"
+
+
+#: A file this name must never appear at a plugin's root. The client reads a
+#: manifest there instead of the one in its own directory and silently disables
+#: every hook the plugin has, which is a failure with no error message at all.
+FORBIDDEN_AT_ROOT = "plugin.json"
 
 
 def plugin_files(for_client: Client) -> dict[str, str]:

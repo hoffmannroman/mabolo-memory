@@ -323,3 +323,25 @@ def test_a_client_that_is_not_on_this_machine_is_not_a_finding(tmp_path):
     assert wiring.installed(home=tmp_path) == ()
     (tmp_path / wiring.CODEX.home_marker).mkdir()
     assert wiring.installed(home=tmp_path) == (wiring.CODEX,)
+
+
+def test_a_plugin_never_carries_a_manifest_at_its_root(tmp_path):
+    """A `plugin.json` there makes one client read it instead of the manifest
+    in its own directory and silently disable every hook the plugin has. A
+    failure with no error message is the one this project cannot afford."""
+    for client in wiring.CLIENTS:
+        files = wiring.plugin_files(client)
+        assert wiring.FORBIDDEN_AT_ROOT not in files
+        assert not any(
+            name.count("/") == 0 and name == wiring.FORBIDDEN_AT_ROOT for name in files
+        )
+
+
+def test_the_hook_file_sits_where_each_client_looks_for_it(tmp_path):
+    """Both clients look in `hooks/hooks.json` by default. The Codex plugin had
+    it at the root, from the CLI's embedded specification, and a plugin whose
+    hooks are never discovered starts its MCP server and runs none of them:
+    no prompt notes, no session context, no design rule, and no error."""
+    for client in wiring.CLIENTS:
+        assert client.plugin_hooks_path == "hooks/hooks.json"
+        assert client.plugin_hooks_path in wiring.plugin_files(client)

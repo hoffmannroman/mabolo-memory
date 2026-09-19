@@ -122,6 +122,20 @@ def test_the_path_cannot_write_a_heading_either(vault):
     assert not any(line.startswith("- forged") for line in text.splitlines())
 
 
-def test_a_long_rule_is_cut_rather_than_carried_whole(vault):
-    rule(vault, "left-aligned", patterns=["*.css"], description="x" * 500)
-    assert len(design.line(design.rules_for(vault.entries(), "a.css")[0])) <= design.CHARS
+def test_a_rule_too_long_for_a_line_is_left_out_whole_and_named(vault):
+    """Half a rule reads exactly like a whole one, and cutting at the limit
+    dropped `instead_of` first, which is the half that carries the point."""
+    rule(vault, "left-aligned", patterns=["*.css"], description="x" * 500,
+         instead_of="the habit this replaces")
+    rules = design.rules_for(vault.entries(), "a.css")
+    assert not design.fits(rules[0])
+    text = design.block(rules, "a.css")
+    assert "left out whole: left-aligned" in text
+    assert "xxx" not in text, "and no part of it is shown"
+
+
+def test_a_rule_that_fits_is_said_whole(vault):
+    rule(vault, "left-aligned", patterns=["*.css"], instead_of="the habit this replaces")
+    rules = design.rules_for(vault.entries(), "a.css")
+    assert design.fits(rules[0])
+    assert "Instead of: the habit this replaces." in design.block(rules, "a.css")

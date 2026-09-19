@@ -280,19 +280,43 @@ def _check_sources(meta: dict[str, Any], out: _Collector) -> list[str]:
     return ids
 
 
-def _check_presentation(meta: dict[str, Any], out: _Collector) -> None:
+def _first_sentence(body: str, limit: int = 120) -> str:
+    """The opening sentence of the prose, for a person about to write a line.
+
+    Shown beside a missing description and never written into one. A converter
+    that filled the field from the body would be smoothing over an error in the
+    source, which this project refuses; handing the sentence to the person who
+    has to write the line is the honest half of the same idea.
+    """
+    for paragraph in strip_code(body).split("\n\n"):
+        text = " ".join(paragraph.split())
+        if not text or text.startswith(("#", ">", "-", "*", "|", "[^")):
+            continue
+        sentence = text.split(". ")[0].rstrip(".")
+        return sentence[:limit].rstrip() + ("..." if len(sentence) > limit else "")
+    return ""
+
+
+def _check_presentation(meta: dict[str, Any], out: _Collector, body: str = "") -> None:
     """The two lines that end up in an index, and later in a model's context."""
     description = meta.get("description")
+    suggestion = _first_sentence(body)
+    hint = f'. The text begins "{suggestion}"' if suggestion else ""
     if description is None:
         out.err(
             "mabolo.description.missing",
-            "description is missing, and it is the line the index and the search are built from",
+            "description is missing, and it is the line the index and the search are built from"
+            + hint,
             "description",
         )
     elif not isinstance(description, str):
         out.err("mabolo.description.invalid", "description must be text on one line", "description")
     elif not description.strip():
-        out.err("mabolo.description.missing", "description is empty, and the index is built from it", "description")
+        out.err(
+            "mabolo.description.missing",
+            "description is empty, and the index is built from it" + hint,
+            "description",
+        )
     else:
         if "\n" in description.strip():
             out.err("mabolo.description.multiline", "description must be a single line", "description")
@@ -469,7 +493,7 @@ def validate_meta(
         )
         block = {}
     area = _check_block(block, out, expected_area, areas)
-    _check_presentation(meta, out)
+    _check_presentation(meta, out, body)
     _check_design(block, out, area)
     _check_body(Entry.from_meta(meta, body=body, path=path), body, source_ids, out)
     return out.problems
