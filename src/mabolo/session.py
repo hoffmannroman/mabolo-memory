@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import context, index as index_module, journal
 from .context import SessionIndex
@@ -50,6 +51,39 @@ class Start:
     @property
     def project(self) -> str | None:
         return self.payload.project
+
+
+def repo_root(start: Path) -> Path:
+    """The repository a folder belongs to, or the folder itself.
+
+    The nearest `.git` walking upwards wins, so a session in a subfolder of a
+    project is about that project and not about the subfolder. `.git` is a file
+    rather than a folder inside a worktree or a submodule, so both count, and a
+    repository inside a repository resolves to the inner one, which is where the
+    work is actually happening.
+
+    This reads the filesystem, the way `now()` reads the clock, and that is the
+    caller's job. Nothing in `context` does either.
+    """
+    for folder in (start, *start.parents):
+        if (folder / ".git").exists():
+            return folder
+    return start
+
+
+def standing(vault: Vault, cwd: Path | None = None) -> tuple[Path, str | None]:
+    """Where a session is standing: the repository, and the project it is in.
+
+    One answer for every caller. It lived in the command line, so the server
+    worked the project out from the name of the directory it happened to be
+    started in, without the walk upwards: a client started one folder deeper
+    than the repository saw no project at all, and said so about entries that
+    have one. Two answers to "which project is this" is the kind of second
+    truth that is only visible when the two disagree.
+    """
+    folder = repo_root(Path(cwd) if cwd else Path.cwd())
+    areas = {entry.area for entry in vault.entries()}
+    return folder, context.project_for(folder.name, areas)
 
 
 def project_for(

@@ -129,6 +129,22 @@ class GitResult:
     revision: str | None = None
 
 
+class PassageNotUnique(MaboloError):
+    """A passage an edit names is not in the entry exactly once.
+
+    Its own class because the three callers word it for three different
+    audiences, and all three need the number to do that.
+    """
+
+    def __init__(self, name: str, seen: int) -> None:
+        self.name = name
+        self.seen = seen
+        super().__init__(
+            f"that passage is not in {name}" if seen == 0
+            else f"that passage is in {name} {seen} times"
+        )
+
+
 @dataclass
 class Vault:
     """A vault on disk. Creating the object touches nothing."""
@@ -334,6 +350,42 @@ class Vault:
         target, data = self.render_entry(entry, path, allow_findings=allow_findings)
         frontmatter.write_file(target, data)
         return target
+
+    @staticmethod
+    def occurrences(path: Path, passage: str) -> int:
+        """How often a passage stands in an entry's prose.
+
+        In the prose, not in the file: a sentence that also appears in the
+        frontmatter, as a description often does, would otherwise count twice
+        and make an edit that is perfectly unambiguous look ambiguous.
+        """
+        if not passage:
+            return 0
+        _, body = frontmatter.split(path.read_text(encoding="utf-8"))
+        return body.count(passage)
+
+    def replace_once(self, path: Path, old: str, new: str) -> Entry:
+        """The entry with one passage replaced, or an error saying why not.
+
+        The rule is the same wherever an edit is made: the passage occurs
+        exactly once, the rest of the prose is left alone, and an ambiguous
+        passage is refused rather than guessed at. It was written out three
+        times, in the tool, in the approval path and in the extraction, with
+        three different sentences for the same refusal, which is three chances
+        for one of them to start replacing the first occurrence instead.
+
+        The count travels in the error, because "not there" and "there twice"
+        are different things for the caller to say.
+        """
+        document = frontmatter.read(path)
+        _, body = frontmatter.split(path.read_text(encoding="utf-8"))
+        seen = self.occurrences(path, old)
+        if seen != 1:
+            raise PassageNotUnique(path.stem, seen)
+        return Entry.from_meta(
+            document.meta or {}, body=body.replace(old, new), path=path,
+            revision=document.revision,
+        )
 
     def render_entry(
         self, entry: Entry, path: Path | None = None, *, allow_findings: bool = False

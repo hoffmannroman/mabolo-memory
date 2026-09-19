@@ -33,7 +33,7 @@ from . import frontmatter, inbox, write
 from .errors import MaboloError
 from .proposal import Proposal
 from .schema import Entry, Verification, iso, now
-from .vault import Vault
+from .vault import PassageNotUnique, Vault
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,7 @@ def _written(vault: Vault, proposal: Proposal, *, by: str, at: dt.datetime) -> w
     entry = Entry.from_meta(meta, body=body)
     # Approval is the verification. Nobody has to confirm a sentence twice, and
     # the person who said yes is the person the entry names.
-    entry.verified = list(entry.verified) + [Verification(by=by, at=iso(at) or "")]
+    entry.approve(by, iso(at) or "")
     entry.path = vault.path_for(area, name)
     target, data = vault.render_entry(entry)
     return write.Change(path=target.relative_to(vault.root).as_posix(), data=data, expect=None)
@@ -93,16 +93,14 @@ def _edited(vault: Vault, proposal: Proposal, *, by: str, at: dt.datetime) -> wr
     """The entry an `edit` proposal would change, with the passage still unique."""
     path = _entry_path(vault, proposal)
     document = frontmatter.read(path)
-    _, body = frontmatter.split(path.read_text(encoding="utf-8"))
-    seen = body.count(proposal.old)
-    if seen != 1:
+    try:
+        entry = vault.replace_once(path, proposal.old, proposal.new)
+    except PassageNotUnique as ambiguous:
         raise MaboloError(
-            f"{proposal.id}: the passage it replaces is in {path.stem} {seen} times, "
+            f"{proposal.id}: the passage it replaces is in {path.stem} {ambiguous.seen} times, "
             "so the edit is not the one that was proposed any more"
-        )
-    entry = Entry.from_meta(document.meta or {}, body=body.replace(proposal.old, proposal.new),
-                            path=path)
-    entry.verified = list(entry.verified) + [Verification(by=by, at=iso(at) or "")]
+        ) from ambiguous
+    entry.approve(by, iso(at) or "")
     target, data = vault.render_entry(entry)
     return write.Change(
         path=target.relative_to(vault.root).as_posix(), data=data, expect=document.revision

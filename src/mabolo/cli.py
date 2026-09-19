@@ -251,22 +251,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return EXIT_OK if args.errors_only or not report.warnings else EXIT_FINDINGS
 
 
-def repo_root(start: Path) -> Path:
-    """The repository a folder belongs to, or the folder itself.
-
-    The nearest `.git` walking upwards wins, so a session in a subfolder of a
-    project is about that project and not about the subfolder. `.git` is a file
-    rather than a folder inside a worktree or a submodule, so both count, and a
-    repository inside a repository resolves to the inner one, which is where the
-    work is actually happening.
-
-    This reads the filesystem, the way `now()` reads the clock, and that is the
-    caller's job. Nothing in `context` does either.
-    """
-    for folder in (start, *start.parents):
-        if (folder / ".git").exists():
-            return folder
-    return start
+#: Where a session is standing. It lives in `session.py` with the rest of the
+#: chain every caller shares, and is named here because three tests and six
+#: call sites in this file grew up with it.
+repo_root = session.repo_root
 
 
 def _budget_at_most(flag: str, value: int, ceiling: int) -> None:

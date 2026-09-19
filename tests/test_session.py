@@ -84,3 +84,29 @@ def test_no_clock_and_no_folder_are_read_here(vault, monkeypatch):
     first = session.start(filled(vault), folder="atlas", as_of=NOW)
     second = session.start(filled(vault), folder="atlas", as_of=NOW)
     assert first.payload.text() == second.payload.text()
+
+
+def test_where_a_session_is_standing_walks_up_to_the_repository(tmp_path, vault):
+    """One answer for every caller. It lived in the command line, so the server
+    worked the project out from the name of the directory it happened to be
+    started in: a client started one folder deeper saw no project at all and
+    said so about entries that have one."""
+    from conftest import entry_text
+
+    area = vault.root / "project" / "atlas"
+    area.mkdir(parents=True)
+    (area / "a-thing.md").write_text(entry_text(area="project/atlas", description="d"),
+                                     encoding="utf-8")
+    work = tmp_path / "atlas"
+    (work / "src" / "deep").mkdir(parents=True)
+    (work / ".git").mkdir()
+
+    folder, project = session.standing(vault, work / "src" / "deep")
+    assert folder == work
+    assert project == "atlas"
+
+
+def test_a_folder_that_is_in_no_repository_is_its_own_answer(tmp_path, vault):
+    folder, project = session.standing(vault, tmp_path / "nowhere")
+    assert folder == tmp_path / "nowhere"
+    assert project is None

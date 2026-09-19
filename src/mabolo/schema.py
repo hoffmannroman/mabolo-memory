@@ -384,6 +384,32 @@ class MaboloBlock:
         return meta
 
 
+#: The id the person's own sentence gets when it is written under an entry.
+#: One id, because two writers used two (`q1` and `s1`) for the same thing, and
+#: `mabolo why` reads a footnote by its source rather than by its name only
+#: because nothing had yet written the two forms into one vault.
+QUOTE_ID = "q1"
+
+
+def quoted_body(prose: str, quote: str) -> str:
+    """The prose with the sentence that authorised it in a footnote under it.
+
+    In a footnote and not in the text, because that is what makes the entry
+    checkable later: `why` reads the footnote, and an entry whose evidence was
+    paraphrased into its own prose has no evidence.
+
+    The marker is set off by a space rather than glued to the last word, which
+    is the usual Markdown habit. Glued, it extends that word into a run of
+    non-space characters, and a body ending in "the password store" became "the
+    password ***" the moment the marker was attached: the redactor saw a
+    keyword followed by eight characters and did its job, and the entry was
+    refused for a secret that was never there.
+    """
+    text = " ".join(str(prose).split()) or " ".join(str(quote).split())
+    said = " ".join(str(quote).split()).replace('"', "'")
+    return f"{text} [^{QUOTE_ID}]\n\n[^{QUOTE_ID}]: \"{said}\"\n"
+
+
 @dataclass
 class Entry:
     """One concept document: OKF frontmatter plus the prose below it."""
@@ -530,6 +556,18 @@ class Entry:
             if key not in meta and key in self.raw:
                 meta[key] = self.raw[key]
         return meta
+
+    def approve(self, by: str, at: str) -> None:
+        """Record that a person said yes, unless this same yes is already here.
+
+        The same sentence approving two changes in the same second would
+        otherwise be recorded twice, and a list of identical approvals says
+        nothing that one of them does not. It was kept by one writer and not by
+        the other, which is how two entries in one vault end up disagreeing
+        about what an approval looks like.
+        """
+        if not any(v.by == by and v.at == at for v in self.verified):
+            self.verified = [*self.verified, Verification(by=by, at=at)]
 
     def footnote_ids(self) -> set[str]:
         """Footnote definitions in the body, which is where quotes live."""

@@ -53,12 +53,13 @@ from . import (
     journal,
     lint,
     proposal,
+    session,
     write,
 )
 from .errors import MaboloError
-from . import context
 from .index import Index, estimate_tokens, one_line
 from .schema import (
+    QUOTE_ID,
     DEFAULT_STATUS,
     KNOWN_TYPES,
     Entry,
@@ -68,8 +69,9 @@ from .schema import (
     Verification,
     iso,
     now,
+    quoted_body,
 )
-from .vault import Vault
+from .vault import PassageNotUnique, Vault
 
 #: What the client is told this server is for. Short on purpose: it is injected
 #: into a context that the whole project exists to keep small.
@@ -78,8 +80,7 @@ INSTRUCTIONS = (
     "looks relevant, and write only what the person just said, quoting them."
 )
 
-#: The id of the source a quote becomes, and the footnote that cites it.
-QUOTE_ID = "q1"
+# The id a quote gets lives in `schema`, with the function that writes it.
 
 #: How many lines a search offers before it starts costing more than it saves.
 DEFAULT_LIMIT = 5
@@ -257,13 +258,8 @@ def _moved(vault: Vault, path: Path, settings: Settings) -> str:
     entry = next((e for e in vault.entries() if e.path == path), None)
     if entry is None or not entry.mabolo.anchor:
         return ""
-    where = settings.cwd or Path.cwd()
-    judged = drift.judge(
-        entry,
-        project=context.project_for(where.name, {e.area for e in vault.entries()}),
-        repository=where,
-        moment=now(),
-    )
+    where, project = session.standing(vault, settings.cwd)
+    judged = drift.judge(entry, project=project, repository=where, moment=now())
     if judged.state == drift.FRESH:
         return ""
     return f"\n\n> {judged.reason} ({one_line(entry.mabolo.anchor)})"
@@ -302,11 +298,6 @@ def _register_writing(
         day = (given.at or now()).date().isoformat()
         return Source(id=QUOTE_ID, resource=f"session://{day}")
 
-    def with_quote(body: str, quote: str) -> str:
-        """The prose, citing the sentence that authorised it."""
-        text = body.strip()
-        return f"{text}[^{QUOTE_ID}]\n\n[^{QUOTE_ID}]: \"{one_line(quote)}\"\n"
-
     def message(said: str, given: consent.Consent) -> str:
         return f"{said}\n\n{given.source_note()}, approved by {settings.actor}"
 
@@ -317,17 +308,6 @@ def _register_writing(
         revision = result.revisions.get(where)
         at = f", revision {revision}" if revision else ""
         return f"{where}{at}: {result.message}."
-
-    def approved(entry_verified: list[Verification], given: consent.Consent) -> list[Verification]:
-        """The verifications an entry carries after this change.
-
-        The same sentence approving two changes in the same second would
-        otherwise be recorded twice, and a list of identical approvals says
-        nothing that one of them does not.
-        """
-        seen = {(v.by, v.at) for v in entry_verified}
-        fresh = verification(given)
-        return list(entry_verified) if (fresh.by, fresh.at) in seen else [*entry_verified, fresh]
 
     @server.tool()
     @_sentence
@@ -365,7 +345,7 @@ def _register_writing(
             verified=[verification(given)],
             status=DEFAULT_STATUS,
             mabolo=MaboloBlock(area=area.strip()),
-            body=with_quote(body, given.quote),
+            body=quoted_body(body, given.quote),
         )
         entry.path = vault.path_for(entry.mabolo.area, name.strip())
         target, data = vault.render_entry(entry)
@@ -397,14 +377,12 @@ def _register_writing(
                 f"refused: {path.stem} is at revision {document.revision}, not {revision}. "
                 "Read it again and decide."
             )
-        _, body = frontmatter.split(path.read_text(encoding="utf-8"))
-        seen = body.count(old)
-        if seen == 0:
-            return f"refused: that passage is not in {path.stem}."
-        if seen > 1:
-            return f"refused: that passage is in {path.stem} {seen} times. Quote more of it."
-        entry = Entry.from_meta(document.meta or {}, body=body.replace(old, new), path=path)
-        entry.verified = approved(entry.verified, given)
+        try:
+            entry = vault.replace_once(path, old, new)
+        except PassageNotUnique as ambiguous:
+            more = " Quote more of it." if ambiguous.seen > 1 else ""
+            return f"refused: {ambiguous}.{more}"
+        entry.approve(settings.actor, iso(given.at or now()) or "")
         target, data = vault.render_entry(entry)
         where = relative(target)
         result = commit(

@@ -2,7 +2,7 @@ import pytest
 
 from mabolo.errors import MaboloError
 from mabolo.schema import Entry, MaboloBlock
-from mabolo.vault import Vault
+from mabolo.vault import PassageNotUnique, Vault
 
 
 def test_init_creates_a_skeleton_that_validates(tmp_path):
@@ -424,3 +424,51 @@ def test_a_root_index_with_a_foreign_frontmatter_is_still_refused(tmp_path):
     vault.index_file.write_text("---\ntitle: my own landing page\n---\n\nmine\n", encoding="utf-8")
     with pytest.raises(MaboloError, match="does not write"):
         vault.rebuild_indexes()
+
+
+# One rule for replacing a passage, because it was written out three times with
+# three different sentences for the same refusal.
+
+
+def test_replacing_a_passage_that_stands_once_leaves_the_rest_alone(vault):
+    from conftest import entry_text
+
+    path = vault.root / "infra" / "a-thing.md"
+    path.write_text(
+        entry_text(area="infra", description="d", body="One line. Another line. A third."),
+        encoding="utf-8",
+    )
+    entry = vault.replace_once(path, "Another line.", "A replaced line.")
+    assert "One line. A replaced line. A third." in entry.body
+    assert path.read_text(encoding="utf-8").count("Another line.") == 1, "nothing was written"
+
+
+def test_a_passage_that_is_not_there_and_one_that_is_twice_both_say_how_often(vault):
+    from conftest import entry_text
+
+    path = vault.root / "infra" / "a-thing.md"
+    path.write_text(
+        entry_text(area="infra", description="d", body="Same words. Same words."),
+        encoding="utf-8",
+    )
+    with pytest.raises(PassageNotUnique) as twice:
+        vault.replace_once(path, "Same words.", "x")
+    assert twice.value.seen == 2 and "2 times" in str(twice.value)
+    with pytest.raises(PassageNotUnique) as never:
+        vault.replace_once(path, "nothing like this", "x")
+    assert never.value.seen == 0 and "not in" in str(never.value)
+
+
+def test_a_sentence_that_is_also_the_description_counts_once(vault):
+    """In the prose, not in the file. A description repeated in the first line
+    of the text is ordinary, and counting it twice would make an edit that is
+    perfectly unambiguous look ambiguous."""
+    from conftest import entry_text
+
+    path = vault.root / "infra" / "a-thing.md"
+    path.write_text(
+        entry_text(area="infra", description="Releases are cut from main",
+                   body="Releases are cut from main."),
+        encoding="utf-8",
+    )
+    assert vault.occurrences(path, "Releases are cut from main") == 1

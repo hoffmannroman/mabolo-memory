@@ -60,7 +60,18 @@ from typing import Any, Callable, Iterable, Sequence
 from .consent import normalise, redact as redact_prompt, session_id
 from .errors import MaboloError
 from .proposal import ACTIONS, Proposal
-from .schema import KNOWN_TYPES, Entry, Generated, MaboloBlock, Source, iso, normalise_name, now as clock
+from .schema import (
+    KNOWN_TYPES,
+    QUOTE_ID,
+    Entry,
+    Generated,
+    MaboloBlock,
+    Source,
+    iso,
+    normalise_name,
+    now as clock,
+    quoted_body,
+)
 
 #: The role a person's own messages carry. Anything else in a transcript is the
 #: assistant, a tool, or a client's own bookkeeping, and none of those can ask
@@ -109,7 +120,7 @@ MEMORY_LINES = 5
 DEFAULT_SOURCE = "mabolo/extract"
 
 #: The footnote that carries the person's own sentence in a proposed entry.
-FOOTNOTE_ID = "s1"
+FOOTNOTE_ID = QUOTE_ID
 
 #: How long the command behind the runner may take, and how much it may print.
 #: Both are refusals rather than truncations: half an answer parsed as a whole
@@ -666,7 +677,7 @@ def _build(
             generated=Generated(by=source, at=moment),
             sources=[Source(id=FOOTNOTE_ID, resource=f"session://{session_id(session)}")],
             mabolo=MaboloBlock(area=area),
-            body=_body_with_footnote(_text(item, "body"), quote),
+            body=quoted_body(_text(item, "body"), quote),
         )
         entry.path = vault.path_for(area, name)
         _, data = vault.render_entry(entry)
@@ -694,8 +705,9 @@ def _build(
 
     old = _text(item, "old")
     new = _text(item, "new")
-    body = path.read_text(encoding="utf-8")
-    seen = body.count(old) if old else 0
+    # The same counting rule the edit itself uses, so a proposal cannot be
+    # accepted here and refused at approval, or the other way round.
+    seen = vault.occurrences(path, old)
     if seen != 1:
         raise MaboloError(f"{PASSAGE_NOT_UNIQUE}: it occurs {seen} times in {path.stem}")
     return Proposal(
@@ -708,25 +720,6 @@ def _build(
         source=source,
         filed_at=moment,
     )
-
-
-def _body_with_footnote(body: str, quote: str) -> str:
-    """The prose with the person's own sentence under it, as the format wants it.
-
-    The quote rides in a footnote rather than in the prose because that is what
-    makes the entry checkable later: `mabolo why` reads the footnote, and an
-    entry whose evidence was paraphrased into the text has no evidence.
-
-    The marker is set off by a space instead of being glued to the last word,
-    which is the usual Markdown habit. Glued, it extends that word into a run
-    of non-space characters, and a body ending in "the password store" became
-    "the password ***" the moment the marker was attached: the redactor saw a
-    keyword followed by eight characters and did its job. The entry was then
-    refused by the pass below, for a secret that was never there.
-    """
-    prose = normalise(body) or normalise(quote)
-    said = normalise(quote).replace('"', "'")
-    return f"{prose} [^{FOOTNOTE_ID}]\n\n[^{FOOTNOTE_ID}]: \"{said}\"\n"
 
 
 def from_notes(prompts: Sequence[object]) -> list[Message]:
