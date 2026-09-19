@@ -1,0 +1,7 @@
+id: build-memory-is-the-limit
+note: the other half; the machine profile also says build and runs, and it is not the answer
+query: what happens when the build runs out of memory?
+expect:
+  entries: [ci-memory-limit]
+  rank_within: 1
+tier: search

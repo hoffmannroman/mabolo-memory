@@ -124,6 +124,10 @@ there is nothing on that host to attack, to update or to pay for. Your vault can
 equally stay on one machine and never leave it: a remote is one answer in
 `init`, not the price of entry.
 
+**A repository on the same disk is not a backup.** The history protects you
+from a bad write, not from a dead disk. The remote is the backup, and it is the
+one thing here worth setting up even if you never work on a second machine.
+
 Two sessions writing at the same time is what the write path is built around:
 every change is one commit, pushed synchronously with a lease on the commit the
 remote was on when the change started. If the remote moved meanwhile, the push
@@ -184,9 +188,42 @@ This is early, and the README says only what exists:
   about to open a matching file. Three at most, capped, counted, and not
   repeated at every touch. The eval measures that tier like every other one.
   See [taste, delivered when the file is opened](docs/design.md).
+* `mabolo doctor` says whether the machinery is sound: the configuration, the
+  repository, the remote, the history, the content and what is waiting. It
+  exits 1 on a finding and also on a check it could not run, because a check
+  nobody could make is not a clean one. `mabolo lint` is the other half, and
+  asks whether the content has gone stale or tangled.
+* `mabolo revert` and `mabolo recover` are the way back. Everything Mabolo
+  writes is one commit, so `git revert` already works; these add the trailer,
+  the lease, and a refusal to throw away a hand edit while repairing.
+  See [when something has gone wrong](docs/recovery.md).
+* `mabolo init` wires up the clients it finds, writing only under its own keys
+  and never over an entry that says something else. The same wiring ships as a
+  plugin for each client, rendered from the same source, so the two cannot
+  drift apart. `mabolo uninstall` is the other half: it takes the wiring and
+  the disposable notes away and leaves the vault and its configuration exactly
+  where they are.
 * The entry schema and its validator, with the example vault as the reference.
 * A Git remote, if you want one: `init` sets it, and the vault is an ordinary
   repository you can pull and push yourself.
+
+## What does not exist
+
+Said plainly, because a list of features reads like a claim about everything
+it does not mention:
+
+* **No embeddings.** The search is words. Two eval cases are red on purpose and
+  printed as red, one of them because it needs meaning rather than words.
+* **No importer.** A folder of Markdown is a vault once `mabolo validate`
+  passes, and the format is one page. There is no converter, because the only
+  one written so far was written against a single vault and measured against
+  the same one.
+* **No published package.** Install is `git clone` and `uv sync`, not
+  `uv tool install`.
+* **No run on macOS**, and no run on a second machine. The syncing is built and
+  tested against local repositories, not against two machines in a room.
+* **No monthly pass.** Extraction runs when you run it, over a transcript you
+  hand it, with a model command you configured.
 
 ## Try it
 

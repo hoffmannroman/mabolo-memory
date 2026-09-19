@@ -1002,3 +1002,107 @@ def test_init_can_be_told_to_wire_up_nothing(tmp_path, capsys, git_identity):
     main(["--config", str(tmp_path / "c.toml"), "init", "--vault", str(tmp_path / "v"),
           "--yes", "--no-clients"])
     assert json.loads((home / ".claude" / "settings.json").read_text()) == {"hooks": {}}
+
+
+def dated(**over):
+    """An entry that carries a date, so that only what a test asks about fires."""
+    fields = {
+        "area": "infra",
+        "description": "d",
+        "generated": {"by": "mabolo/0.1.0", "at": "2026-09-18T10:00:00+00:00"},
+    }
+    fields.update(over)
+    return entry_text(**fields)
+
+
+def tidy_vault(tmp_path):
+    made = Vault(tmp_path / "lv")
+    made.initialise()
+    (made.root / "infra" / "a-thing.md").write_text(dated(), encoding="utf-8")
+    return made
+
+
+def test_lint_reports_what_it_finds_and_exits_one(tmp_path, capsys):
+    vault = tidy_vault(tmp_path)
+    (vault.root / "infra" / "b-thing.md").write_text(
+        dated(body="See [gone](nowhere.md)."), encoding="utf-8"
+    )
+    assert main(["lint", str(vault.root), "--as-of", "2026-09-19"]) == 1
+    assert "nowhere.md" in capsys.readouterr().out
+
+
+def test_lint_says_nothing_is_wrong_and_exits_zero(tmp_path, capsys):
+    vault = tidy_vault(tmp_path)
+    assert main(["lint", str(vault.root), "--as-of", "2026-09-19"]) == 0
+    assert "0 findings" in capsys.readouterr().out
+
+
+def test_lint_judges_ages_against_the_moment_it_was_given(tmp_path, capsys):
+    """Every check in it is built so a run can be replayed, and a report that
+    read the clock could not be."""
+    vault = tidy_vault(tmp_path)
+    (vault.root / "infra" / "old-thing.md").write_text(
+        dated(
+            description="something else entirely, so that nothing looks like a duplicate",
+            body="unrelated prose about quite another subject",
+            generated={"by": "mabolo/0.1.0", "at": "2026-01-01T00:00:00+00:00"},
+        ),
+        encoding="utf-8",
+    )
+    assert main(["lint", str(vault.root), "--as-of", "2026-02-01"]) == 0
+    assert main(["lint", str(vault.root), "--as-of", "2027-01-01"]) == 1
+    assert "old-thing" in capsys.readouterr().out
+
+
+# `uninstall`: the command that proves the promise that removing this costs
+# you nothing.
+
+
+def test_uninstall_unwires_the_clients_and_keeps_the_vault(tmp_path, capsys, git_identity):
+    home = claude_home(tmp_path)
+    config = tmp_path / "c.toml"
+    main(["--config", str(config), "init", "--vault", str(tmp_path / "v"), "--yes"])
+    (Path.home() / ".local" / "state" / "mabolo" / "prompts").mkdir(parents=True, exist_ok=True)
+    capsys.readouterr()
+
+    assert main(["--config", str(config), "uninstall", "--yes"]) == 0
+    assert json.loads((home / ".claude" / "settings.json").read_text())["hooks"] == {}
+    assert "mabolo" not in json.loads((home / ".claude.json").read_text()).get("mcpServers", {})
+    assert not (Path.home() / ".local" / "state" / "mabolo").exists()
+    assert config.exists(), "the configuration stays"
+    assert (tmp_path / "v" / "index.md").exists(), "and so does every entry"
+
+
+def test_uninstall_leaves_a_hook_that_is_not_ours(tmp_path, capsys, git_identity):
+    """The same predicate that writes has to be the one that removes, or
+    uninstalling would leave behind exactly what a later init refuses to
+    overwrite, and take with it what was never ours."""
+    home = claude_home(tmp_path)
+    config = tmp_path / "c.toml"
+    main(["--config", str(config), "init", "--vault", str(tmp_path / "v"), "--yes"])
+    settings = json.loads((home / ".claude" / "settings.json").read_text())
+    settings["hooks"]["SessionStart"].append(
+        {"hooks": [{"type": "command", "command": "somebody-elses-tool"}]}
+    )
+    (home / ".claude" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+
+    main(["--config", str(config), "uninstall", "--yes"])
+    after = json.loads((home / ".claude" / "settings.json").read_text())
+    commands = [
+        hook["command"]
+        for groups in after["hooks"].values()
+        for group in groups
+        for hook in group["hooks"]
+    ]
+    assert commands == ["somebody-elses-tool"]
+
+
+def test_uninstall_prints_its_plan_and_stops(tmp_path, capsys, git_identity):
+    home = claude_home(tmp_path)
+    config = tmp_path / "c.toml"
+    main(["--config", str(config), "init", "--vault", str(tmp_path / "v"), "--yes"])
+    before = (home / ".claude" / "settings.json").read_bytes()
+    capsys.readouterr()
+    assert main(["--config", str(config), "uninstall", "--dry-run"]) == 0
+    assert "Dry run" in capsys.readouterr().out
+    assert (home / ".claude" / "settings.json").read_bytes() == before

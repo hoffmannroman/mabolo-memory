@@ -25,6 +25,16 @@
       "rank": 1,
       "tier": "search"
     },
+    "build-memory-is-the-limit": {
+      "passed": true,
+      "rank": 1,
+      "tier": "search"
+    },
+    "build-server-cores": {
+      "passed": true,
+      "rank": 1,
+      "tier": "search"
+    },
     "build-workers": {
       "passed": true,
       "rank": 1,

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import signal
 import sys
 import datetime as dt
@@ -45,6 +46,7 @@ from . import (
     evaluate,
     git,
     inbox,
+    lint,
     provenance,
     proposal,
     recall,
@@ -481,6 +483,47 @@ def _verdicts(words: list[str]) -> list[tuple[str, bool]]:
     return out
 
 
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    """Take Mabolo out of the clients, and leave the vault exactly where it is.
+
+    The whole promise of the thing is that removing it costs you nothing, so
+    this has to be the command that proves it: the wiring goes, the disposable
+    notes go, and the vault and its configuration are not touched. A tool that
+    took your notes with it when it left was never yours.
+    """
+    slots = [one for client in wiring.installed() for one in wiring.slots(client)]
+    state = consent.state_home() / "mabolo"
+    config_path = Path(args.config).expanduser() if args.config else default_config_path()
+    config = Config.load_if_present(config_path)
+
+    print("Plan")
+    for slot in slots:
+        print(f"  unwire  {slot.path}")
+    print(f"  {'delete' if state.is_dir() else 'absent':7} {state}  (prompt notes and what a session was shown)")
+    print(f"  {'keep':7} {config_path}  (configuration)")
+    if config:
+        print(f"  {'keep':7} {config.vault}  (the vault, and every entry in it)")
+    if args.dry_run:
+        print("\nDry run, nothing removed.")
+        return EXIT_OK
+    if sys.stdin.isatty() and not args.yes:
+        try:
+            if input("\nDo it? [y/N] ").strip().lower() not in ("y", "yes"):
+                print("Nothing removed.")
+                return EXIT_OK
+        except EOFError:
+            return EXIT_OK
+
+    print()
+    for slot in slots:
+        print(f"  {'unwired' if wiring.remove(slot) else 'nothing':8} {slot.path}")
+    if state.is_dir():
+        shutil.rmtree(state, ignore_errors=True)
+        print(f"  removed  {state}")
+    print("\nThe vault is untouched. It is Markdown in a Git repository and needs nothing of ours.")
+    return EXIT_OK
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Say whether the machinery is sound, findings first.
 
@@ -518,6 +561,29 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     )
     print(report.render())
     return EXIT_OK if report.ok else EXIT_FINDINGS
+
+
+def cmd_lint(args: argparse.Namespace) -> int:
+    """Say whether the content has gone stale or tangled.
+
+    The other half of the pair. `doctor` asks whether the machinery is sound;
+    this asks about the entries themselves, and a report that mixed the two is
+    the one nobody finishes.
+    """
+    vault = _vault_from(args)
+    moment = now()
+    if args.as_of:
+        moment = parse_moment(args.as_of)
+        if moment is None:
+            raise MaboloError(f"{args.as_of!r} is not a date. Use 2026-09-18 or a full timestamp.")
+    found = lint.inspect(
+        vault.entries(),
+        root=vault.root,
+        moment=moment,
+        language=vault.declared_language(),
+    )
+    print(lint.render(found))
+    return EXIT_OK if not found else EXIT_FINDINGS
 
 
 def cmd_revert(args: argparse.Namespace) -> int:
@@ -1111,6 +1177,16 @@ def build_parser() -> argparse.ArgumentParser:
     checkup = sub.add_parser("doctor", help="whether the machinery is sound")
     checkup.add_argument("path", nargs="?", help="the vault, default is the configured one")
     checkup.set_defaults(func=cmd_doctor)
+
+    away = sub.add_parser("uninstall", help="take Mabolo out of the clients, keep the vault")
+    away.add_argument("--dry-run", action="store_true", help="print the plan and stop")
+    away.add_argument("-y", "--yes", action="store_true", help="do not ask")
+    away.set_defaults(func=cmd_uninstall)
+
+    tidy = sub.add_parser("lint", help="whether the content has gone stale or tangled")
+    tidy.add_argument("path", nargs="?", help="the vault, default is the configured one")
+    tidy.add_argument("--as-of", help="the moment to judge ages against, default is now")
+    tidy.set_defaults(func=cmd_lint)
 
     undo = sub.add_parser("revert", help="undo one commit, as a commit of its own")
     undo.add_argument("commit", help="the commit to undo")

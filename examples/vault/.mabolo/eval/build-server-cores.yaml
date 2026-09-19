@@ -1,0 +1,7 @@
+id: build-server-cores
+note: the ambiguous half of host-memory, settled; only the machine profile knows this
+query: how many cores does the build server have?
+expect:
+  entries: [build-server]
+  rank_within: 1
+tier: search

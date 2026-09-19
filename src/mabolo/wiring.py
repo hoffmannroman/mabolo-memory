@@ -514,6 +514,59 @@ def apply(finding: Finding, *, rewire: bool = False) -> bool:
     return True
 
 
+def remove(slot: Slot) -> bool:
+    """Take our own keys out of that file and leave everything else in it.
+
+    The inverse of `apply`, and it has to be the same predicate, or uninstalling
+    would leave behind exactly the entries a later `init` would refuse to
+    overwrite. An entry that is not ours is not touched, a group we share with
+    somebody else's command is left whole, and a file that holds nothing of
+    ours is not rewritten at all.
+    """
+    try:
+        if slot.form == TOML_FORM:
+            text = _drop_toml_server(_text_of(slot.path), slot.client)
+            before = _text_of(slot.path)
+            if text == before:
+                return False
+        else:
+            document = _load(slot.path, JSON_FORM)
+            if _ours(document, slot) is None:
+                return False
+            if slot.holds == HOOKS:
+                _merge_hooks(document, {})
+            else:
+                servers = document.get(slot.client.server_key)
+                if isinstance(servers, dict):
+                    servers.pop(SERVER_NAME, None)
+            text = _json_text(document)
+    except _Unreadable as broken:
+        raise MaboloError(str(broken)) from broken
+    _write_atomically(slot.path, text)
+    return True
+
+
+def _drop_toml_server(text: str, for_client: Client) -> str:
+    """Our own table taken out of a TOML file, byte for byte elsewhere."""
+    header = f"{for_client.server_key}.{SERVER_NAME}"
+    lines = text.splitlines(keepends=True)
+    start = None
+    for number, line in enumerate(lines):
+        if line.strip().replace(" ", "") == f"[{header}]":
+            start = number
+            break
+    if start is None:
+        return text
+    end = len(lines)
+    for number in range(start + 1, len(lines)):
+        stripped = lines[number].lstrip()
+        if stripped.startswith("[") and not stripped.replace(" ", "").startswith(f"[{header}."):
+            end = number
+            break
+    kept = "".join(lines[:start]) + "".join(lines[end:])
+    return kept
+
+
 def _merge_hooks(document: dict[str, Any], want: dict[str, list[dict[str, Any]]]) -> None:
     """Put our groups in, take our old ones out, leave everybody else's alone.
 
