@@ -345,3 +345,14 @@ def test_the_hook_file_sits_where_each_client_looks_for_it(tmp_path):
     for client in wiring.CLIENTS:
         assert client.plugin_hooks_path == "hooks/hooks.json"
         assert client.plugin_hooks_path in wiring.plugin_files(client)
+
+
+def test_the_hook_contracts_are_not_fetched_back_out_of_the_command_line():
+    """They lived with the commands, so this module reached back into its own
+    caller through a deferred import to avoid a cycle. A comment explaining why
+    an import has to be late is a comment about an arrow pointing the wrong
+    way."""
+    source = Path(wiring.__file__).read_text(encoding="utf-8")
+    assert "from .cli import" not in source
+    events = {one.event for one in wiring.hook_commands()}
+    assert events == {"SessionStart", "UserPromptSubmit", "PreToolUse"}

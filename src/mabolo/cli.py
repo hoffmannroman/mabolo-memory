@@ -358,16 +358,6 @@ def cmd_context(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-#: What a session start may take before it is given up on. The client is
-#: waiting on it, so the number is a promise to the person, not to the tool.
-HOOK_SECONDS = 5
-
-#: What a prompt may take. Less than half of a session start, because this one
-#: runs ahead of every single prompt and the person is mid sentence: a session
-#: start happens once and is expected to take a moment, while a pause here is
-#: felt every time and is blamed on the agent.
-PROMPT_SECONDS = 2
-
 #: The one sentence a session gets when Mabolo is installed and not set up. Not
 #: an error: nothing is wrong, the person simply has not been asked yet, and a
 #: hook that stayed silent would leave them wondering whether it works at all.
@@ -384,26 +374,15 @@ class _OutOfTime(Exception):
 MIN_SECONDS, MAX_SECONDS = 0.01, 3600.0
 
 
-@dataclass(frozen=True)
-class HookContract:
-    """What tells one hook from another. Everything else they share.
-
-    Three values rather than three flags. A flag says "behave differently here"
-    and leaves a reader to work out where; these say which event is being
-    answered, how long the client will wait, and what to call this in a message
-    to a person. What a hook does when there is no configuration is not in
-    here, because it is not a variation on a shared behaviour: it lives in the
-    payload function, where the answer to "and then what do we say" belongs.
-    """
-
-    event: str
-    label: str
-    seconds: float
-
-
-SESSION_START = HookContract(event="SessionStart", label="session start", seconds=HOOK_SECONDS)
-PROMPT = HookContract(event="UserPromptSubmit", label="prompt hook", seconds=PROMPT_SECONDS)
-PRETOOL = HookContract(event="PreToolUse", label="file hook", seconds=PROMPT_SECONDS)
+#: What each hook answers, how long its client waits, and what to call it in a
+#: message. From `wiring`, which writes those same event names into a client's
+#: configuration: one source, so a rename cannot leave the two disagreeing.
+HOOK_SECONDS = wiring.HOOK_SECONDS
+PROMPT_SECONDS = wiring.PROMPT_SECONDS
+HookContract = wiring.HookContract
+SESSION_START = wiring.SESSION_START
+PROMPT = wiring.PROMPT
+PRETOOL = wiring.PRETOOL
 
 #: Where a client puts the path a tool is reaching for. Several spellings,
 #: because this is the one hook whose input is a tool's own arguments, and

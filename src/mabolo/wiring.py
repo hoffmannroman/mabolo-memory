@@ -101,21 +101,55 @@ class HookCommand:
     timeout: int
 
 
-def hook_commands() -> tuple[HookCommand, ...]:
-    """The three hooks, taken from the contracts the commands themselves use.
+#: What a session start may take before it is given up on. The client is
+#: waiting on it, so the number is a promise to the person, not to the tool.
+HOOK_SECONDS = 5
 
-    The event names and the deadlines are read out of `cli`, not restated here.
-    A hook wired to `SessionStart` while the command answers `SessionStart` is
-    one rename away from a payload that arrives under a name the client does not
-    recognise, and nothing about that failure looks like a failure.
+#: What a prompt may take. Less than half of a session start, because this one
+#: runs ahead of every single prompt and the person is mid sentence: a session
+#: start happens once and is expected to take a moment, while a pause here is
+#: felt every time and is blamed on the agent.
+PROMPT_SECONDS = 2
 
-    The import is deferred because `cli` imports this module: at module level
-    the two would be a cycle, and the constants below are defined after `cli`'s
-    own imports, so the cycle would break on the half built module rather than
-    loudly.
+
+@dataclass(frozen=True)
+class HookContract:
+    """What tells one hook from another. Everything else they share.
+
+    Three values rather than three flags. A flag says "behave differently here"
+    and leaves a reader to work out where; these say which event is being
+    answered, how long the client will wait, and what to call this in a message
+    to a person. What a hook does when there is no configuration is not in
+    here, because it is not a variation on a shared behaviour: it lives in the
+    payload function, where the answer to "and then what do we say" belongs.
+
+    It lives here rather than with the commands because two readers need it and
+    they are on two sides of one dependency: the command answers the event, and
+    this module writes the event's name into somebody's configuration. It was
+    in the command line first, which meant this module reached back into its
+    own caller through a deferred import to avoid a cycle. A comment explaining
+    why an import has to be late is a comment about an arrow pointing the wrong
+    way.
     """
-    from .cli import PRETOOL, PROMPT, SESSION_START
 
+    event: str
+    label: str
+    seconds: float
+
+
+SESSION_START = HookContract(event="SessionStart", label="session start", seconds=HOOK_SECONDS)
+PROMPT = HookContract(event="UserPromptSubmit", label="prompt hook", seconds=PROMPT_SECONDS)
+PRETOOL = HookContract(event="PreToolUse", label="file hook", seconds=PROMPT_SECONDS)
+
+
+def hook_commands() -> tuple[HookCommand, ...]:
+    """The three hooks, from the contracts the commands answer.
+
+    One source for the event name and the deadline. A hook wired to one event
+    while the command answers another is one rename away from a payload that
+    arrives under a name the client does not recognise, and nothing about that
+    failure looks like a failure.
+    """
     pairs = (("session-start", SESSION_START), ("prompt", PROMPT), ("pretool", PRETOOL))
     return tuple(
         HookCommand(
