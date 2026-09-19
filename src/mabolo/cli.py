@@ -34,7 +34,7 @@ from typing import Callable
 
 from dataclasses import dataclass, replace
 
-from . import __version__, consent, context, evaluate, git, recall, session
+from . import __version__, consent, context, design, evaluate, git, recall, seen, session
 from .config import Config, default_actor, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
 from .index import Index
@@ -349,6 +349,13 @@ class HookContract:
 
 SESSION_START = HookContract(event="SessionStart", label="session start", seconds=HOOK_SECONDS)
 PROMPT = HookContract(event="UserPromptSubmit", label="prompt hook", seconds=PROMPT_SECONDS)
+PRETOOL = HookContract(event="PreToolUse", label="file hook", seconds=PROMPT_SECONDS)
+
+#: Where a client puts the path a tool is reaching for. Several spellings,
+#: because this is the one hook whose input is a tool's own arguments, and
+#: those differ per tool and per client. An unknown shape is silence, never a
+#: guess: a rule raised for the wrong file is worse than no rule.
+PATH_KEYS = ("file_path", "path", "notebook_path", "filePath")
 
 
 def cmd_hook_session_start(args: argparse.Namespace) -> int:
@@ -384,6 +391,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
     )
     build(vault, settings).run("stdio")
     return EXIT_OK
+
+
+def cmd_hook_pretool(args: argparse.Namespace) -> int:
+    """The standing rules about the kind of file a tool is about to touch."""
+    return _run_hook(args, PRETOOL, _pretool_payload)
 
 
 def _run_hook(
@@ -482,6 +494,54 @@ def _prompt_payload(args: argparse.Namespace) -> str:
     with Index.build(vault.entries(), language=vault.declared_language()) as index:
         found = index.search(prompt, limit=recall.LIMIT)
         return recall.block(found.hits)
+
+
+def _tool_path(event: dict) -> str:
+    """The file a tool call is about, or an empty string."""
+    given = event.get("tool_input")
+    if not isinstance(given, dict):
+        return ""
+    for name in PATH_KEYS:
+        value = given.get(name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _pretool_payload(args: argparse.Namespace) -> str:
+    """The design rules this file raises, or nothing at all.
+
+    Nothing at all is the normal answer, and it has to stay cheap: this runs
+    ahead of every single tool call, which is dozens of times in a session
+    where the prompt hook runs a handful.
+    """
+    event = _hook_event()
+    where = args.file or _tool_path(event)
+    if not where:
+        return ""
+    config_path = Path(args.config).expanduser() if args.config else default_config_path()
+    if not args.path and not config_path.exists():
+        return ""
+    vault = _vault_from(args)
+    if not vault.is_initialised():
+        return ""
+    folder = Path(event.get("cwd") or Path.cwd())
+    project = repo_root(folder).name
+    # Relative to the repository when it lies inside it, because a pattern like
+    # `docs/*.md` is written about a project and not about a machine.
+    try:
+        shown = str(Path(where).resolve().relative_to(repo_root(folder).resolve()))
+    except (OSError, ValueError):
+        shown = where
+    session = event.get("session_id")
+    rules = design.rules_for(
+        vault.entries(), shown, project=project, seen=seen.already(session)
+    )
+    if not rules:
+        return ""
+    text = design.block(rules, shown)
+    seen.remember([design.key_for(entry) for entry in rules[: design.LIMIT]], session=session)
+    return text
 
 
 def _raise_out_of_time(seconds: float) -> "Callable[[int, object], None]":
@@ -797,6 +857,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not write the prompt down, and give up verifying quotes against it",
     )
     prompt.set_defaults(func=cmd_hook_prompt)
+
+    touched = events.add_parser("pretool", help="the rules about the file a tool is opening")
+    touched.add_argument("path", nargs="?", help="the vault, default is the configured one")
+    touched.add_argument("--file", help="the file being touched, default is the one in the event")
+    touched.add_argument(
+        "--seconds",
+        type=float,
+        default=PROMPT_SECONDS,
+        help=f"give up after this long, default {PROMPT_SECONDS}",
+    )
+    touched.set_defaults(func=cmd_hook_pretool)
 
     serve = sub.add_parser("serve", help="run the MCP server a client talks to")
     serve.add_argument("path", nargs="?", help="the vault, default is the configured one")

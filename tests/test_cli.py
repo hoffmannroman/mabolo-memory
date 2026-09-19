@@ -812,3 +812,84 @@ def test_serve_builds_the_server_from_the_configuration(tmp_path, monkeypatch, c
     assert seen["transport"] == "stdio"
     assert seen["settings"].read_only is True
     assert seen["settings"].session == "s-9"
+
+
+# The file hook: the standing rules about the kind of file a tool is opening.
+
+
+def pretool(tmp_path, capsys, monkeypatch, event: str, extra: list[str] | None = None):
+    monkeypatch.setattr("sys.stdin", io.StringIO(event))
+    code = main(["hook", "pretool", str(hook_vault(tmp_path).root), *(extra or [])])
+    captured = capsys.readouterr()
+    out = captured.out.strip()
+    return code, (json.loads(out) if out else None), captured.err
+
+
+def design_rule(tmp_path, name="left-aligned", patterns=("*.css",), scope=None):
+    vault = hook_vault(tmp_path)
+    block = {"applies_to": list(patterns)}
+    if scope:
+        block["scope"] = scope
+    (vault.root / "design" / f"{name}.md").write_text(
+        entry_text(area="design", type="feedback", description="text is left aligned",
+                   mabolo=block),
+        encoding="utf-8",
+    )
+    return vault
+
+
+def test_the_file_hook_raises_the_rule_about_that_kind_of_file(tmp_path, capsys, monkeypatch):
+    design_rule(tmp_path)
+    event = json.dumps({"tool_input": {"file_path": "src/landing.css"}, "session_id": "s1"})
+    code, out, _ = pretool(tmp_path, capsys, monkeypatch, event)
+    assert code == 0
+    assert out["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert "left-aligned" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_the_file_hook_says_nothing_about_a_file_nothing_was_written_about(
+    tmp_path, capsys, monkeypatch
+):
+    design_rule(tmp_path)
+    event = json.dumps({"tool_input": {"file_path": "src/main.rs"}, "session_id": "s1"})
+    code, out, _ = pretool(tmp_path, capsys, monkeypatch, event)
+    assert code == 0 and out is None
+
+
+def test_the_file_hook_says_nothing_when_the_event_names_no_file(tmp_path, capsys, monkeypatch):
+    """A tool call with no path is most tool calls. Guessing which argument is
+    a file would raise a rule about the wrong one."""
+    design_rule(tmp_path)
+    event = json.dumps({"tool_input": {"command": "ls *.css"}, "session_id": "s1"})
+    code, out, _ = pretool(tmp_path, capsys, monkeypatch, event)
+    assert code == 0 and out is None
+
+
+def test_the_file_hook_does_not_say_the_same_thing_twice_in_one_session(
+    tmp_path, capsys, monkeypatch
+):
+    design_rule(tmp_path)
+    event = json.dumps({"tool_input": {"file_path": "src/landing.css"}, "session_id": "s1"})
+    first = pretool(tmp_path, capsys, monkeypatch, event)
+    second = pretool(tmp_path, capsys, monkeypatch, event)
+    assert first[1] is not None
+    assert second[1] is None, "the same rule on every touch teaches the reader to skip it"
+
+
+def test_another_session_is_told_all_the_same(tmp_path, capsys, monkeypatch):
+    design_rule(tmp_path)
+    here = {"tool_input": {"file_path": "src/landing.css"}}
+    pretool(tmp_path, capsys, monkeypatch, json.dumps({**here, "session_id": "s1"}))
+    _, out, _ = pretool(tmp_path, capsys, monkeypatch, json.dumps({**here, "session_id": "s2"}))
+    assert out is not None
+
+
+def test_the_file_hook_never_fails_a_tool_call(tmp_path, capsys, monkeypatch):
+    """It runs ahead of every single tool call. A hook that can stop one is
+    worse than a hook that says nothing."""
+    design_rule(tmp_path)
+    monkeypatch.setattr(cli.design, "rules_for", lambda *a, **k: 1 / 0)
+    event = json.dumps({"tool_input": {"file_path": "src/landing.css"}, "session_id": "s1"})
+    code, out, err = pretool(tmp_path, capsys, monkeypatch, event)
+    assert code == 0 and out is None
+    assert "gave up" in err
