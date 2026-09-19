@@ -22,6 +22,11 @@ footnote, so a forged sentence is a sentence the person can read and did not
 say, and `git revert` is the way back. A barrier this could not keep would be
 worse than none.
 
+What it does keep is the road that needs no shell: a message handed over by
+another agent arrives at the prompt hook exactly as a typed sentence does, and
+`consent.record` refuses to write one down. No session can manufacture consent
+for another one.
+
 **Nothing here talks to Git.** A tool builds the bytes of a file and hands them
 to `write.apply`, which owns the lock, the revision check, the commit and the
 push. The tools are the vocabulary; the transaction is the guarantee.

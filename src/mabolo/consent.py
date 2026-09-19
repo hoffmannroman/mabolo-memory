@@ -76,6 +76,23 @@ ENV_SESSION = "MABOLO_SESSION_ID"
 _SAFE_ID = re.compile(r"[^a-z0-9._-]+")
 _SPACE = re.compile(r"\s+")
 
+#: The wrapper a client puts around a message that came from another agent
+#: rather than from the person. It is added by the client, not by whoever sent
+#: the message, so it cannot be spelled away by the sender.
+#:
+#: A relayed message reaches the prompt hook the same way a typed sentence
+#: does, and until this was here it was written down the same way: in one real
+#: session four of ten notes were another agent's, eleven thousand characters
+#: of text that any quote could then be taken from, and the commit would have
+#: said the person had approved it. That is the exact claim this whole module
+#: exists to be able to make honestly.
+#:
+#: Matched anywhere in the text and not only at the front. A prompt that
+#: carries this is at best partly somebody else's, and the failure that costs
+#: least is the one where a quote cannot be verified: the write is refused and
+#: the model has to go and ask.
+_RELAYED = re.compile(r"<cross-session-message\b", re.IGNORECASE)
+
 #: Assignments that carry a secret. A prompt is the one place where a person
 #: pastes one by accident, and this file outlives the sentence they pasted it
 #: into. A redacted secret can no longer authorise a write that quotes it,
@@ -156,6 +173,16 @@ def normalise(text: str) -> str:
     return _SPACE.sub(" ", text).strip()
 
 
+def relayed(text: str) -> bool:
+    """Whether this arrived from another agent rather than from the person.
+
+    The client wraps such a message before the hook ever sees it, so the tag is
+    evidence about where the text came from and not something its sender chose
+    to include.
+    """
+    return bool(isinstance(text, str) and _RELAYED.search(text))
+
+
 def record(text: str, *, cwd: str | Path | None = None, session: object = None,
            at: dt.datetime | None = None, directory: Path | None = None) -> Path | None:
     """Write one prompt down, and never fail the caller over it.
@@ -164,8 +191,18 @@ def record(text: str, *, cwd: str | Path | None = None, session: object = None,
     get in the way, so every failure here is swallowed. A note that could not
     be written means a quote that cannot be verified later, which is a refused
     write rather than a lost one.
+
+    A message relayed from another agent is not written down at all. It reaches
+    this hook exactly as a typed sentence does, and a note is only ever read
+    back to answer one question: did the person say this. Another agent's
+    sentence is not an answer to that question, whatever it says and however
+    plainly it reports what the person told *it*. A session cannot manufacture
+    consent for another one, and this is where that stops being a sentence in a
+    document.
     """
     if not isinstance(text, str) or not text.strip():
+        return None
+    if relayed(text):
         return None
     where = Path(directory) if directory else prompt_dir()
     name = session_id(session)

@@ -46,6 +46,17 @@ from everything else here: every write is one commit, carrying the sentence in
 its message and in a footnote, so a forged sentence is one you can read and did
 not say, and `git revert` is the way back.
 
+**A message from another agent is not written down.** One agent can hand a
+message to another, and it arrives at the prompt hook by the same road a typed
+sentence does. Recorded, it became quotable, and the commit would have said
+that you approved a sentence no human wrote; this was measured in
+a real session where four of ten notes were another agent's. The client wraps
+such a message before the hook sees it, so where it came from is evidence
+rather than something its sender chose to include, and a prompt carrying that
+wrapper is not recorded at all. A quote from one then fails to verify, the
+write is refused, and the model has to go and ask. **No session can manufacture
+consent for another one**, however plainly it reports what you told it.
+
 **What it cannot claim.** A client starts the MCP server without telling it
 which session it belongs to. So unless the client sets `MABOLO_SESSION_ID`, the
 server cannot honestly say "this sentence, in this conversation". What it can
