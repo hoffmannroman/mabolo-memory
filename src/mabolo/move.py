@@ -220,14 +220,19 @@ def _mentions(vault, entries, destination: dict[Path, Path], name: str) -> list[
     standing = re.compile(rf"(?<!{_EDGE}){re.escape(name)}(?!{_EDGE})", re.IGNORECASE)
     out: list[str] = []
     for entry in entries:
-        if entry.path is None or entry.path in destination:
+        if entry.path is None:
             continue
+        # The moved entries too, under the names they will have. They were the
+        # gap in the first version of this report: an entry that travels with
+        # the area is the likeliest of all to still say the old name, and the
+        # area's own overview is both the likeliest and the most read.
+        where = destination.get(entry.path, entry.path)
         # The frontmatter as well as the prose: a description is the line a
         # session is shown first, and it is exactly where a stale name does the
         # most damage while being the hardest to see.
-        text = f"{entry.description or ''}\n{entry.body}"
+        text = f"{entry.description or ''}\n{entry.title or ''}\n{entry.body}"
         if standing.search(lint._prose(text)):
-            out.append(_rel(vault, entry.path))
+            out.append(_rel(vault, where))
     if vault.log_file.is_file():
         found = standing.findall(vault.log_file.read_text(encoding="utf-8"))
         if found:

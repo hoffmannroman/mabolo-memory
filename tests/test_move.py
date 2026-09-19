@@ -126,6 +126,22 @@ def test_a_sentence_elsewhere_that_names_the_project_is_left_for_a_person(vault)
     assert "project/harbour/harbour.md" in made.left
 
 
+def test_a_moved_entry_that_still_says_the_old_name_is_reported_too(vault):
+    """The gap the first version of this report had.
+
+    An entry that travels with the area is the likeliest of all to still name
+    it, and the overview is both the likeliest and the most read. Reported
+    under the name it will have, so the line can be acted on afterwards.
+    """
+    atlas(vault)
+
+    made = carry_out(vault)
+
+    assert "project/beacon/beacon.md" in made.left, made.left
+    text = (vault.root / "project" / "beacon" / "beacon.md").read_text(encoding="utf-8")
+    assert "The atlas platform" in text, "reported, not rewritten"
+
+
 def test_the_index_of_the_emptied_folder_goes_and_the_new_one_arrives(vault):
     atlas(vault)
 
