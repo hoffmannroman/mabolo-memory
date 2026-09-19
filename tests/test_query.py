@@ -1,5 +1,7 @@
 """The query pipeline. Every assertion here is a rule the ranking depends on."""
 
+import pytest
+
 from mabolo import query
 
 
@@ -85,3 +87,41 @@ def test_the_pipeline_is_a_pure_function_of_its_arguments():
     first = query.build("nightly snapshot", language="de")
     second = query.build("nightly snapshot", language="de")
     assert first == second
+
+
+def test_a_german_question_drops_the_pronoun_the_person_starts_it_with():
+    """A memory about one person is asked questions that begin with "ich".
+
+    The German list held `wir uns ihr euch sie man` and none of the singular
+    pronouns, so the word every such question starts with counted as evidence
+    about whatever entry happened to contain it. A pronoun paradigm is filled
+    in whole or not at all.
+    """
+    stems = query.stems_of("nehme ich abends ein Buch", language="de")
+    assert "ich" not in stems
+    assert stems == ["nehm", "abends", "buch"]
+
+
+@pytest.mark.parametrize("word", ["welchen", "welchem", "dieses", "diesem", "diesen",
+                                  "seiner", "seines", "ihrem", "ihren", "aller", "allen"])
+def test_a_determiner_is_a_stop_word_in_every_form_or_in_none(word):
+    """The quieter half of the same bug.
+
+    The list held `welche welcher welches` and not `welchen`, so the form the
+    person happened to type was evidence about whatever entry contained it and
+    the other two were not. Which form a question uses is grammar, not meaning.
+    """
+    assert query.is_stopword(word, "de"), word
+
+
+def test_a_stop_word_with_an_umlaut_is_one_in_both_of_its_spellings():
+    """`fold` normalises and case folds; it does not transliterate.
+
+    So `fuer` and `für` are two different words to everything downstream, and
+    only this list can say they are the same one. A list that held the umlaut
+    spelling alone stopped whichever half of them the person did not type.
+    """
+    for pair in (("für", "fuer"), ("über", "ueber")):
+        for spelling in pair:
+            assert query.is_stopword(spelling, "de"), spelling
+    assert query.stems_of("fuer den build ueber nacht", language="de") == ["build", "nacht"]

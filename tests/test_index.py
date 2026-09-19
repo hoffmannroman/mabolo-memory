@@ -356,3 +356,34 @@ def test_the_day_a_pin_was_set_reaches_the_document(tmp_path):
     by_name = {d.name: d for d in documents_of([dated, plain])}
     assert by_name["dated"].pin is True and by_name["dated"].pinned_at == dt.date(2026, 9, 19)
     assert by_name["plain"].pin is True and by_name["plain"].pinned_at is None
+
+
+def test_a_question_this_vault_cannot_answer_is_not_answered_from_its_grammar(vault):
+    """The first search failure the eval ever measured, as a test.
+
+    Asked in German for something the vault knew nothing about, the search
+    returned entries that shared not one content word with the question: they
+    had `ich` and `fuer` in them, the floor counts two matched words, and two
+    function words are two matched words. The floor was never the problem.
+    Nothing was evidence, so nothing should come back.
+    """
+    folder = vault.area_dir("persona")
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, text in {
+        "kurze-wege": entry_text(
+            area="persona", title="Kurze Wege",
+            description="Ich nehme fuer eine Aufgabe den kleinsten Schritt",
+            body="Ich nehme fuer jede Aufgabe den Schritt, der sie zuerst loest."),
+        "abends-lesen": entry_text(
+            area="persona", title="Abends lesen",
+            description="Ich lese fuer eine Stunde, bevor der Tag zu Ende geht",
+            body="Ich nehme mir fuer den Abend ein Buch und kein Geraet."),
+    }.items():
+        (folder / f"{name}.md").write_text(text, encoding="utf-8")
+
+    with Index.build(vault.entries(), language="de") as index:
+        found = index.search("welchen Duenger nehme ich fuer Tomaten im Hochbeet")
+
+    assert [hit.name for hit in found.hits] == [], [
+        (hit.name, hit.matched) for hit in found.hits
+    ]

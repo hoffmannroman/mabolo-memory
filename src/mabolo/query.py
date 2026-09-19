@@ -33,6 +33,21 @@ MIN_STEM = 4
 #: Stop words, per language. Short lists on purpose: every word in here is a
 #: word the search can no longer find, so the bar is "carries no meaning
 #: anywhere", not "is common".
+#:
+#: A paradigm is filled in whole or not at all. The German list held
+#: `wir uns ihr euch sie man` and none of the singular pronouns, so a memory
+#: that is mostly about one person could not read past the word that person
+#: starts every question with; and it held three of the five forms of `welch-`
+#: and one or two of `dies-`, `sein-`, `ihr-` and `all-`. A half declined
+#: determiner is the same bug in a quieter place: the form the person happened
+#: to type is evidence, and the other four are not. `kein-` is absent on purpose rather
+#: than half present, and `nicht` already carries the negation.
+#:
+#: A word with an umlaut is written both ways. `fold` normalises and case
+#: folds, it does not transliterate, so `fuer` and `für` are two different
+#: words to everything downstream. Only the stop list can say they are the
+#: same word, and a list that says it for one spelling only stops half of
+#: them.
 STOPWORDS: dict[str, frozenset[str]] = {
     "en": frozenset(
         """
@@ -48,9 +63,14 @@ STOPWORDS: dict[str, frozenset[str]] = {
         """
         der die das den dem des ein eine einer eines einem einen und oder aber
         nicht sind war waren mit von aus auf bei nach vor über unter durch für
-        ist sein seine ihr ihre wir uns ihr euch sie man
-        was wann wobei welche welcher welches wer wem wen warum wie alle
-        auch noch nur schon sehr dann denn damit dass dies diese dieser
+        ueber fuer
+        ist sein seine seiner seines seinem seinen
+        ihr ihre ihrer ihres ihrem ihren wir uns euch sie man
+        ich du mich mir dich dir
+        was wann wobei welche welcher welches welchen welchem wer wem wen
+        warum wie alle aller alles allem allen
+        auch noch nur schon sehr dann denn damit dass
+        dies diese dieser dieses diesem diesen
         """.split()
     ),
 }
