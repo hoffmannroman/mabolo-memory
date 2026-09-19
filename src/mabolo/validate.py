@@ -123,6 +123,26 @@ class Report:
 def _problem(level: str, code: str, message: str, path: Path | None, field: str | None = None):
     return Problem(level=level, code=code, message=message, path=path, field=field)
 
+def without_links(text: str) -> str:
+    """The same text with every link reduced to the words it shows.
+
+    Two passages that differ only by this say the same thing: somebody wrapped
+    a word in a link, and a reader reading the entry aloud would not hear the
+    difference. That is what tells a change to the prose from a change to the
+    wiring, and the session index needs the two kept apart: a verification is a
+    statement about what an entry claims, and adding a link claims nothing.
+
+    Built on `_MD_LINK` rather than a second pattern of its own. Two spellings
+    of what a link is means the validator and this can disagree about the same
+    line, and then one of them is wrong and nobody can tell which.
+    """
+    def shown(match: re.Match[str]) -> str:
+        whole = match.group(0)
+        # The link text forbids `]`, so the first `](` is the separator.
+        return whole[whole.index("[") + 1: whole.index("](")]
+
+    return _MD_LINK.sub(shown, text)
+
 
 def strip_code(text: str) -> str:
     """The text without fenced code blocks, so examples are not read as links."""

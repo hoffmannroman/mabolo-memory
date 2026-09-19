@@ -1,5 +1,6 @@
 """The tools a client sees, and the gate in front of the four that claim."""
 
+import datetime as dt
 import subprocess
 
 import anyio
@@ -614,3 +615,78 @@ def test_reindex_commits_through_the_same_door_with_a_kind_of_its_own(server, gi
     message = git_vault.git("log", "-1", "--format=%B").stdout
     assert "Mabolo:" in message, message
     assert "reindex" in message, message
+
+
+# An edit that only wires two entries together is not a statement about either
+
+
+def test_adding_a_link_does_not_record_a_verification(server, git_vault):
+    """The bug this caught, in the vault it caught it in.
+
+    Eleven entries got a link each. Every edit recorded a verification, the
+    session index reads the newest one as "this moved recently", and five
+    reference entries took the seats of four standing rules on the front page
+    of every session for a week. A verification says the person stands behind
+    what the entry claims, and a link claims nothing.
+    """
+    written(server)
+    path = git_vault.root / "infra" / "deploy-from-main.md"
+    before = frontmatter.read(path)
+    assert before.meta["verified"], "the write itself is a verification"
+
+    answer = call(server, "mabolo_edit", {
+        "name": "deploy-from-main",
+        "old": "Releases are cut from `main`.",
+        "new": "Releases are cut from [`main`](deploy-from-main.md).",
+        "quote": QUOTE,
+        "revision": before.revision,
+    })
+
+    assert "nothing was verified" in answer, answer
+    after = frontmatter.read(path)
+    assert after.meta["verified"] == before.meta["verified"]
+    assert "](deploy-from-main.md)" in path.read_text(encoding="utf-8")
+
+
+def test_changing_a_word_still_records_a_verification(server, git_vault, prompts, tmp_path):
+    """The other half. A rule that stopped verifying edits would buy its quiet
+    by never recording that anybody stood behind anything.
+
+    The second sentence is typed at its own moment on purpose: `approve` drops
+    a yes it already holds, so quoting the first prompt again would record
+    nothing and the test would pass whatever the rule did.
+    """
+    written(server)
+    later = "and releases are never cut from a tag either"
+    consent.record(later, cwd=tmp_path, session="s", directory=prompts,
+                   at=dt.datetime.now().astimezone() + dt.timedelta(minutes=1))
+    path = git_vault.root / "infra" / "deploy-from-main.md"
+    before = frontmatter.read(path)
+
+    answer = call(server, "mabolo_edit", {
+        "name": "deploy-from-main",
+        "old": "Releases are cut from `main`.",
+        "new": "Releases are cut from `main` and never from a tag.",
+        "quote": later,
+        "revision": before.revision,
+    })
+
+    assert "nothing was verified" not in answer, answer
+    after = frontmatter.read(path)
+    assert len(after.meta["verified"]) > len(before.meta["verified"])
+
+
+def test_whether_an_edit_verifies_is_read_from_the_change_not_the_call(server, git_vault):
+    """There is no parameter for it, on purpose.
+
+    A flag saying "this one does not count" is a flag a caller sets when it is
+    convenient, and the whole gate in front of these tools exists because what
+    a caller says about itself is not evidence. The words either differ or they
+    do not, and that is not an opinion.
+    """
+    import inspect
+    from mabolo.server import _register_writing
+    source = inspect.getsource(_register_writing)
+    signature = source[source.index("def mabolo_edit("):source.index(")", source.index("def mabolo_edit("))]
+    assert "verif" not in signature.lower(), signature
+    assert "without_links" in source, "the judgement has to come from the passage"

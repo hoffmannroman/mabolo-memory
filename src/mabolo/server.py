@@ -54,6 +54,7 @@ from . import (
     lint,
     proposal,
     session,
+    validate,
     write,
 )
 from .errors import MaboloError
@@ -374,6 +375,14 @@ def _register_writing(
 
         Use this rather than rewriting an entry. A rewrite changes sentences
         nobody asked about, and those sentences were somebody's decision.
+
+        An edit that only adds or removes a link does not record a
+        verification. A verification says the person stands behind what the
+        entry claims, the session index reads the newest one as "this moved
+        recently", and a tidying pass over the wiring would otherwise push the
+        standing rules off the front page of every session for a week. Whether
+        it is one is read from the change itself, never from the call: the
+        words either differ or they do not.
         """
         given = consent_for(quote)
         if not given.verified:
@@ -390,15 +399,20 @@ def _register_writing(
         except PassageNotUnique as ambiguous:
             more = " Quote more of it." if ambiguous.seen > 1 else ""
             return f"refused: {ambiguous}.{more}"
-        entry.approve(settings.actor, iso(given.at or now()) or "")
+        wording = validate.without_links(old) != validate.without_links(new)
+        if wording:
+            entry.approve(settings.actor, iso(given.at or now()) or "")
         target, data = vault.render_entry(entry)
         where = relative(target)
         result = commit(
             [write.Change(path=where, data=data, expect=document.revision)],
-            message(f"edit {where}", given),
+            message(f"edit {where}" if wording else f"link {where}", given),
             "edit",
         )
-        return answer(result, where)
+        said = answer(result, where)
+        if result.ok and not wording:
+            said += " Only the link changed, so nothing was verified."
+        return said
 
     @server.tool()
     @_sentence

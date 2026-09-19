@@ -157,6 +157,15 @@ rewritten entry produced by a model silently changes sentences that were
 somebody's decision. The prose outside the passage is left byte for byte; the
 frontmatter is re-rendered, because that part is structured data the tool owns.
 
+**An edit that only adds or removes a link records no verification.** A
+verification says you stand behind what the entry claims, and the session index
+reads the newest one as "this moved recently". Wrapping a word in a link claims
+nothing, so counting it as a yes let a pass over the wiring push the standing
+rules off the front page of every session for a week. Which kind of edit it is
+comes from the passage and never from the call: there is no parameter for it,
+because a caller saying "this one does not count" is the sort of claim the
+whole gate exists not to believe. The words either differ or they do not.
+
 **`journal_add` takes no quote.** It records what a session did, it makes no
 claim about you, and it is never read as a rule. Requiring a quote there would
 mean approving a sentence you never said.
