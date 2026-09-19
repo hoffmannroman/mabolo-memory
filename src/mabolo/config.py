@@ -160,6 +160,12 @@ class Config:
     unknown: dict[str, Any] = field(default_factory=dict)
     #: The same, for keys inside [remote].
     unknown_remote: dict[str, Any] = field(default_factory=dict)
+    #: What extraction runs to ask a model, as an argument list. The command
+    #: reads a prompt on stdin and writes JSON on stdout. Empty means the pass
+    #: refuses to run and says so: a vendor's command line is not something
+    #: this tool may guess, and a feature that silently does nothing is worse
+    #: than one that is switched off out loud.
+    extract_command: list[str] = field(default_factory=list)
     #: True when the vault came from the environment, so `save` refuses to make
     #: a one-run override permanent.
     vault_from_environment: bool = False
@@ -177,6 +183,21 @@ class Config:
         vault = data.get("vault")
         if not isinstance(vault, str) or not vault.strip():
             raise MaboloError(f"{where} names no vault")
+
+        extract = data.get("extract", {})
+        if not isinstance(extract, dict):
+            raise MaboloError(f"{where}: [extract] must be a table")
+        command = extract.get("command", [])
+        if isinstance(command, str):
+            # One string is the mistake a person makes here, and splitting it
+            # would guess where the arguments are. Naming it is cheaper than a
+            # command that runs with the wrong quoting once a month.
+            raise MaboloError(
+                f"{where}: extract.command is a list of arguments, not one line. "
+                'Write ["some-model", "--json"] rather than "some-model --json".'
+            )
+        if not isinstance(command, list) or not all(isinstance(one, str) for one in command):
+            raise MaboloError(f"{where}: extract.command is a list of arguments, as text")
 
         remote = data.get("remote", {})
         if not isinstance(remote, dict):
@@ -222,13 +243,14 @@ class Config:
             )
 
         override = os.environ.get(ENV_VAULT)
-        known = {"version", "vault", "actor", "areas", "language", "remote"}
+        known = {"version", "vault", "actor", "areas", "language", "remote", "extract"}
         known_remote = {"url", "branch"}
         return cls(
             vault=Path(override or vault).expanduser(),
             actor=actor,
             areas=list(areas),
             language=language,
+            extract_command=list(command),
             remote_url=str(remote["url"]) if remote.get("url") else None,
             remote_branch=branch,
             version=raw_version,
@@ -305,6 +327,14 @@ class Config:
         ]
         lines += [f"{key} = {_named(key, value)}" for key, value in self.unknown_remote.items()]
         lines.append("")
+        lines += [
+            "[extract]",
+            "# What the extraction pass runs to ask a model, as an argument list.",
+            "# It reads a prompt on stdin and writes JSON on stdout. Empty means",
+            "# extraction is switched off, and it says so rather than doing nothing.",
+            f"command = {_toml_value(self.extract_command)}",
+            "",
+        ]
         for key, value in self.unknown.items():
             if isinstance(value, dict):
                 lines.append(f"[{key}]")

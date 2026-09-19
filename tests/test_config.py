@@ -184,3 +184,37 @@ def test_a_language_that_is_not_a_code_is_refused(tmp_path):
                     encoding="utf-8")
     with pytest.raises(MaboloError, match="short code"):
         Config.load(path)
+
+
+# What extraction runs to ask a model. It is a command line and not a
+# dependency, so the configuration is the only place it can come from.
+
+
+def test_the_extraction_command_survives_a_round_trip(tmp_path):
+    made = Config.default(tmp_path / "v")
+    made.extract_command = ["some-model", "--json"]
+    path = made.save(tmp_path / "c.toml")
+    assert Config.load(path).extract_command == ["some-model", "--json"]
+
+
+def test_a_configuration_without_an_extraction_command_switches_it_off(tmp_path):
+    """Empty rather than a guess. A vendor's command line is not something this
+    tool may invent, and a pass that silently did nothing would be worse than
+    one that says it is switched off."""
+    path = (tmp_path / "c.toml")
+    path.write_text(f'vault = "{tmp_path / "v"}"\nactor = "human:alex"\n', encoding="utf-8")
+    assert Config.load(path).extract_command == []
+
+
+def test_one_line_instead_of_a_list_is_refused_rather_than_split(tmp_path):
+    """Splitting it would guess where the arguments are, and the guess is wrong
+    once a month, quietly."""
+    path = (tmp_path / "c.toml")
+    path.write_text(
+        f'vault = "{tmp_path / "v"}"\nactor = "human:alex"\n'
+        '[extract]\ncommand = "some-model --json"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(MaboloError) as caught:
+        Config.load(path)
+    assert "list of arguments" in str(caught.value)

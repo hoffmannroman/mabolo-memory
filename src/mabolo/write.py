@@ -65,7 +65,23 @@ TRAILER_KEY = "Mabolo"
 
 #: The kinds a commit can be. `foreign` is a change a person made by hand that
 #: Mabolo committed for them, which is not the same as a change Mabolo made.
-KINDS = ("adopt", "import", "write", "edit", "forget", "journal", "foreign", "approve", "reject")
+KINDS = (
+    "adopt",
+    "import",
+    "write",
+    "edit",
+    "forget",
+    "journal",
+    "foreign",
+    "approve",
+    "reject",
+    # The inbox branch. Its commits are not in the vault's history and
+    # never will be, but they are commits Mabolo made, and a person
+    # looking at a stray branch should not have to guess where it came
+    # from.
+    "propose",
+    "unfile",
+)
 
 
 def trailer(kind: str, actor: str) -> str:

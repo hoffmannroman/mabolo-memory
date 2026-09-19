@@ -4,7 +4,7 @@ import anyio
 import pytest
 from mcp import Client
 
-from mabolo import consent, frontmatter, validate
+from mabolo import consent, frontmatter, inbox, validate
 from mabolo.server import MAX_READ, Settings, build
 
 QUOTE = "releases are cut from main only"
@@ -62,16 +62,18 @@ def test_read_mode_does_not_offer_a_way_to_write(git_vault, prompts, tmp_path):
         git_vault,
         Settings(actor="human:alex", cwd=tmp_path, session="s", prompts=prompts, read_only=True),
     )
-    assert tool_names(reading) == ["mabolo_search", "mabolo_read"]
+    assert tool_names(reading) == ["mabolo_search", "mabolo_read", "mabolo_propose"]
 
 
 def test_the_full_server_offers_the_four_that_write(server):
     assert tool_names(server) == [
         "mabolo_search",
         "mabolo_read",
+        "mabolo_propose",
         "mabolo_write",
         "mabolo_edit",
         "mabolo_forget",
+        "mabolo_decide",
         "journal_add",
     ]
 
@@ -227,3 +229,100 @@ def test_a_read_of_everything_is_refused(server):
 
 def test_an_unknown_name_is_a_sentence_not_a_traceback(server):
     assert "no entry called" in call(server, "mabolo_read", {"names": ["nothing-like-this"]})
+
+
+# Proposing and deciding: what an agent may do alone, and what it may only
+# relay.
+
+
+ENTRY_TEXT = """---
+type: reference
+title: Deploy from main only
+description: Releases are cut from main, never from a tag
+status: stable
+mabolo:
+  area: infra
+---
+
+Releases are cut from `main`.
+"""
+
+
+def propose(server, **over) -> str:
+    arguments = {
+        "action": "write",
+        "target": "infra/deploy-from-main",
+        "quote": QUOTE,
+        "entry": ENTRY_TEXT,
+    }
+    arguments.update(over)
+    return call(server, "mabolo_propose", arguments)
+
+
+def test_an_agent_alone_may_propose_and_the_vault_does_not_move(git_vault, prompts, tmp_path):
+    reading = build(
+        git_vault,
+        Settings(actor="human:alex", cwd=tmp_path, session="s", prompts=prompts, read_only=True),
+    )
+    before = git_vault.git("rev-parse", "HEAD").stdout
+    answer = propose(reading)
+    assert "waiting for an answer" in answer
+    assert git_vault.git("rev-parse", "HEAD").stdout == before
+    assert not (git_vault.root / "infra" / "deploy-from-main.md").exists()
+    assert len(inbox.pending(git_vault.root)) == 1
+
+
+def test_the_same_suggestion_twice_is_one_thing_to_read(server, git_vault):
+    propose(server)
+    assert "already waiting" in propose(server)
+    assert len(inbox.pending(git_vault.root)) == 1
+
+
+def test_a_verdict_without_the_id_in_it_decides_nothing(server, git_vault, prompts, tmp_path):
+    """A bare yes is a signature of nothing. The id is the evidence that the
+    person looked at the inbox."""
+    propose(server)
+    waiting = inbox.pending(git_vault.root)[0]
+    consent.record("yes go ahead with that", cwd=tmp_path, session="s", directory=prompts)
+    answer = call(server, "mabolo_decide", {
+        "id": waiting.id, "verdict": "yes", "quote": "yes go ahead with that",
+    })
+    assert "does not name" in answer
+    assert not (git_vault.root / "infra" / "deploy-from-main.md").exists()
+
+
+def test_a_verdict_nobody_typed_decides_nothing(server, git_vault, prompts, tmp_path):
+    propose(server)
+    waiting = inbox.pending(git_vault.root)[0]
+    answer = call(server, "mabolo_decide", {
+        "id": waiting.id, "verdict": "yes", "quote": f"{waiting.id} yes",
+    })
+    assert "nothing was written" in answer
+    assert not (git_vault.root / "infra" / "deploy-from-main.md").exists()
+
+
+def test_a_verdict_the_person_typed_writes_the_entry(server, git_vault, prompts, tmp_path):
+    propose(server)
+    waiting = inbox.pending(git_vault.root)[0]
+    said = f"{waiting.id[:4]} yes"
+    consent.record(said, cwd=tmp_path, session="s", directory=prompts)
+    answer = call(server, "mabolo_decide", {
+        "id": waiting.id[:4], "verdict": "yes", "quote": said,
+    })
+    assert "approved" in answer
+    assert (git_vault.root / "infra" / "deploy-from-main.md").exists()
+    assert inbox.pending(git_vault.root) == []
+
+
+def test_a_verdict_that_is_neither_yes_nor_no_is_refused(server, git_vault):
+    propose(server)
+    waiting = inbox.pending(git_vault.root)[0]
+    assert "yes or no" in call(server, "mabolo_decide", {
+        "id": waiting.id, "verdict": "maybe", "quote": f"{waiting.id} maybe",
+    })
+
+
+def test_an_id_that_names_nothing_is_a_sentence(server):
+    assert "no open proposal" in call(server, "mabolo_decide", {
+        "id": "beef", "verdict": "yes", "quote": "beef yes",
+    })

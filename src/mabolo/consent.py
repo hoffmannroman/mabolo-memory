@@ -288,15 +288,25 @@ def seen(*, cwd: str | Path | None = None, session: object = None, now: dt.datet
 
 
 def check(quote: str, *, cwd: str | Path | None = None, session: object = None,
-          now: dt.datetime | None = None, directory: Path | None = None) -> Consent:
-    """Whether this sentence was typed by a person, and where it was seen."""
+          now: dt.datetime | None = None, directory: Path | None = None,
+          minimum: int = MIN_QUOTE_CHARS) -> Consent:
+    """Whether this sentence was typed by a person, and where it was seen.
+
+    `minimum` is the floor, and it is a parameter for exactly one caller. A
+    proposal is answered with "a3f2 yes", which is eight characters and would
+    never clear a floor meant to stop "yes" from authorising a write. What
+    stands in for the length there is the shape: a machine generated id in a
+    prompt is a signature of having looked at the inbox, which "yes" never was.
+    The caller that lowers the floor owes that shape check, and it is not
+    lowered anywhere else.
+    """
     text = normalise(quote or "")
-    if len(text) < MIN_QUOTE_CHARS:
+    if len(text) < minimum:
         return Consent(
             quote=text,
             verified=False,
             reason=(
-                f"the quote is shorter than {MIN_QUOTE_CHARS} characters, "
+                f"the quote is shorter than {minimum} characters, "
                 "which is not enough of a sentence to recognise"
             ),
         )

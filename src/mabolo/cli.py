@@ -38,11 +38,14 @@ from . import (
     __version__,
     consent,
     context,
+    decide,
     design,
     drift,
     evaluate,
     git,
+    inbox,
     provenance,
+    proposal,
     recall,
     seen,
     session,
@@ -378,6 +381,66 @@ def cmd_hook_session_start(args: argparse.Namespace) -> int:
 def cmd_hook_prompt(args: argparse.Namespace) -> int:
     """The entry a prompt should have known about, or nothing at all."""
     return _run_hook(args, PROMPT, _prompt_payload)
+
+
+def cmd_inbox(args: argparse.Namespace) -> int:
+    """Show what automation suggested, or answer it.
+
+    With no verdicts it lists and changes nothing. With them it is the one
+    place a proposal becomes an entry, and the person typing into their own
+    shell is the consent: the quote gate stands in front of an agent's tool
+    call, not in front of a person's keyboard.
+    """
+    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
+    vault = _vault_from(args)
+    remote = "origin" if config and config.remote_url else None
+    branch = config.remote_branch if config else None
+    actor = config.actor if config else default_actor()
+
+    listing = inbox.read(vault.root)
+    for broken in listing.unreadable:
+        # Named every time and never dropped: it is the only copy of somebody's
+        # suggestion, and a file that cannot be read is not a file that can be
+        # thrown away.
+        _say(f"mabolo: {broken}")
+    if not args.verdicts:
+        if not listing.proposals:
+            print("nothing is waiting.")
+            return EXIT_FINDINGS if listing.unreadable else EXIT_OK
+        for one in listing.proposals:
+            print(one.line())
+        print("")
+        print("Answer with `mabolo inbox <id> yes` or `<id> no`, ids may be shortened.")
+        return EXIT_OK
+
+    decisions = _verdicts(args.verdicts)
+    answers = []
+    for wanted, approved in decisions:
+        one = proposal.resolve(wanted, listing.proposals)
+        answers.append(
+            decide.answer(vault, one, approved=approved, by=actor, remote=remote, branch=branch)
+        )
+        print(answers[-1].line())
+    return EXIT_OK if all(a.ok for a in answers) else EXIT_FINDINGS
+
+
+def _verdicts(words: list[str]) -> list[tuple[str, bool]]:
+    """`a3f2 yes 7c01 no` as pairs, or an error naming what was not understood.
+
+    Refused rather than guessed at. A word that is neither an id nor a verdict
+    in a line that answers proposals is a typo, and the two ways of guessing
+    are "skip it" and "assume yes", both of which write something nobody asked
+    for.
+    """
+    if len(words) % 2:
+        raise MaboloError("every id needs an answer: `mabolo inbox a3f2 yes 7c01 no`")
+    out: list[tuple[str, bool]] = []
+    for wanted, said in zip(words[0::2], words[1::2]):
+        answer = said.strip().lower()
+        if answer not in ("yes", "no"):
+            raise MaboloError(f"{said!r} is not an answer. It is yes or no.")
+        out.append((wanted, answer == "yes"))
+    return out
 
 
 def cmd_why(args: argparse.Namespace) -> int:
@@ -909,6 +972,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"give up after this long, default {PROMPT_SECONDS}",
     )
     touched.set_defaults(func=cmd_hook_pretool)
+
+    waiting = sub.add_parser("inbox", help="what automation suggested, and your answer")
+    waiting.add_argument(
+        "verdicts",
+        nargs="*",
+        help="pairs of id and yes or no, for example a3f2 yes 7c01 no",
+    )
+    waiting.add_argument("--path", dest="path", help="the vault, default is the configured one")
+    waiting.set_defaults(func=cmd_inbox)
 
     why = sub.add_parser("why", help="where one entry came from, and what it rests on")
     why.add_argument("entry", help="the entry's name, or one of its aliases")

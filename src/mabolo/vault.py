@@ -59,6 +59,10 @@ VAULT_GITIGNORE = """\
 !{state}/eval/
 !{state}/eval/**
 
+# And the ledger: who answered which proposal is an answer about the vault's
+# own entries, so it travels with them rather than with the machine.
+!{state}/decided.md
+
 *.log
 """.format(state=STATE_DIR)
 

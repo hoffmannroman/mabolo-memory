@@ -34,7 +34,7 @@ from typing import Any, Callable
 
 from mcp.server import MCPServer
 
-from . import PRODUCER, __version__, consent, frontmatter, journal, write
+from . import PRODUCER, __version__, consent, decide, frontmatter, inbox, journal, proposal, write
 from .errors import MaboloError
 from .index import Index, estimate_tokens
 from .schema import (
@@ -183,6 +183,40 @@ def build(vault: Vault, settings: Settings) -> MCPServer:
                 f"{path.read_text(encoding='utf-8').strip()}"
             )
         return "\n\n".join(out)
+
+    @server.tool()
+    @_sentence
+    def mabolo_propose(action: str, target: str, quote: str, entry: str = "", old: str = "",
+                       new: str = "", note: str = "") -> str:
+        """File a suggestion for the person to answer later, changing nothing.
+
+        This is what an agent may do on its own. It writes nothing into the
+        vault: the proposal waits on a branch that is never merged, and it
+        becomes an entry only when the person says yes.
+
+        `quote` is still the person's own sentence, and it is not checked here,
+        because a proposal is not a claim about them yet. It is checked when
+        they answer.
+        """
+        if action not in proposal.ACTIONS:
+            return f"refused: a proposal asks for one of {', '.join(proposal.ACTIONS)}."
+        made = proposal.Proposal(
+            action=action,
+            target=target.strip(),
+            quote=quote,
+            entry=entry,
+            old=old,
+            new=new,
+            note=note,
+            source=PRODUCER,
+            filed_at=iso(now()) or "",
+        )
+        result = inbox.file(vault.root, made, remote=settings.remote)
+        if result.outcome == inbox.ALREADY:
+            return f"{made.id} was already waiting, so nothing was added."
+        if not result.ok:
+            return f"{result.outcome}: {result.message}"
+        return f"{made.id} is waiting for an answer: {result.message}."
 
     if not settings.read_only:
         _register_writing(server, vault, settings, entry_path, relative, consent_for, commit, index)
@@ -367,6 +401,53 @@ def _register_writing(
             return f"{result.outcome}: {result.message}"
         note = f" Still linked to from: {', '.join(linking)}." if linking else ""
         return f"{where} is gone: {result.message}.{note}"
+
+    @server.tool()
+    @_sentence
+    def mabolo_decide(id: str, verdict: str, quote: str) -> str:
+        """Answer a proposal the person has just decided about, by its id.
+
+        Only for a sentence in which the person names the proposal themselves,
+        for example "a3f2 yes" or "reject 7c01". The id is the evidence: a hex
+        string a machine generated is a signature of having looked at the
+        inbox, where a bare "yes" is a signature of nothing. Do not shorten,
+        expand or tidy what they wrote, and do not answer a proposal they did
+        not name.
+
+        A yes writes the entry and the answer in one commit. A no writes only
+        the answer, and the sentence the proposal quoted is never recorded.
+        """
+        wanted = verdict.strip().lower()
+        if wanted not in ("yes", "no"):
+            return "refused: a verdict is yes or no."
+        waiting = inbox.read(vault.root).proposals
+        one = proposal.resolve(id, waiting)
+        said = consent.normalise(quote).casefold()
+        if one.id[: proposal.MIN_PREFIX] not in said:
+            return (
+                f"nothing was written: the sentence does not name {one.id}. "
+                "A proposal is answered by the person naming it, not by a yes on its own."
+            )
+        if wanted not in said:
+            return f"nothing was written: the sentence does not say {wanted!r} about {one.id}."
+        given = consent.check(
+            quote,
+            cwd=settings.cwd,
+            session=settings.session,
+            directory=settings.prompts,
+            minimum=proposal.MIN_PREFIX,
+        )
+        if not given.verified:
+            return refuse(given)
+        answered = decide.answer(
+            vault,
+            one,
+            approved=wanted == "yes",
+            by=settings.actor,
+            remote=settings.remote,
+            branch=settings.branch,
+        )
+        return answered.line()
 
     @server.tool()
     @_sentence
