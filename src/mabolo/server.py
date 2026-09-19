@@ -284,7 +284,13 @@ def _register_writing(
     commit: Callable[..., write.Result],
     index: Callable[[], Index],
 ) -> None:
-    """The four tools that change the vault, and the gate in front of them."""
+    """The tools that change the vault, and the gate in front of most of them.
+
+    Four of them make a claim about the person and pass through `consent`.
+    Two do not: `journal_add` records what a session did, and `mabolo_reindex`
+    rebuilds a file that is derived from entries the person already approved.
+    Both still write, so neither is registered in read mode.
+    """
 
     def refuse(given: consent.Consent) -> str:
         return (
@@ -512,6 +518,35 @@ def _register_writing(
         if not result.ok:
             return f"{result.outcome}: {result.message}"
         return f"noted under {today.isoformat()}: {result.message}."
+
+    @server.tool()
+    @_sentence
+    def mabolo_reindex() -> str:
+        """Rebuild the area indexes that no longer match the entries beside them.
+
+        The repair for the one way an index goes stale that no tool sees. Every
+        write derives the indexes it made wrong and commits them with the entry,
+        so the tools keep themselves straight. A change that did not come
+        through them -- a file written in an editor, a merge, a commit made by
+        hand -- derives nothing, and the folder's index goes on describing a
+        vault that no longer exists. `mabolo doctor` is what reports that.
+
+        Call it when something reports a stale index, not on a hunch: it says
+        so and changes nothing when every index already matches.
+
+        This needs no quote. An index holds nothing but what the entries beside
+        it already say, so a rebuild makes no claim about the person that they
+        have not approved once already. It is still a write, so it is not
+        offered in read mode, and the commit carries a trailer of its own kind.
+        """
+        changes = vault.stale_indexes()
+        if not changes:
+            return "every index matches the entries beside it. Nothing was written."
+        where = ", ".join(change.path for change in changes)
+        result = commit(changes, f"rebuild {len(changes)} index file(s)", "reindex")
+        if not result.ok:
+            return f"{result.outcome}: {result.message}"
+        return f"rebuilt {where}: {result.message}."
 
 
 def _linking_to(vault: Vault, name: str) -> list[str]:

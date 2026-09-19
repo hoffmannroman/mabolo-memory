@@ -171,9 +171,10 @@ This is early, and the README says only what exists:
 * `mabolo serve` runs the MCP server your client talks to. It offers
   `mabolo_search` and `mabolo_read`, which are two calls on purpose so that the
   price of a payload is known before it arrives, and the tools that change the
-  vault: `mabolo_write`, `mabolo_edit`, `mabolo_forget`, `mabolo_decide` and
-  `journal_add`. Each write takes the sentence that authorised it, word for
-  word, and the server checks that sentence against what you actually typed.
+  vault: `mabolo_write`, `mabolo_edit`, `mabolo_forget`, `mabolo_decide`,
+  `journal_add` and `mabolo_reindex`. The four that make a claim about you take
+  the sentence that authorised it, word for word, and the server checks that
+  sentence against what you actually typed.
   Every change is one commit, taken through a lock, a revision check and a push
   with a lease, and your working tree is never reset or cleaned.
   With `--read-only` none of those are registered, which is what an unattended

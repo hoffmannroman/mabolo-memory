@@ -53,6 +53,12 @@ is the wrong command on the right problem. `reindex` prints what is stale, and
 with the trailer and the lease, so the history says plainly which commits
 changed what the vault knows and which only made an index agree with it again.
 
+The same repair is a tool, `mabolo_reindex`, because the session that most
+needs it is often the one with no shell to type the command into. It takes no
+quote: see [writing](write.md). It has no dry run, because its answer names
+every file it rebuilt and the repair is one `mabolo revert` away, where the
+command is typed by somebody who can watch what it prints.
+
 `doctor` finds them without being asked, by rebuilding every index and seeing
 whether it comes out the same. It used to ask only whether each entry was
 *named* by its index, which an index can do while being wrong about every one

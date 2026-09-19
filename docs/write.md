@@ -131,8 +131,9 @@ The way back from any change is `git revert` of a single commit.
 ## The tools
 
 A client that speaks MCP gets these. `mabolo serve --read-only` registers only
-the first two, which is what an unattended agent, a lint pass or a subagent is
-started with: the write tools are not refused there, they do not exist.
+the three marked always, which is what an unattended agent, a lint pass or a
+subagent is started with: the write tools are not refused there, they do not
+exist.
 
 | Tool | Mode | What it does |
 |---|---|---|
@@ -144,6 +145,7 @@ started with: the write tools are not refused there, they do not exist.
 | `mabolo_forget` | full | removes an entry; the history keeps it |
 | `mabolo_decide` | full | answers a proposal you named yourself |
 | `journal_add` | full | one line under today's date in `log.md` |
+| `mabolo_reindex` | full | rebuilds an index that no longer matches its entries |
 
 `mabolo_search` and `mabolo_read` are two calls on purpose. A single call cannot
 announce the price of its own payload: by the time the answer arrives, the
@@ -158,6 +160,12 @@ frontmatter is re-rendered, because that part is structured data the tool owns.
 **`journal_add` takes no quote.** It records what a session did, it makes no
 claim about you, and it is never read as a rule. Requiring a quote there would
 mean approving a sentence you never said.
+
+**Nor does `mabolo_reindex`, for the same reason.** An index holds nothing but
+what the entries beside it already say, so a rebuild asserts nothing you have
+not approved once. It is still a write, so it is not registered in read mode
+and its commit carries a trailer of its own kind. What it is for, and the one
+case nothing else watches, is in [when something has gone wrong](recovery.md).
 
 **A body keeps its paragraphs.** Trailing whitespace goes, a run of blank lines
 becomes one, an indent the whole body shares is dropped, and nothing else is

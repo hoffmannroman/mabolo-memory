@@ -1,4 +1,4 @@
-"""The tools a client sees, and the gate in front of the four that write."""
+"""The tools a client sees, and the gate in front of the four that claim."""
 
 import subprocess
 
@@ -68,7 +68,7 @@ def test_read_mode_does_not_offer_a_way_to_write(git_vault, prompts, tmp_path):
     assert tool_names(reading) == ["mabolo_search", "mabolo_read", "mabolo_propose"]
 
 
-def test_the_full_server_offers_the_four_that_write(server):
+def test_the_full_server_offers_everything_that_writes(server):
     assert tool_names(server) == [
         "mabolo_search",
         "mabolo_read",
@@ -78,6 +78,7 @@ def test_the_full_server_offers_the_four_that_write(server):
         "mabolo_forget",
         "mabolo_decide",
         "journal_add",
+        "mabolo_reindex",
     ]
 
 
@@ -542,3 +543,74 @@ def test_a_write_does_not_carry_an_index_it_had_nothing_to_do_with(server, git_v
     touched = git_vault.git("show", "--name-only", "--format=", "HEAD").stdout.split()
     assert "persona/index.md" not in touched
     assert "gone.md" in stale.read_text(encoding="utf-8")
+
+
+# mabolo_reindex: the repair, for a session that has no shell to run it in
+
+
+def test_reindex_rebuilds_an_index_a_file_written_by_hand_left_behind(server, git_vault):
+    """The case the tool exists for, and the case `doctor` reports.
+
+    A write derives the indexes it made wrong and commits them with the entry.
+    A file that arrived some other way derives nothing, and the folder's index
+    goes on describing a vault that is no longer there.
+    """
+    (git_vault.root / "infra" / "by-hand.md").write_text(
+        entry_text(area="infra", description="added in an editor"), encoding="utf-8"
+    )
+    index = git_vault.root / "infra" / "index.md"
+    assert "by-hand.md" not in index.read_text(encoding="utf-8")
+
+    answer = call(server, "mabolo_reindex", {})
+
+    assert "infra/index.md" in answer
+    line = next(
+        l for l in index.read_text(encoding="utf-8").splitlines() if "by-hand.md" in l
+    )
+    assert "added in an editor" in line, line
+    assert git_vault.validate().ok
+
+
+def test_reindex_needs_no_quote_because_it_claims_nothing_about_the_person(server, git_vault):
+    """The one thing that separates it from the four gated tools.
+
+    An index holds what the entries beside it already say, so a rebuild asserts
+    nothing the person has not approved once. A gate there would demand a
+    sentence for a change that changes no knowledge, and the person who most
+    needs the repair is the one with no shell to run the command in.
+    """
+    (git_vault.root / "infra" / "by-hand.md").write_text(
+        entry_text(area="infra"), encoding="utf-8"
+    )
+
+    answer = call(server, "mabolo_reindex", {})
+
+    assert "nothing was written" not in answer, answer
+    assert "by-hand.md" in (git_vault.root / "infra" / "index.md").read_text(encoding="utf-8")
+
+
+def test_reindex_says_so_and_writes_nothing_when_every_index_matches(server, git_vault):
+    """A repair that answers the same either way teaches a caller to stop
+    reading its answer, and a commit with an empty diff is a lie in the log."""
+    head = git_vault.git("rev-parse", "HEAD").stdout.strip()
+
+    answer = call(server, "mabolo_reindex", {})
+
+    assert "every index matches" in answer
+    assert "nothing was written" in answer.lower()
+    assert git_vault.git("rev-parse", "HEAD").stdout.strip() == head
+
+
+def test_reindex_commits_through_the_same_door_with_a_kind_of_its_own(server, git_vault):
+    """An index is a file in the vault, so the repair is a commit with a
+    trailer. Its own kind is what lets the history say which commits changed
+    what the memory knows and which only made an index match again."""
+    (git_vault.root / "infra" / "by-hand.md").write_text(
+        entry_text(area="infra"), encoding="utf-8"
+    )
+
+    call(server, "mabolo_reindex", {})
+
+    message = git_vault.git("log", "-1", "--format=%B").stdout
+    assert "Mabolo:" in message, message
+    assert "reindex" in message, message
