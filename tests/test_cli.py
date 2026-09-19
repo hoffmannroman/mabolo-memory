@@ -1166,3 +1166,37 @@ def test_extract_files_what_survives_and_writes_nothing_into_the_vault(
     assert "waiting for an answer" in capsys.readouterr().out
     assert vault.git("rev-parse", "HEAD").stdout == before, "main does not move"
     assert len(inbox.pending(vault.root)) == 1
+
+
+def test_the_inbox_brings_itself_up_to_date_before_listing(tmp_path, capsys, git_identity):
+    """A clone gives you the remote's branches as remote refs and no local one,
+    so a proposal filed on another machine was invisible here for ever: every
+    other operation on the inbox is triggered by somebody filing or answering,
+    and neither happens if nothing is listed."""
+    import subprocess
+
+    from mabolo import inbox
+    from mabolo.proposal import Proposal
+
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-q", "--initial-branch=main", str(origin)],
+                   check=True)
+    first = Vault(tmp_path / "one")
+    first.initialise()
+    first.git_initialise()
+    first.git_set_remote(str(origin))
+    first.git("push", "-q", "origin", "main")
+    filed = Proposal(action="forget", target="a-thing", quote="please forget the thing",
+                     source="process:extract", filed_at="2026-09-19T10:00:00+03:00")
+    inbox.file(first.root, filed, remote="origin")
+
+    second = tmp_path / "two"
+    subprocess.run(["git", "clone", "-q", str(origin), str(second)], check=True)
+    config = tmp_path / "c.toml"
+    config.write_text(
+        f'vault = "{second}"\nactor = "human:alex"\n[remote]\nurl = "{origin}"\n',
+        encoding="utf-8",
+    )
+    assert inbox.pending(second) == [], "the clone starts with no local inbox branch"
+    assert main(["--config", str(config), "inbox"]) == 0
+    assert filed.id in capsys.readouterr().out

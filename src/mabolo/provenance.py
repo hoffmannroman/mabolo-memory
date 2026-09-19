@@ -40,7 +40,7 @@ from pathlib import Path
 from . import git
 from .errors import MaboloError
 from .index import one_line
-from .schema import Entry, as_utc, normalise_name, parse_time
+from .schema import FOOTNOTE_DEFINITION, Entry, as_utc, normalise_name, parse_time
 from .vault import Vault
 
 #: What happened to the entry before Git ever saw it.
@@ -70,7 +70,7 @@ TOUCHED = "touched"
 _STATUS = {"A": ADDED, "M": CHANGED, "R": RENAMED, "D": DELETED, "C": ADDED, "T": CHANGED}
 
 #: A footnote definition, anchored the way `Entry.footnote_ids` anchors it.
-_DEFINITION = re.compile(r"^\[\^([^\]]+)\]:[ \t]*(.*)$")
+_DEFINITION = FOOTNOTE_DEFINITION
 
 #: `git log` output, cut with bytes no commit message can contain. A commit
 #: object may not hold a NUL, so a subject cannot forge a record boundary.

@@ -42,7 +42,10 @@ from .seen import key as seen_key
 LIMIT = 3
 
 #: How much of one rule survives. A rule has to arrive whole enough to follow,
-#: and `instead_of` rides along inside this.
+#: and `instead_of` rides along inside this. 240 is three lines on a phone and
+#: a little over a tweet: long enough for a rule and the habit it replaces,
+#: short enough that three of them do not push the person's own file out of
+#: view. A rule that does not fit is left out whole rather than cut.
 CHARS = 240
 
 #: What the block calls itself. It has to be obvious that this came from the

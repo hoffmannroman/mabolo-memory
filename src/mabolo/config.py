@@ -41,6 +41,12 @@ from .schema import (
 
 CONFIG_VERSION = 1
 
+#: The mode the configuration file is written with. It holds a vault path and
+#: an actor, not a secret, and it is still nobody else's business on a shared
+#: machine. `doctor` reports a file that is readable by anybody, and it reads
+#: the number from here rather than carrying its own copy.
+CONFIG_MODE = 0o600
+
 #: What the remote is called. Git's own default, and the only name `init` ever
 #: writes, so every caller that needs it can say the same word rather than
 #: spelling the literal in five places and leaving none of them to say why.
@@ -376,7 +382,7 @@ class Config:
         try:
             # Created with tight permissions from the start, rather than fixed
             # afterwards, after a moment in which the file was world readable.
-            handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, CONFIG_MODE)
             with os.fdopen(handle, "w", encoding="utf-8") as stream:
                 stream.write(text)
                 stream.flush()

@@ -47,6 +47,10 @@ from .consent import state_home
 from .errors import MaboloError
 
 #: How long a caller waits for another mutation on this machine to finish.
+#: A write is a fetch, a commit and a push, so ten seconds covers an ordinary
+#: one on a slow link and does not cover a lock somebody's crashed process left
+#: behind, which is the case a person needs to be told about rather than made
+#: to wait through.
 LOCK_SECONDS = 10.0
 
 #: What the commit for a hand made change says. The actor is the person, since

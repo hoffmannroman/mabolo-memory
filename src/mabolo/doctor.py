@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from . import consent, drift, git, proposal, seen, validate, write
-from .config import Config, default_config_path
+from .config import CONFIG_MODE, Config, default_config_path
 from .errors import MaboloError
 from .query import fold
 from .schema import FIXED_AREAS, INDEX_FILE
@@ -71,9 +71,8 @@ CONTENT = "content"
 WAITING = "waiting"
 GROUPS = (CONFIGURATION, REPOSITORY, REMOTE, HISTORY, CONTENT, WAITING)
 
-#: The configuration names the vault and may name a remote URL carrying a
-#: password, so it is written 0600 and anything else is a finding.
-EXPECTED_MODE = 0o600
+#: What a configuration file's mode should be. From `config`, which writes it.
+EXPECTED_MODE = CONFIG_MODE
 
 #: How long a proposal may wait before waiting is the problem. It matches the
 #: expiry the state machine gives a proposal: past this, nobody is going to

@@ -52,7 +52,11 @@ RETENTION_DAYS = 7
 #: sentence cannot authorise today's write.
 WINDOW_HOURS = 12
 
-#: The shortest quote that can be recognised at all.
+#: The shortest quote that can be recognised at all. Twelve is roughly three
+#: ordinary words: below that a sentence is not a sentence, and "yes", "do it"
+#: and "that one" all appear in half of every day's prompts, so a floor under
+#: them is what keeps a word from authorising a write. The one caller allowed
+#: below it, answering a proposal by its id, replaces the length with a shape.
 MIN_QUOTE_CHARS = 12
 
 #: The longest prompt kept whole. A quote out of a longer one cannot be

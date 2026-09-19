@@ -433,6 +433,14 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     config, vault = _setup(args)
     actor, remote, branch = config.target() if config else (default_actor(), None, None)
 
+    if remote:
+        # A clone gives you the remote's branches as remote refs and no local
+        # branch, so an inbox filed on another machine was invisible here for
+        # ever: every other operation on it is triggered by somebody filing or
+        # answering, and neither happens if nothing is listed.
+        rebuilt = inbox.sync(vault.root, remote=remote)
+        if not rebuilt.ok:
+            _say(f"mabolo: the inbox could not be brought up to date, {rebuilt.message}")
     listing = inbox.read(vault.root)
     for broken in listing.unreadable:
         # Named every time and never dropped: it is the only copy of somebody's

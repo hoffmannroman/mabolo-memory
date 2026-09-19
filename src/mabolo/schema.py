@@ -390,6 +390,12 @@ class MaboloBlock:
 #: because nothing had yet written the two forms into one vault.
 QUOTE_ID = "q1"
 
+#: A footnote definition at the start of a line, which is where an entry keeps
+#: the sentence it rests on. One pattern, because `why` and the validator read
+#: the same footnotes and a second spelling is how the two come to disagree
+#: about whether an entry has its evidence.
+FOOTNOTE_DEFINITION = re.compile(r"^\[\^([^\]]+)\]:[ \t]*(.*)$", re.MULTILINE)
+
 
 def quoted_body(prose: str, quote: str) -> str:
     """The prose with the sentence that authorised it in a footnote under it.
@@ -571,7 +577,7 @@ class Entry:
 
     def footnote_ids(self) -> set[str]:
         """Footnote definitions in the body, which is where quotes live."""
-        return set(re.findall(r"^\[\^([^\]]+)\]:", self.body, flags=re.MULTILINE))
+        return {match.group(1) for match in FOOTNOTE_DEFINITION.finditer(self.body)}
 
     def footnote_refs(self) -> set[str]:
         """Footnote references in the body, minus the definitions."""
