@@ -93,6 +93,12 @@ KINDS = (
     # able to tell a commit that changed what the vault knows from one that
     # only made an index agree with it again.
     "reindex",
+    # The eval baseline, which is the line a search is held against. It lives
+    # beside the cases in the vault, so a person who saved one by hand left a
+    # commit `doctor` reports for as long as the vault exists. Its own kind
+    # rather than a `write`, because it changes nothing the memory knows: it
+    # changes what a measurement is compared with.
+    "baseline",
 )
 
 

@@ -10,7 +10,7 @@ import pytest
 from conftest import entry_text
 import datetime as dt
 
-from mabolo import evaluate, journal
+from mabolo import evaluate, journal, write
 from mabolo.errors import MaboloError
 from mabolo.index import Index
 
@@ -24,6 +24,15 @@ def case_file(vault, name: str, text: str):
 
 def store(vault) -> evaluate.EvalStore:
     return evaluate.EvalStore(vault)
+
+
+def save(vault, result, language: str = "en"):
+    """Save a baseline the way the command does, and give back its path."""
+    change = store(vault).baseline_change(result, language)
+    outcome = write.apply(vault.root, [change], "eval baseline", actor="human:alex",
+                          kind="baseline")
+    assert outcome.ok, outcome.message
+    return vault.root / change.path
 
 
 def small_vault(vault):
@@ -176,7 +185,7 @@ def test_the_baseline_is_not_written_through_a_symlink(vault, tmp_path):
     vault.eval_dir.symlink_to(elsewhere)
     result = evaluate.Run(results=[], entries=0)
     with pytest.raises(MaboloError, match="outside the vault|symlink"):
-        store(vault).write_baseline(result, "en")
+        store(vault).baseline_change(result, "en")
     assert not (elsewhere / evaluate.BASELINE_FILE).exists()
 
 
@@ -402,7 +411,7 @@ def passing(vault):
 
 def test_the_baseline_round_trips(vault):
     result = passing(vault)
-    saved = store(vault).write_baseline(result, "en")
+    saved = save(vault, result)
     assert saved == vault.eval_dir / evaluate.BASELINE_FILE
     read = store(vault).read_baseline()
     assert read == evaluate.Baseline.from_run(result, "en")
@@ -519,8 +528,8 @@ def test_a_partial_run_does_not_report_the_cases_it_left_out(vault):
 
 def test_the_baseline_is_written_with_a_stable_byte_order(vault):
     result = passing(vault)
-    first = store(vault).write_baseline(result, "en").read_bytes()
-    second = store(vault).write_baseline(result, "en").read_bytes()
+    first = save(vault, result).read_bytes()
+    second = store(vault).baseline_change(result, "en").data
     assert first == second and first.endswith(b"\n")
 
 

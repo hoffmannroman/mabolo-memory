@@ -35,7 +35,7 @@ from typing import Any, Iterable, Sequence
 
 import yaml
 
-from . import context, design, frontmatter, journal, recall, session
+from . import context, design, frontmatter, journal, recall, session, write
 from .errors import MaboloError
 from .index import DEFAULT_LIMIT, Hit, Index, SearchResult
 from .schema import PROJECT_PREFIX, Entry, parse_moment, parse_time
@@ -513,14 +513,27 @@ class EvalStore:
             raise MaboloError(f"{path} is not a readable baseline: {exc}") from None
         return Baseline.from_json(data, path)
 
-    def write_baseline(self, result: Run, language: str) -> Path:
-        """Write the baseline, atomically and with a stable byte order."""
+    def baseline_change(self, result: Run, language: str) -> write.Change:
+        """The baseline this run would save, as the change that writes it.
+
+        A change and not a file. The baseline lives in the vault, the vault has
+        one door, and writing this one directly is how the only commit in this
+        project's history without a trailer got there. `doctor` reports such a
+        commit for as long as the vault exists, so every hand saved baseline
+        costs a finding that never goes away.
+
+        The path is checked before the change is built rather than after, so a
+        symlinked eval folder is refused without a commit having been made
+        about it first.
+        """
         path = self.vault.ensure_inside(self.baseline_path)
-        text = Baseline.from_run(result, language).to_text()
-        path.parent.mkdir(parents=True, exist_ok=True)
         self.vault.ensure_inside(path.parent)
-        frontmatter.write_bytes(path, text.encode("utf-8"))
-        return path
+        data = Baseline.from_run(result, language).to_text().encode("utf-8")
+        return write.Change(
+            path=path.relative_to(self.vault.root).as_posix(),
+            data=data,
+            expect=frontmatter.revision(path.read_bytes()) if path.is_file() else None,
+        )
 
 
 def select(cases: list[Case], wanted: Iterable[str]) -> list[Case]:

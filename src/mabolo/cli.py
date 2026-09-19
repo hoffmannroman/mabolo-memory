@@ -23,8 +23,9 @@ tier nobody can argue with, and two code paths to the same payload would mean
 the one that was looked at is not the one that ships.
 
 `init` prints its plan before it writes anything and ends with a real check
-rather than a success message. The other commands report; the one place they
-write is `eval --save-baseline`, and only because it was asked for by name.
+rather than a success message. The other commands report; the two that write
+are `reindex` and `eval --save-baseline`, the second only because it was asked
+for by name, and both go through `write.apply` like everything else.
 
 Exit codes: 0 when there is nothing to fix, 1 when the run found something in
 the vault, 2 when the command itself could not do its job. Warnings count as
@@ -1020,7 +1021,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     folder: "measured nothing" printed above a green exit code is exactly the
     kind of quiet success this whole tool exists to prevent.
     """
-    vault = _vault_from(args)
+    config, vault = _setup(args)
     if args.save_baseline and args.case:
         # The baseline is written from the run, so a run over a subset would
         # replace the whole file with that subset. Every other case would then
@@ -1068,8 +1069,26 @@ def cmd_eval(args: argparse.Namespace) -> int:
                 _explain(index, item)
 
         if args.save_baseline:
-            saved = store.write_baseline(result, language)
-            print(f"\nbaseline written to {saved}, {len(result.measured)} cases, language {language}")
+            # Through the same door as every other change to the vault. Saving
+            # it by hand is what left the one commit in this history that
+            # `doctor` reports, and it reports it for good.
+            actor, remote, branch = (
+                config.target() if config else (default_actor(), None, None)
+            )
+            written = write.apply(
+                vault.root,
+                [store.baseline_change(result, language)],
+                f"eval baseline under selection policy {context.POLICY}, "
+                f"{len(result.measured)} cases",
+                actor=actor,
+                kind="baseline",
+                remote=remote,
+                branch=branch,
+            )
+            print(f"\n{store.baseline_path}, {len(result.measured)} cases, "
+                  f"language {language}: {written.message}")
+            if not written.ok:
+                return EXIT_FINDINGS
             return EXIT_OK if result.ok else EXIT_FINDINGS
 
         if baseline is None and not args.no_baseline:

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from conftest import entry_text
-from mabolo import cli, context, index, schema
+from mabolo import cli, context, doctor, index, schema
 from mabolo.cli import main
 from mabolo.config import Config
 from mabolo.vault import Vault
@@ -136,6 +136,64 @@ def eval_vault(tmp_path, config: str) -> str:
         encoding="utf-8",
     )
     return str(vault)
+
+
+def test_saving_a_baseline_leaves_no_commit_doctor_has_to_report(tmp_path, capsys, git_identity):
+    """The baseline lives in the vault, so it goes through the vault's one door.
+
+    Saved by hand it left a commit with no trailer, and `doctor` reports one of
+    those for as long as the vault exists: accepting a measurement cost a
+    finding that never went away. Its own kind, because it changes nothing the
+    memory knows, only what the next measurement is compared with.
+    """
+    config = str(tmp_path / "c.toml")
+    vault = tmp_path / "v"
+    main(["--config", config, "init", "--vault", str(vault), "--actor", "human:alex", "--yes"])
+    (vault / "infra" / "deploy-from-main.md").write_text(
+        entry_text(title="Deploy from main only", description="Releases are cut from main",
+                   body="Releases are cut from main."),
+        encoding="utf-8",
+    )
+    (vault / ".mabolo" / "eval" / "deploy-source.yaml").write_text(
+        "id: deploy-source\nquery: where are releases cut from\n"
+        "expect:\n  entries: [deploy-from-main]\n  rank_within: 1\n",
+        encoding="utf-8",
+    )
+    Vault(vault).git("add", "-A")
+    Vault(vault).git("commit", "-q", "-m", "the entry and the case, by hand")
+
+    assert main(["--config", config, "eval", "--save-baseline"]) == 0
+
+    message = Vault(vault).git("log", "-1", "--format=%B").stdout
+    # The trailer and not the subject: the subject says "eval baseline" either
+    # way, so asserting on it would pass for a commit of any kind at all.
+    assert "Mabolo: baseline by human:alex" in message, message
+    assert Vault(vault).git("status", "--porcelain").stdout.strip() == ""
+    untrailered = [
+        f.message for f in doctor.examine(root=vault).findings if "no Mabolo trailer" in f.message
+    ]
+    # The hand commit above is one; the baseline must not be a second.
+    assert len(untrailered) == 1, untrailered
+
+
+def test_saving_a_baseline_twice_writes_one_commit(tmp_path, capsys, git_identity):
+    """A second save of the same numbers is not a change, and a commit with an
+    empty diff is a line in the history that says something happened."""
+    config = str(tmp_path / "c.toml")
+    vault = tmp_path / "v"
+    main(["--config", config, "init", "--vault", str(vault), "--actor", "human:alex", "--yes"])
+    (vault / ".mabolo" / "eval" / "deploy-source.yaml").write_text(
+        "id: deploy-source\nquery: nothing this vault knows about\n"
+        "expect:\n  silence: true\n",
+        encoding="utf-8",
+    )
+    main(["--config", config, "eval", "--save-baseline"])
+    head = Vault(vault).git("rev-parse", "HEAD").stdout.strip()
+
+    assert main(["--config", config, "eval", "--save-baseline"]) == 0
+
+    assert Vault(vault).git("rev-parse", "HEAD").stdout.strip() == head
+    assert "already says exactly that" in capsys.readouterr().out
 
 
 def test_eval_measures_a_vault_and_says_what_it_did_not_measure(tmp_path, capsys):

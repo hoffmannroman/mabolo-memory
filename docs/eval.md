@@ -176,7 +176,17 @@ easy half and nothing for the rest is how a measurement becomes reassurance.
 ## The baseline
 
 `mabolo eval --save-baseline` writes `.mabolo/eval/baseline.json` beside the
-cases, and every later run is compared against it. Two things fail the run:
+cases, and every later run is compared against it. It is the one thing `eval`
+writes, and it goes through the same door as every other change to the vault:
+a lock, a revision check, a commit carrying a trailer of its own kind, and a
+push with a lease. That kind is `baseline`, and it is not `write`, because
+saving one changes nothing the memory knows, only what the next measurement is
+held against. Saved by hand it left a commit with no trailer, and `doctor`
+reports one of those for as long as the vault exists, so accepting a
+measurement used to cost a finding that never went away. Saving the same
+numbers twice writes no second commit.
+
+Two things fail the run:
 
 * **A case that passed and now fails.** The obvious one.
 * **A case that still passes and slipped down the list.** The early warning. By
