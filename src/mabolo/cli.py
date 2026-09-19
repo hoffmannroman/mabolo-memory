@@ -34,7 +34,19 @@ from typing import Callable
 
 from dataclasses import dataclass, replace
 
-from . import __version__, consent, context, design, evaluate, git, recall, seen, session
+from . import (
+    __version__,
+    consent,
+    context,
+    design,
+    drift,
+    evaluate,
+    git,
+    provenance,
+    recall,
+    seen,
+    session,
+)
 from .config import Config, default_actor, default_config_path, default_vault_path, is_approver
 from .errors import MaboloError
 from .index import Index
@@ -368,6 +380,32 @@ def cmd_hook_prompt(args: argparse.Namespace) -> int:
     return _run_hook(args, PROMPT, _prompt_payload)
 
 
+def cmd_why(args: argparse.Namespace) -> int:
+    """Print where one entry came from, and whether what it watches has moved.
+
+    Two modules answer that, and neither may call the other: provenance reads
+    the file and the history, drift asks the repository the session is standing
+    in. Only a caller knows both, which is why the anchor note is set here and
+    not inside either of them. Left unset, the report says the question was
+    never asked, which is the honest answer and not the same as "it is fine".
+    """
+    vault = _vault_from(args)
+    found = provenance.of(vault, args.entry)
+    if found.anchor:
+        entry = provenance.find(vault, args.entry)
+        folder = repo_root(Path.cwd())
+        areas = {e.area for e in vault.entries()}
+        judged = drift.judge(
+            entry,
+            project=context.project_for(folder.name, areas),
+            repository=folder,
+            moment=now(),
+        )
+        found = replace(found, anchor_note=judged.reason)
+    print(found.render())
+    return EXIT_OK
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Run the MCP server on stdin and stdout until the client goes away.
 
@@ -647,14 +685,17 @@ def cmd_eval(args: argparse.Namespace) -> int:
     if args.case:
         cases = evaluate.select(cases, args.case)
     language = vault.declared_language()
+    # Read once and handed to both. The index is a reduced view built for
+    # searching, and the design tier needs the fields it leaves out.
+    entries = vault.entries()
 
-    with Index.build(vault.entries(), language=language) as index:
+    with Index.build(entries, language=language) as index:
         if not cases:
             print(f"no cases in {vault.eval_dir}, so nothing was measured")
             print(f"The vault holds {len(index)} entries. A case is one YAML file, see docs/eval.md.")
             return EXIT_FINDINGS
 
-        result = evaluate.run(index, cases, vault.notes())
+        result = evaluate.run(index, cases, vault.notes(), entries)
         # Not read when it is about to be replaced. `--save-baseline` is the way
         # out of a baseline this version cannot read or that was measured in
         # another language, so it must not be the command that trips over one.
@@ -868,6 +909,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"give up after this long, default {PROMPT_SECONDS}",
     )
     touched.set_defaults(func=cmd_hook_pretool)
+
+    why = sub.add_parser("why", help="where one entry came from, and what it rests on")
+    why.add_argument("entry", help="the entry's name, or one of its aliases")
+    why.add_argument("path", nargs="?", help="the vault, default is the configured one")
+    why.set_defaults(func=cmd_why)
 
     serve = sub.add_parser("serve", help="run the MCP server a client talks to")
     serve.add_argument("path", nargs="?", help="the vault, default is the configured one")

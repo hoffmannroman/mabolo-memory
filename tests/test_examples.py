@@ -58,7 +58,10 @@ def test_the_shipped_cases_pass_against_the_shipped_baseline():
     vault = Vault(EXAMPLE)
     store = evaluate.EvalStore(vault)
     language = vault.declared_language()
-    result = evaluate.run(Index.build(vault.entries(), language=language), store.cases())
+    entries = vault.entries()
+    result = evaluate.run(
+        Index.build(entries, language=language), store.cases(), vault.notes(), entries
+    )
     assert result.ok, evaluate.render(result)
     baseline = store.read_baseline()
     assert baseline is not None, "the example vault ships a baseline"

@@ -304,7 +304,12 @@ def test_must_cite_is_reported_and_not_scored(vault):
     assert evaluate.DEFERRED_CITE in evaluate.render(result)
 
 
-def test_an_unmeasured_case_is_not_counted_as_a_pass(vault):
+def test_an_unmeasured_case_is_not_counted_as_a_pass(vault, monkeypatch):
+    """Every tier this version has is measured today, so the tier is invented
+    here. The machinery stays covered: the next tier to be designed before it
+    is built must not report its cases as passing in the meantime."""
+    monkeypatch.setattr(evaluate, "DEFERRED", {"meaning": "embeddings are not built yet"})
+    monkeypatch.setattr(evaluate, "TIERS", (*evaluate.MEASURED_TIERS, "meaning"))
     index = small_vault(vault)
     cases = [
         evaluate.parse_case(
@@ -312,7 +317,7 @@ def test_an_unmeasured_case_is_not_counted_as_a_pass(vault):
             vault.eval_dir / "a.yaml",
         ),
         evaluate.parse_case(
-            {"id": "b", "query": "q", "expect": {"entries": ["deploy-from-main"]}, "tier": "design"},
+            {"id": "b", "query": "q", "expect": {"entries": ["deploy-from-main"]}, "tier": "meaning"},
             vault.eval_dir / "b.yaml",
         ),
     ]
@@ -1029,3 +1034,129 @@ def test_a_baseline_written_before_seats_existed_still_reads(vault):
     data = {"version": evaluate.BASELINE_VERSION, "language": "en", "policy": 1, "cases": {}}
     read = evaluate.Baseline.from_json(data, vault.eval_dir / "baseline.json")
     assert read.seats == evaluate.context.CORE_SEATS
+
+
+# The design tier: a case whose trigger is a file rather than a sentence.
+
+
+def design_rule(vault, name: str, *, patterns, description="text is left aligned", scope=None):
+    block = {"applies_to": list(patterns)}
+    if scope:
+        block["scope"] = scope
+    (vault.root / "design" / f"{name}.md").write_text(
+        entry_text(area="design", type="feedback", description=description, mabolo=block),
+        encoding="utf-8",
+    )
+
+
+def run_design(vault, text: str):
+    case_file(vault, "a-design-case", text)
+    cases = store(vault).cases()
+    entries = vault.entries()
+    with Index.build(entries) as index:
+        return evaluate.run(index, cases, [], entries)
+
+
+def test_a_design_case_measures_which_rule_the_file_raised(vault):
+    design_rule(vault, "left-aligned", patterns=["*.css"])
+    result = run_design(vault, """
+id: a-design-case
+tier: design
+path: src/styles/landing.css
+expect:
+  entries: [left-aligned]
+  rank_within: 1
+""")
+    assert [r.passed for r in result.rules] == [True]
+    assert result.rules[0].cost > 0
+
+
+def test_a_design_case_fails_when_the_file_raises_nothing(vault):
+    design_rule(vault, "left-aligned", patterns=["*.css"])
+    result = run_design(vault, """
+id: a-design-case
+tier: design
+path: src/main.rs
+expect:
+  entries: [left-aligned]
+""")
+    assert not result.rules[0].passed
+    assert "was not raised" in result.rules[0].reasons[0]
+
+
+def test_a_rule_behind_the_cap_does_not_count_as_raised(vault):
+    """The block a tool call is shown holds three rules. A rule the reader
+    never saw has not applied, whatever the list behind the cap says, and the
+    failure says which of the two happened."""
+    from mabolo import design as design_module
+
+    for number in range(design_module.LIMIT):
+        design_rule(vault, f"rule-{number}", patterns=["*.md"])
+    design_rule(vault, "zz-last", patterns=["*.md"])
+    result = run_design(vault, """
+id: a-design-case
+tier: design
+path: notes/a.md
+expect:
+  entries: [zz-last]
+  rank_within: 3
+""")
+    assert not result.rules[0].passed
+    assert "not within the block" in result.rules[0].reasons[0]
+
+
+def test_a_design_case_can_assert_that_nothing_is_raised(vault):
+    design_rule(vault, "left-aligned", patterns=["*.css"])
+    result = run_design(vault, """
+id: a-design-case
+tier: design
+path: src/main.rs
+expect:
+  silence: true
+""")
+    assert result.rules[0].passed
+
+
+def test_a_design_case_without_a_file_is_refused(vault):
+    """A case is an instrument. One that pulled a path out of prose would
+    measure whatever the regex found."""
+    case_file(vault, "a-design-case", "id: a-design-case\ntier: design\nexpect: {}\n")
+    with pytest.raises(MaboloError) as caught:
+        store(vault).cases()
+    assert "needs a path" in str(caught.value)
+
+
+def test_a_design_case_may_not_carry_a_query(vault):
+    case_file(
+        vault, "a-design-case",
+        "id: a-design-case\ntier: design\npath: a.css\nquery: opening a.css\nexpect: {}\n",
+    )
+    with pytest.raises(MaboloError) as caught:
+        store(vault).cases()
+    assert "query" in str(caught.value)
+
+
+def test_a_design_case_cannot_ask_for_a_rank_beyond_the_block(vault):
+    from mabolo import design as design_module
+
+    case_file(
+        vault, "a-design-case",
+        "id: a-design-case\ntier: design\npath: a.css\n"
+        f"expect:\n  entries: [x]\n  rank_within: {design_module.LIMIT + 1}\n",
+    )
+    with pytest.raises(MaboloError) as caught:
+        store(vault).cases()
+    assert "holds 3 rules" in str(caught.value)
+
+
+def test_a_project_rule_is_measured_in_its_project(vault):
+    design_rule(vault, "atlas-wording", patterns=["*.md"], scope="project/atlas")
+    result = run_design(vault, """
+id: a-design-case
+tier: design
+path: README.md
+project: atlas
+expect:
+  entries: [atlas-wording]
+""")
+    assert result.rules[0].passed

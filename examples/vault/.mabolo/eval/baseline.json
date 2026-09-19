@@ -40,6 +40,11 @@
       "rank": 1,
       "tier": "search"
     },
+    "design-trigger-on-css": {
+      "passed": true,
+      "rank": 1,
+      "tier": "design"
+    },
     "failing-test": {
       "passed": true,
       "rank": null,

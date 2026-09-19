@@ -1,6 +1,6 @@
 id: design-trigger-on-css
 note: nobody asks this, a touched .css file is what has to raise the rule
-query: opening src/styles/landing.css
+path: src/styles/landing.css
 expect:
   entries: [no-centred-layouts]
   rank_within: 1

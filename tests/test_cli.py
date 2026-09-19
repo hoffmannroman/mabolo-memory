@@ -893,3 +893,39 @@ def test_the_file_hook_never_fails_a_tool_call(tmp_path, capsys, monkeypatch):
     code, out, err = pretool(tmp_path, capsys, monkeypatch, event)
     assert code == 0 and out is None
     assert "gave up" in err
+
+
+# `why`: the command that turns the auditability claim into something a person
+# can operate.
+
+
+def test_why_prints_where_an_entry_came_from(tmp_path, capsys):
+    vault = hook_vault(tmp_path)
+    (vault.root / "infra" / "a-thing.md").write_text(
+        entry_text(area="infra", description="a thing that is known"), encoding="utf-8"
+    )
+    assert main(["why", "a-thing", str(vault.root)]) == 0
+    out = capsys.readouterr().out
+    assert "a-thing" in out
+    assert "who and when" in out and "evidence" in out and "history" in out
+
+
+def test_why_says_the_anchor_was_not_checked_rather_than_that_it_is_fine(tmp_path, capsys):
+    """Two modules answer this and neither may call the other, so the note is
+    the command's to set. Left unset it has to read as a question nobody asked,
+    because "not checked" and "has not moved" are different answers."""
+    vault = hook_vault(tmp_path)
+    (vault.root / "infra" / "watched.md").write_text(
+        entry_text(area="infra", description="d", mabolo={"anchor": "src/build.yml"}),
+        encoding="utf-8",
+    )
+    assert main(["why", "watched", str(vault.root)]) == 0
+    out = capsys.readouterr().out
+    assert "src/build.yml" in out
+    assert "not checked" in out
+
+
+def test_why_names_an_entry_it_cannot_find(tmp_path, capsys):
+    hook_vault(tmp_path)
+    assert main(["why", "nothing-like-this", str(hook_vault(tmp_path).root)]) == 2
+    assert "nothing-like-this" in capsys.readouterr().err

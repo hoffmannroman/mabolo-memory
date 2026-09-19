@@ -35,10 +35,10 @@ from typing import Any, Iterable, Sequence
 
 import yaml
 
-from . import context, frontmatter, journal, recall, session
+from . import context, design, frontmatter, journal, recall, session
 from .errors import MaboloError
 from .index import DEFAULT_LIMIT, Hit, Index, SearchResult
-from .schema import PROJECT_PREFIX, parse_moment, parse_time
+from .schema import PROJECT_PREFIX, Entry, parse_moment, parse_time
 
 #: The file the gate compares against, beside the cases and versioned with them.
 BASELINE_FILE = "baseline.json"
@@ -53,16 +53,14 @@ MAX_CASE_BYTES = 200_000
 #: Why the tiers below `index` are not measured yet. Printed verbatim, so that
 #: nobody has to guess whether a missing number is a pass, a bug or an unbuilt
 #: feature.
-DEFERRED = {
-    "design": "applies_to as a load trigger is not built yet",
-}
+DEFERRED: dict[str, str] = {}
 #: The tiers this harness can decide on its own, without a model in the loop.
 #: `index` is a search: a question goes in and entries come back. `hint` is the
 #: line above it in the chain, and it is not a search at all: it asks whether an
 #: entry is in the payload a session starts with. That is where a memory goes
 #: quiet without failing anything, because the curation drops the oldest line
 #: first and nobody is told.
-MEASURED_TIERS = ("search", "hint", "recall")
+MEASURED_TIERS = ("search", "hint", "recall", "design")
 #: What a case can be about. Everything beyond the measured ones is exactly the
 #: keys of DEFERRED, so a new tier cannot be accepted while the sentence
 #: explaining why it is deferred is still missing.
@@ -79,7 +77,15 @@ TIER_ALIASES = {"index": "search"}
 #: both tables, so a new shape cannot be half defined. Listing what is allowed,
 #: rather than each shape listing what the others own, is what keeps a fourth
 #: shape from having to be mentioned in the three that came before it.
-TRIGGER_KEYS = {"search": {"query"}, "hint": {"state"}, "recall": {"query"}}
+TRIGGER_KEYS = {
+    "search": {"query"},
+    "hint": {"state"},
+    "recall": {"query"},
+    # A design case is set off by a file, not by a sentence. `query` is
+    # refused on it rather than ignored: the tier takes a path, and a case
+    # that pulled one out of prose would measure whatever a regex found.
+    "design": {"path", "project"},
+}
 EXPECT_KEYS = {
     "search": {"entries", "rank_within", "must_cite", "silence"},
     "hint": {"in_payload", "not_in_payload", "budget_tokens"},
@@ -87,6 +93,9 @@ EXPECT_KEYS = {
     # citation, because the block it measures is one line per entry and has
     # nowhere to put one.
     "recall": {"entries", "rank_within", "silence"},
+    # Same question as a search, and the same two answers: which rules the file
+    # raised and in what order.
+    "design": {"entries", "rank_within", "silence"},
 }
 COMMON_KEYS = {"id", "tier", "note", "expect", "needs"}
 
@@ -146,6 +155,11 @@ class Case:
     budget_tokens: int | None = None
     #: What this one case is waiting for, a key of `NEEDS`, or None.
     needs: str | None = None
+    #: A design case: the file a tool was about to open. Spelled `path` in the
+    #: file and `opened` here, because `path` on this object is already the
+    #: case's own file and two meanings for one name is how a test ends up
+    #: measuring the wrong thing.
+    opened: str = ""
 
     @property
     def measurable(self) -> bool:
@@ -155,6 +169,8 @@ class Case:
     @property
     def trigger(self) -> str:
         """What set this case off, in one line, for a report to print."""
+        if self.tier == "design":
+            return f"opening {self.opened}"
         if self.tier != "hint":
             return self.query
         where = f"project {self.project}" if self.project else "no active project"
@@ -286,6 +302,9 @@ def parse_case(data: Any, path: Path) -> Case:
 
     if shape == "hint":
         return _parse_hint_case(data, expect, case_id, tier, path, needs)
+
+    if shape == "design":
+        return _parse_design_case(data, expect, case_id, tier, path, needs)
 
     query = data.get("query")
     if not isinstance(query, str) or not query.strip():
@@ -525,15 +544,22 @@ def _as_day(moment: dt.datetime | dt.date | None) -> dt.date | None:
     return moment.date() if isinstance(moment, dt.datetime) else moment
 
 
-def run_case(index: Index, case: Case, notes: Sequence[journal.Note] = ()) -> Result:
+def run_case(
+    index: Index,
+    case: Case,
+    notes: Sequence[journal.Note] = (),
+    entries: Sequence[Entry] = (),
+) -> Result:
     """Run one case against one index."""
     if not case.measurable:
-        why = NEEDS[case.needs] if case.needs else DEFERRED[case.tier]
+        why = NEEDS[case.needs] if case.needs else DEFERRED.get(case.tier, "not measured")
         return Result(case=case, passed=False, measured=False, reasons=(why,))
     if case.tier == "hint":
         return run_hint_case(index, case, notes)
     if case.tier == "recall":
         return run_recall_case(index, case)
+    if case.tier == "design":
+        return run_design_case(case, entries)
 
     # Searched as deep as the case asks, but costed over what a preview would
     # actually send. Costing the deeper list made a case with `rank_within: 10`
@@ -576,6 +602,88 @@ def _judge_search(index: Index, case: Case, found: SearchResult, cost: int, unit
         cost=cost,
         query=found.query,
     )
+
+
+def _parse_design_case(
+    data: Any, expect: dict, case_id: str, tier: str, path: Path, needs: str | None
+) -> Case:
+    """A case whose trigger is a file, checked as strictly as every other one."""
+    opened = data.get("path")
+    if not isinstance(opened, str) or not opened.strip():
+        raise MaboloError(
+            f"{path}: a design case is set off by a file, so it needs a path. "
+            "Write the file a tool was about to open, for example src/styles/landing.css."
+        )
+    project = data.get("project")
+    if project is not None and (not isinstance(project, str) or not project.strip()):
+        raise MaboloError(f"{path}: project is the name of a project, as text")
+    # The block, not the search default. A tier's default rank is what it can
+    # actually show, and five was the number for a list somebody scrolls.
+    rank_within = expect.get("rank_within", design.LIMIT)
+    if not isinstance(rank_within, int) or isinstance(rank_within, bool) or rank_within < 1:
+        raise MaboloError(f"{path}: expect.rank_within is a whole number of lines, at least 1")
+    if rank_within > design.LIMIT:
+        # The block a tool call is shown holds three rules. A case allowed to
+        # ask for rank five would pass on a rule nobody is ever shown.
+        raise MaboloError(
+            f"{path}: a design case cannot ask for rank {rank_within}, "
+            f"the block a tool call is shown holds {design.LIMIT} rules"
+        )
+    return Case(
+        id=case_id,
+        query="",
+        path=path,
+        tier=tier,
+        opened=opened.strip(),
+        project=project.strip() if isinstance(project, str) else None,
+        entries=_as_names(expect.get("entries"), path),
+        rank_within=rank_within,
+        silence=_as_bool(expect.get("silence"), "expect.silence", path),
+        needs=needs,
+    )
+
+
+def run_design_case(case: Case, entries: Sequence[Entry]) -> Result:
+    """What a file opening would raise, and whether the right rule was first.
+
+    The same question a search case asks, over a different trigger, so the
+    verdict is written the same way: which of the expected entries came back,
+    and at what worst rank. Only the rules that fit inside the block count. A
+    rule the reader never saw has not applied, whatever the list behind the cap
+    says.
+    """
+    raised = design.rules_for(entries, case.opened, project=case.project)
+    shown = raised[: design.LIMIT]
+    names = [entry.path.stem if entry.path else "" for entry in shown]
+    cost = design.cost(raised, case.opened)
+    if case.silence:
+        if names:
+            return Result(
+                case=case,
+                passed=False,
+                reasons=(f"expected silence, got {len(names)} rule(s): {', '.join(names[:3])}",),
+                cost=cost,
+            )
+        return Result(case=case, passed=True, cost=cost)
+
+    reasons: list[str] = []
+    ranks: list[int] = []
+    for wanted in case.entries:
+        if wanted not in names:
+            behind = " (it applies, but not within the block)" if any(
+                (e.path.stem if e.path else "") == wanted for e in raised
+            ) else ""
+            reasons.append(f"{wanted} was not raised by {case.opened}{behind}")
+            continue
+        rank = names.index(wanted) + 1
+        if rank > case.rank_within:
+            reasons.append(
+                f"{wanted} came back at rank {rank}, wanted {case.rank_within} or better"
+            )
+            continue
+        ranks.append(rank)
+    rank = max(ranks) if not reasons and len(ranks) == len(case.entries) else None
+    return Result(case=case, passed=not reasons, reasons=tuple(reasons), rank=rank, cost=cost)
 
 
 def run_recall_case(index: Index, case: Case) -> Result:
@@ -760,6 +868,10 @@ class Run:
         return self.in_tier("recall")
 
     @property
+    def rules(self) -> list[Result]:
+        return self.in_tier("design")
+
+    @property
     def positives(self) -> list[Result]:
         return [r for r in self.searches if not r.case.silence]
 
@@ -802,9 +914,22 @@ def _average_and_worst(costs: list[int]) -> tuple[int, int]:
     return (round(sum(costs) / len(costs)), max(costs))
 
 
-def run(index: Index, cases: list[Case], notes: Sequence[journal.Note] = ()) -> Run:
-    """Run every case against one index."""
-    return Run(results=[run_case(index, case, notes) for case in cases], entries=len(index))
+def run(
+    index: Index,
+    cases: list[Case],
+    notes: Sequence[journal.Note] = (),
+    entries: Sequence[Entry] = (),
+) -> Run:
+    """Run every case against one index.
+
+    `entries` is the design tier's material. It is not read out of the index:
+    the index is a reduced view built for searching, and `applies_to` is not
+    one of the fields it carries.
+    """
+    return Run(
+        results=[run_case(index, case, notes, entries) for case in cases],
+        entries=len(index),
+    )
 
 
 # The baseline, and what changed against it
@@ -1142,6 +1267,19 @@ def render(result: Run, changes: list[Change] | None = None) -> str:
         if quiet:
             held = sum(1 for r in quiet if r.passed)
             lines.append(f"quiet recall stayed out of {held} of {len(quiet)} prompts it should not join")
+    if result.rules:
+        raised = [r for r in result.rules if not r.case.silence]
+        silent = [r for r in result.rules if r.case.silence]
+        average, worst = result.cost_of("design")
+        if raised:
+            held = sum(1 for r in raised if r.passed)
+            lines.append(
+                f"a file raised the rule it should in {held} of {len(raised)} cases "
+                f"and costs about {average} tokens, {worst} at worst, estimated"
+            )
+        if silent:
+            held = sum(1 for r in silent if r.passed)
+            lines.append(f"no rule was raised for {held} of {len(silent)} files that need none")
     if result.uncited:
         count = len(result.uncited)
         asks = "case asks" if count == 1 else "cases ask"
@@ -1150,7 +1288,7 @@ def render(result: Run, changes: list[Change] | None = None) -> str:
     if failed:
         lines.append("")
         for item in failed:
-            label = "state" if item.case.tier == "hint" else "query"
+            label = {"hint": "state", "design": "file"}.get(item.case.tier, "query")
             lines.append(f"fail  {item.case.id}")
             lines.append(f"      {label}: {item.case.trigger}")
             for reason in item.reasons:
