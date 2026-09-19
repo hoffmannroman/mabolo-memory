@@ -1,7 +1,11 @@
 <div align="center">
 
+<!-- The mark is vector. The PNG is the fallback for renderers that ignore
+     <picture> and strip <source>, which is how the package index shows a
+     README: they keep the <img> and drop the rest. -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+  <source srcset="assets/logo.svg">
   <img src="assets/logo.png" alt="Mabolo Memory" width="120">
 </picture>
 
