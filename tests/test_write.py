@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from mabolo import git, write
+from mabolo import __version__, git, write
 from mabolo.errors import MaboloError
 
 ENTRY = b"""---
@@ -223,3 +223,55 @@ def test_the_lock_is_held_by_one_writer_at_a_time(git_vault):
 
 def test_nothing_to_write_is_not_an_error(git_vault):
     assert write.apply(git_vault.root, [], "x", actor="human:alex").outcome == write.NOTHING
+
+
+# Every commit Mabolo makes says so, in a trailer, because it commits with the
+# person's own Git identity and the message is the only evidence it controls.
+
+
+def trailers(vault) -> list[str]:
+    return vault.git(
+        "log", "--format=%(trailers:key=Mabolo,valueonly,separator=%x2C)"
+    ).stdout.strip().splitlines()
+
+
+def test_every_commit_says_it_was_mabolo(git_vault):
+    first = write.apply(git_vault.root, [change()], "write a thing", actor="human:alex")
+    write.apply(
+        git_vault.root,
+        [change(data=None, expect=first.revisions["infra/thing.md"])],
+        "forget a thing",
+        actor="human:alex",
+        kind="forget",
+    )
+    assert trailers(git_vault)[:2] == [
+        f"forget by human:alex, mabolo-memory/{__version__}",
+        f"write by human:alex, mabolo-memory/{__version__}",
+    ]
+
+
+def test_a_hand_made_change_is_a_kind_of_its_own(git_vault):
+    """Mabolo committed it, Mabolo did not make it, and doctor has to be able
+    to tell those apart without reading prose."""
+    (git_vault.root / "infra" / "by-hand.md").write_bytes(ENTRY)
+    write.apply(git_vault.root, [change()], "write a thing", actor="human:alex")
+    assert trailers(git_vault)[:2] == [
+        f"write by human:alex, mabolo-memory/{__version__}",
+        f"foreign by human:alex, mabolo-memory/{__version__}",
+    ]
+
+
+def test_the_trailer_stands_alone_in_the_message(git_vault):
+    """Git reads trailers out of the last paragraph, and a paragraph that also
+    holds prose is one a future Git may decline to parse."""
+    write.apply(git_vault.root, [change()], "write a thing\n\nbecause somebody said so",
+                actor="human:alex")
+    body = git_vault.git("log", "-1", "--format=%B").stdout.strip()
+    assert body.splitlines()[-1].startswith("Mabolo: write by")
+    assert body.splitlines()[-2] == ""
+
+
+def test_a_kind_nobody_defined_is_refused(git_vault):
+    with pytest.raises(MaboloError):
+        write.apply(git_vault.root, [change()], "x", actor="human:alex", kind="whatever")
+    assert not (git_vault.root / "infra/thing.md").exists()

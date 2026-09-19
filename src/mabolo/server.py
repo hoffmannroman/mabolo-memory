@@ -128,12 +128,13 @@ def build(vault: Vault, settings: Settings) -> MCPServer:
             quote, cwd=settings.cwd, session=settings.session, directory=settings.prompts
         )
 
-    def commit(changes: list[write.Change], message: str) -> write.Result:
+    def commit(changes: list[write.Change], message: str, kind: str = "write") -> write.Result:
         return write.apply(
             vault.root,
             changes,
             message,
             actor=settings.actor,
+            kind=kind,
             remote=settings.remote,
             branch=settings.branch,
         )
@@ -202,7 +203,7 @@ def _register_writing(
     entry_path: Callable[[str], Path],
     relative: Callable[[Path], str],
     consent_for: Callable[[str], consent.Consent],
-    commit: Callable[[list[write.Change], str], write.Result],
+    commit: Callable[..., write.Result],
     index: Callable[[], Index],
 ) -> None:
     """The four tools that change the vault, and the gate in front of them."""
@@ -329,6 +330,7 @@ def _register_writing(
         result = commit(
             [write.Change(path=where, data=data, expect=document.revision)],
             message(f"edit {where}", given),
+            "edit",
         )
         return answer(result, where)
 
@@ -359,6 +361,7 @@ def _register_writing(
         result = commit(
             [write.Change(path=where, data=None, expect=document.revision)],
             message(said, given),
+            "forget",
         )
         if not result.ok:
             return f"{result.outcome}: {result.message}"
@@ -388,6 +391,7 @@ def _register_writing(
         result = commit(
             [write.Change(path=where, data=data, expect=revision)],
             f"journal {today.isoformat()}",
+            "journal",
         )
         if not result.ok:
             return f"{result.outcome}: {result.message}"

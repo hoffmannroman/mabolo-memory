@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
-from . import frontmatter, git
+from . import __version__, frontmatter, git
 from .consent import state_home
 from .errors import MaboloError
 
@@ -52,6 +52,37 @@ LOCK_SECONDS = 10.0
 #: What the commit for a hand made change says. The actor is the person, since
 #: that is who made it; Mabolo only noticed.
 FOREIGN_MESSAGE = "edit outside mabolo by {actor}"
+
+#: The trailer every commit Mabolo makes carries, and the only evidence about a
+#: commit that Mabolo controls. It commits as the person, with the person's own
+#: Git identity, so author and committer cannot tell Mabolo's commits from
+#: anybody else's. `doctor` reads this key and reports what has none.
+#:
+#: It is detection, not proof: anybody can type the same line. What it buys is
+#: that a vault whose history quietly grew a commit from somewhere else can say
+#: so, which is the difference between a claim and a check.
+TRAILER_KEY = "Mabolo"
+
+#: The kinds a commit can be. `foreign` is a change a person made by hand that
+#: Mabolo committed for them, which is not the same as a change Mabolo made.
+KINDS = ("adopt", "import", "write", "edit", "forget", "journal", "foreign", "approve", "reject")
+
+
+def trailer(kind: str, actor: str) -> str:
+    """The last paragraph of a commit message, in Git's trailer shape."""
+    if kind not in KINDS:
+        raise MaboloError(f"{kind!r} is not a kind of commit Mabolo makes")
+    return f"{TRAILER_KEY}: {kind} by {actor}, mabolo-memory/{__version__}"
+
+
+def signed(message: str, kind: str, actor: str) -> str:
+    """A commit message with the trailer as a paragraph of its own.
+
+    Its own paragraph on purpose. Git reads trailers out of the last block of
+    the message, and a block holding prose as well is a block a future Git may
+    decline to parse.
+    """
+    return f"{message.rstrip()}\n\n{trailer(kind, actor)}"
 
 #: Every outcome a caller has to be able to tell apart.
 WRITTEN = "written"
@@ -196,10 +227,12 @@ def apply(
     message: str,
     *,
     actor: str,
+    kind: str = "write",
     remote: str | None = None,
     branch: str | None = None,
 ) -> Result:
     """Run one mutation through every step above, and report what happened."""
+    message = signed(message, kind, actor)
     if not changes:
         return Result(NOTHING, "nothing to write")
     for change in changes:
@@ -244,7 +277,11 @@ def apply(
         # that the diff of this write holds only what this write did.
         hand_made = git.foreign_changes(root)
         if hand_made:
-            git.commit_paths(root, hand_made, FOREIGN_MESSAGE.format(actor=actor))
+            git.commit_paths(
+                root,
+                hand_made,
+                signed(FOREIGN_MESSAGE.format(actor=actor), "foreign", actor),
+            )
 
         base = git.rev(root, "HEAD")
         if remote_at and base and remote_at != base:
