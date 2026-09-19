@@ -243,14 +243,25 @@ def documents_of(entries: Iterable[Entry]) -> list[Document]:
     because folded is what a question is compared against: the validator's own
     duplicate rule looks at the spelling as written and would let `Foo` and
     `foo` through.
+
+    One entry claiming a name twice is not that. It happens the moment an alias
+    folds onto its own entry's name, `Beacon` next to `beacon`, which is what a
+    rename that only changed a letter's case leaves behind. It costs nobody
+    anything: the name still leads to exactly one entry. Counting the claims
+    rather than the claimants would refuse the whole vault over it, with a
+    message that says two entries and then names one.
     """
     documents = [_document(e) for e in entries]
-    claims: dict[str, list[str]] = {}
-    for doc in documents:
+    #: Keyed by which entry claims it, not by what that entry is called: two
+    #: different files can carry the same name, and that is the clash this
+    #: refuses. Position stands in for identity because a document need not
+    #: have a path.
+    claims: dict[str, dict[int, str]] = {}
+    for position, doc in enumerate(documents):
         for name in (doc.key, *doc.aliases):
-            claims.setdefault(name, []).append(doc.name)
+            claims.setdefault(name, {})[position] = doc.name
     clashes = sorted(
-        f"{name} ({', '.join(sorted(set(owners)))})"
+        f"{name} ({', '.join(sorted(owners.values()))})"
         for name, owners in claims.items()
         if len(owners) > 1
     )

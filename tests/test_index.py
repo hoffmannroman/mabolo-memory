@@ -115,6 +115,32 @@ def test_two_entries_with_one_name_are_refused(tmp_path):
         Index.build(entries)
 
 
+def test_an_alias_that_folds_onto_its_own_name_is_not_a_clash(tmp_path):
+    """A name that leads to exactly one entry is not ambiguous, however many
+    times that entry claims it. An import that folds a folder to lower case
+    and keeps the old spelling as an alias produces exactly this while keeping the old spelling
+    as an alias, which is the ordinary way a rename is recorded. Counting
+    claims rather than claimants refused the whole vault over it, with a
+    message that said two entries and then named one."""
+    entry = Entry(
+        type="reference",
+        title="Shouty",
+        mabolo=MaboloBlock(area="infra", aliases=["Shouty"]),
+        path=tmp_path / "infra" / "shouty.md",
+    )
+    index = Index.build([entry])
+    assert [h.name for h in index.search("shouty")] == ["shouty"]
+
+    other = Entry(
+        type="reference",
+        title="Other",
+        mabolo=MaboloBlock(area="infra", aliases=["shouty"]),
+        path=tmp_path / "infra" / "other.md",
+    )
+    with pytest.raises(MaboloError, match="belong to more than one entry"):
+        Index.build([entry, other])
+
+
 def test_entries_that_score_the_same_are_ordered_by_name(vault):
     """The tie break, proved by handing the index its documents out of order.
 
