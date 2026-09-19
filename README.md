@@ -200,7 +200,12 @@ This is early, and the README says only what exists:
   repository, the remote, the history, the content and what is waiting. It
   exits 1 on a finding and also on a check it could not run, because a check
   nobody could make is not a clean one. `mabolo lint` is the other half, and
-  asks whether the content has gone stale or tangled.
+  asks whether the content has gone stale or tangled: dead links, entries named
+  without one, pairs that may be one entry, entries nobody has touched, and
+  descriptions that no longer share a word with what they describe. That last
+  one is the staleness nothing else can see, because a description reading
+  "only a working title" stops being true the moment the title is settled and
+  never mentions anything a search could look for.
 * `mabolo reindex` rebuilds an index that something outside Mabolo made wrong.
   Every write derives the indexes it made stale and commits them alongside the
   entry, so the tools keep themselves straight; a file added in an editor or a

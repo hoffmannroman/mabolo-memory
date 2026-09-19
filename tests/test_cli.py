@@ -1107,8 +1107,12 @@ def test_lint_judges_ages_against_the_moment_it_was_given(tmp_path, capsys):
     vault = tidy_vault(tmp_path)
     (vault.root / "infra" / "old-thing.md").write_text(
         dated(
-            description="something else entirely, so that nothing looks like a duplicate",
-            body="unrelated prose about quite another subject",
+            # Far enough from the other entries that nothing reads as a
+            # duplicate, and close enough to its own prose that nothing reads
+            # as a description that has come loose from it. This test is about
+            # neither: it is about the moment the run was given.
+            description="unrelated prose about quite another subject",
+            body="unrelated prose about quite another subject, at some length",
             generated={"by": "mabolo/0.1.0", "at": "2026-01-01T00:00:00+00:00"},
         ),
         encoding="utf-8",

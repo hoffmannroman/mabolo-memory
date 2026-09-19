@@ -338,3 +338,79 @@ def test_the_pass_writes_nothing_at_all(vault):
     assert lint.inspect(read(vault), root=vault.root, moment=MOMENT)
     after = {p: p.read_bytes() for p in sorted(vault.root.rglob("*")) if p.is_file()}
     assert after == before
+
+
+# A description that has come loose from the entry it describes
+
+
+def test_a_description_that_outlived_its_entry_is_reported(vault):
+    """The staleness no search for a name can find.
+
+    "Only a working title" stops being true the moment the title is settled,
+    and it never mentions anything a rename would look for. What gives it away
+    is that the line above the entry and the entry itself have stopped sharing
+    any words at all.
+    """
+    entry(vault, "beacon", description="Messenger in Rust, still a working title",
+          body="Discarded in September. The folder was empty and nothing survived.")
+
+    found = lint.drifted(vault.entries())
+
+    assert [(f.kind, f.name) for f in found] == [(lint.DRIFTED, "beacon")]
+    assert found[0].score == 0.0
+
+
+def test_a_description_that_still_matches_its_entry_is_not_reported(vault):
+    entry(vault, "beacon", description="Releases are cut from main",
+          body="Releases are cut from main, and a tag only marks what shipped.")
+
+    assert lint.drifted(vault.entries()) == []
+
+
+def test_a_body_several_entries_share_is_never_judged(vault):
+    """The rule that needs no threshold, and the one the check is useless
+    without. A stock line an importer wrote into every project overview belongs
+    to none of them, so nothing can have drifted from it. Judging it anyway
+    made every one of those a finding and buried the ones that were real."""
+    stock = "No description yet. Memories about this project are in this folder."
+    entry(vault, "beacon", area="project/beacon", description="A messenger", body=stock)
+    entry(vault, "harbour", area="project/harbour", description="A rota", body=stock)
+
+    assert lint.drifted(vault.entries()) == []
+
+
+def test_one_entry_holding_that_body_alone_is_judged_again(vault):
+    """The pair rule has to turn off when the body stops being shared, or a
+    vault could hide a finding by having had the same stub twice once."""
+    entry(vault, "beacon", area="project/beacon", description="A messenger in Rust",
+          body="No description yet. Memories about this project are in this folder.")
+
+    assert [f.name for f in lint.drifted(vault.entries())] == ["beacon"]
+
+
+def test_an_entry_without_a_description_is_not_a_finding(vault):
+    """There is nothing to have come loose."""
+    entry(vault, "beacon", description="", body="Some prose with several words in it.")
+
+    assert lint.drifted(vault.entries()) == []
+
+
+def test_the_floor_is_a_parameter_so_a_vault_can_disagree_with_it(vault):
+    """Measured against one vault, and a number measured against one vault is a
+    number the next one gets to argue with."""
+    entry(vault, "beacon", description="Releases are cut from main",
+          body="Releases happen on Tuesdays and nothing here mentions where from.")
+
+    assert lint.drifted(vault.entries(), floor=0.0) == []
+    assert [f.name for f in lint.drifted(vault.entries(), floor=0.9)] == ["beacon"]
+
+
+def test_a_drifted_description_reaches_the_whole_report(vault):
+    """Its own kind in `KINDS`, or it is computed and never printed."""
+    entry(vault, "beacon", description="Messenger in Rust, still a working title",
+          body="Discarded in September. The folder was empty and nothing survived.")
+
+    found = lint.inspect(vault.entries(), root=vault.root, moment=MOMENT)
+
+    assert lint.DRIFTED in {f.kind for f in found}
+    assert "drifted description" in lint.render(found)

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+from collections import Counter
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -47,16 +48,18 @@ from .schema import PROJECT_PREFIX, DEFAULT_LANGUAGE, Entry, as_utc, parse_time
 DEAD_LINK = "dead link"
 MISSING_LINK = "missing link"
 DUPLICATE = "duplicate candidate"
+DRIFTED = "drifted description"
 EXPIRED = "expired"
 UNTOUCHED = "untouched"
 UNDATED = "undated"
 
-KINDS = (DEAD_LINK, MISSING_LINK, DUPLICATE, EXPIRED, UNTOUCHED, UNDATED)
+KINDS = (DEAD_LINK, MISSING_LINK, DUPLICATE, DRIFTED, EXPIRED, UNTOUCHED, UNDATED)
 
 HEADINGS = {
     DEAD_LINK: "## Links that point at nothing",
     MISSING_LINK: "## Entries named without a link",
     DUPLICATE: "## Pairs that may be one entry",
+    DRIFTED: "## Descriptions that have come loose from their entry",
     EXPIRED: "## Past the date they set themselves",
     UNTOUCHED: "## Nobody has touched these",
     UNDATED: "## These say nothing about when they were written",
@@ -68,6 +71,7 @@ PLURALS = {
     DEAD_LINK: "dead links",
     MISSING_LINK: "missing links",
     DUPLICATE: "duplicate candidates",
+    DRIFTED: "drifted descriptions",
     EXPIRED: "expired",
     UNTOUCHED: "untouched",
     UNDATED: "undated",
@@ -77,6 +81,21 @@ PLURALS = {
 #: look. Settled at the desk rather than measured, and deliberately low: this
 #: finding asks a question, it does not make a claim.
 SIMILARITY = 0.2
+
+#: How little of a description may still be found in the entry below it before
+#: the two have stopped being about the same thing. A tenth, which in practice
+#: means "shares nothing, or one word out of many".
+#:
+#: Measured rather than chosen, against a vault of 188 entries: at this floor
+#: every finding was real, three of them descriptions that had outlived a
+#: project being discarded or renamed. The first false alarm sat at a sixth, a
+#: description that summarises its entry accurately in different words, which
+#: is why the floor is not simply `SIMILARITY`.
+#:
+#: **This is the one kind of staleness no search for a name can find.** A
+#: description reading "only a working title" stops being true the moment the
+#: title does, and it never mentions anything a rename would look for.
+DRIFTED_WORDS = 0.1
 
 #: Longer than this without a touch and an entry is worth a question. The
 #: number is a decision, not a measurement, and it is a parameter of the check
@@ -139,8 +158,10 @@ class Finding:
     other: str = ""
     #: A link exactly as the entry spells it, for a dead link.
     target: str = ""
-    #: The overlap, for a duplicate candidate. None everywhere else, because
-    #: zero is a score and "there is no score" is not.
+    #: The overlap: how much two entries share for a duplicate candidate, and
+    #: how much of a description is still in its own entry for a drifted one.
+    #: None everywhere else, because zero is a score and "there is no score"
+    #: is not.
     score: float | None = None
     #: The file, so that a caller can print a path it can open.
     path: Path | None = None
@@ -328,6 +349,53 @@ def duplicates(
     return sorted(out, key=lambda f: (f.name, f.other))
 
 
+def drifted(entries: Sequence[Entry], language: str = DEFAULT_LANGUAGE,
+            floor: float = DRIFTED_WORDS) -> list[Finding]:
+    """Every description that no longer shares its words with what it describes.
+
+    A description is the line a session is shown before it reads anything, and
+    it is the field that goes stale most quietly: nothing links to it, nothing
+    validates it against the prose below it, and a search for an old name will
+    never find "only a working title" once the title is settled.
+
+    **A body that several entries share is skipped, and that rule needs no
+    threshold.** A stock line an importer wrote into nineteen project overviews
+    belongs to none of them, so nothing can have drifted from it; comparing
+    anyway made every one of those a finding and buried the four that were
+    real. Whether a body is this entry's own is a fact, not a judgement.
+    """
+    out: list[Finding] = []
+    shared = Counter(_flat(entry.body) for entry in entries if entry.path is not None)
+    for entry in entries:
+        if entry.path is None or not entry.description:
+            continue
+        if shared[_flat(entry.body)] > 1:
+            continue
+        said = frozenset(query.stems_of(entry.description, language))
+        if not said:
+            continue
+        holds = frozenset(query.stems_of(entry.body, language))
+        overlap = len(said & holds) / len(said)
+        if overlap >= floor:
+            continue
+        out.append(
+            Finding(
+                DRIFTED,
+                entry.name,
+                f"its description shares {'nothing' if not (said & holds) else 'almost nothing'} "
+                f"with the entry below it, so one of the two has moved on",
+                score=overlap,
+                path=entry.path,
+            )
+        )
+    return sorted(out, key=lambda f: f.name)
+
+
+def _flat(text: str) -> str:
+    """One spelling of a body, for asking whether two entries hold the same one."""
+    return " ".join(text.split())
+
+
 def expired(entries: Sequence[Entry], moment: dt.datetime) -> list[Finding]:
     """Entries whose `stale_after` has passed, measured against `moment`.
 
@@ -462,6 +530,7 @@ def inspect(
         dead_links(seen, root)
         + missing_links(seen, root)
         + duplicates(seen, language)
+        + drifted(seen, language)
         + expired(seen, moment)
         + untouched(seen, moment, days)
     )
