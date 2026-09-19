@@ -95,9 +95,18 @@ MIN_NAME = query.MIN_TOKEN
 _LINK = validate._MD_LINK
 
 #: Spans that are not prose, blanked before a name is hunted for. An inline
-#: link (or an image), a wikilink, a reference or footnote definition, and a
-#: bare URL. A footnote definition holds a quotation of something somebody
-#: said, and you do not reach into a person's sentence to add a link.
+#: link (or an image), a wikilink, a reference or footnote definition, a bare
+#: URL, and a code span. A footnote definition holds a quotation of something
+#: somebody said, and you do not reach into a person's sentence to add a link.
+#:
+#: A code span is the one of these that cannot hold a link at all: Markdown
+#: renders `[a](b)` inside backticks as those characters and not as a link, so
+#: a finding about a name in there asks for something nobody can write. It is
+#: also where a name is least likely to be a reference: `ssh <host>` is a
+#: command, `~/p/<name>/docs` is a path, and `<name>-deploy-temp` is a key. A
+#: report that asks for a link nobody can write is a report people stop
+#: reading, which costs more than the findings were worth.
+_CODE_SPAN = re.compile(r"`+[^`\n]*`+")
 _LINK_SPAN = re.compile(r"!?\[[^\]]*\]\([^)]*\)")
 _WIKILINK_SPAN = re.compile(r"\[\[[^\]]*\]\]")
 _DEFINITION = re.compile(r"^\[[^\]]*\]:.*$", re.MULTILINE)
@@ -533,8 +542,14 @@ def _prose(body: str) -> str:
 
     Blanked rather than deleted, so that two words either side of a removed
     link do not become one word that was never written.
+
+    Code spans go first, before the link patterns, because a span is the outer
+    thing: backticks around something shaped like a link mean the brackets are
+    characters, and blanking the inner shape first would leave the backticks
+    behind as prose.
     """
     text = validate.strip_code(body)
+    text = _CODE_SPAN.sub(" ", text)
     text = _WIKILINK_SPAN.sub(" ", text)
     text = _LINK_SPAN.sub(" ", text)
     text = _DEFINITION.sub(" ", text)

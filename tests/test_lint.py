@@ -113,6 +113,24 @@ def test_a_name_inside_a_code_fence_is_not_a_missing_link(vault):
     assert lint.missing_links(read(vault), vault.root) == []
 
 
+def test_a_name_inside_a_code_span_is_not_a_missing_link(vault):
+    """A code span cannot hold a link, so a finding about one asks for
+    something nobody can write. It is also where a name is least likely to be
+    a reference: a command, a path, a key."""
+    entry(vault, "beacon-notes")
+    entry(vault, "atlas-deploy", body="run `ssh beacon-notes` and read `~/p/beacon-notes/x.md`")
+    assert lint.missing_links(read(vault), vault.root) == []
+
+
+def test_a_name_beside_a_code_span_is_still_a_missing_link(vault):
+    """Blanking the span must not blank the sentence around it, or the fix
+    would buy its quiet by hiding the findings that are real."""
+    entry(vault, "beacon-notes")
+    entry(vault, "atlas-deploy", body="run `ssh somewhere`, and beacon-notes says why")
+    found = lint.missing_links(read(vault), vault.root)
+    assert [(f.name, f.other) for f in found] == [("atlas-deploy", "beacon-notes")]
+
+
 def test_a_name_inside_an_existing_link_is_not_a_missing_link(vault):
     """The link goes somewhere else, so the name is words a person chose on purpose."""
     entry(vault, "beacon-notes")
