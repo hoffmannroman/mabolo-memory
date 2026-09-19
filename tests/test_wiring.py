@@ -168,6 +168,25 @@ def test_the_plugins_in_this_repository_are_what_this_module_renders(tmp_path):
             )
 
 
+def test_the_marketplaces_in_this_repository_are_what_this_module_renders(tmp_path):
+    """Same guarantee as the plugins, one level up. A marketplace entry that
+    points at a directory the plugin no longer lives in installs nothing, and
+    one that names a different version than the manifest it hands over tells a
+    person something the plugin itself contradicts."""
+    rendered = wiring.marketplace_files()
+    assert set(rendered) == {c.marketplace_path for c in wiring.CLIENTS}
+    for relative, text in rendered.items():
+        assert (REPO / relative).read_text(encoding="utf-8") == text, (
+            f"{relative} was edited by hand. Run `python -m mabolo.wiring` to render it."
+        )
+    for client in wiring.CLIENTS:
+        listed = json.loads((REPO / client.marketplace_path).read_text(encoding="utf-8"))
+        offered = listed["plugins"][0]["source"]
+        where = offered if isinstance(offered, str) else offered["path"]
+        assert (REPO / where).is_dir()
+        assert (REPO / where / client.manifest_path).is_file()
+
+
 def test_the_plugin_and_the_installer_hand_a_client_the_same_wiring(tmp_path):
     """Same again from the other end: not that the files match this module, but
     that what the plugin carries and what `init` leaves behind in a client's own

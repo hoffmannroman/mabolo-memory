@@ -1,0 +1,16 @@
+{
+  "name": "mabolo-memory",
+  "interface": {
+    "displayName": "Mabolo Memory"
+  },
+  "plugins": [
+    {
+      "name": "mabolo",
+      "category": "Developer Tools",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex"
+      }
+    }
+  ]
+}

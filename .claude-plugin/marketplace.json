@@ -1,0 +1,16 @@
+{
+  "name": "mabolo-memory",
+  "description": "Keeps what your agent learned as Markdown files in a Git repository, hands a session a map of them at the start, and writes nothing without a sentence you typed.",
+  "owner": {
+    "name": "Mabolo Memory"
+  },
+  "plugins": [
+    {
+      "name": "mabolo",
+      "description": "A memory for coding agents that you can read, edit and delete yourself.",
+      "version": "0.1.0",
+      "category": "productivity",
+      "source": "./plugins/claude-code"
+    }
+  ]
+}

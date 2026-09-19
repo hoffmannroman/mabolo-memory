@@ -207,9 +207,10 @@ This is early, and the README says only what exists:
 * `mabolo init` wires up the clients it finds, writing only under its own keys
   and never over an entry that says something else. The same wiring ships as a
   plugin for each client, rendered from the same source, so the two cannot
-  drift apart. `mabolo uninstall` is the other half: it takes the wiring and
-  the disposable notes away and leaves the vault and its configuration exactly
-  where they are.
+  drift apart. This repository is also the marketplace both clients read, so a
+  plugin can be added by name instead of out of a clone. `mabolo uninstall` is
+  the other half: it takes the wiring and the disposable notes away and leaves
+  the vault and its configuration exactly where they are.
 * The entry schema and its validator, with the example vault as the reference.
 * A Git remote, if you want one: `init` sets it, and the vault is an ordinary
   repository you can pull and push yourself.
@@ -226,7 +227,9 @@ it does not mention:
   one written so far was written against a single vault and measured against
   the same one.
 * **No published package.** Install is `git clone` and `uv sync`, not
-  `uv tool install`.
+  `uv tool install`. The plugin marketplaces are in place and read correctly by
+  both clients, but the plugin they hand over starts `mabolo`, so the tool still
+  has to be on your PATH first.
 * **No run on macOS**, and no run on a second machine. The syncing is built and
   tested against local repositories, not against two machines in a room.
 * **No monthly pass.** Extraction runs when you run it, over a transcript you

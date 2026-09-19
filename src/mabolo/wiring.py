@@ -214,6 +214,11 @@ class Client:
     server_key: str
     #: The directory whose existence says this client is installed at all.
     home_marker: str
+    #: Where this repository's marketplace manifest sits for that client, from
+    #: the repository root. A marketplace is how a plugin is installed by name
+    #: rather than out of a clone, and the two clients neither share the path
+    #: nor the shape of the file.
+    marketplace_path: str
 
 
 CLAUDE_CODE = Client(
@@ -233,6 +238,7 @@ CLAUDE_CODE = Client(
     server_form=JSON_FORM,
     server_key="mcpServers",
     home_marker=".claude",
+    marketplace_path=".claude-plugin/marketplace.json",
 )
 
 CODEX = Client(
@@ -262,6 +268,7 @@ CODEX = Client(
     server_form=TOML_FORM,
     server_key="mcp_servers",
     home_marker=".codex",
+    marketplace_path=".agents/plugins/marketplace.json",
 )
 
 CLIENTS: tuple[Client, ...] = (CLAUDE_CODE, CODEX)
@@ -369,6 +376,58 @@ def plugin_files(for_client: Client) -> dict[str, str]:
     }
 
 
+#: What this repository is called when it acts as a marketplace. The
+#: repository's name, not the plugin's: a person adds the marketplace and then
+#: installs `mabolo` out of it, and one name for both makes that two sentences
+#: that read the same and mean different things.
+MARKETPLACE_NAME = "mabolo-memory"
+
+
+def marketplace_files() -> dict[str, str]:
+    """The marketplace manifest each client reads, by its path in this repository.
+
+    Without one, the plugins here can only be installed from a clone, because a
+    client has nothing to resolve their name against. Both manifests point at
+    `plugins/` in this same repository, so what a marketplace hands over is
+    what this module rendered rather than a second copy that can drift from it.
+
+    The two are written out separately on purpose. Claude Code names an owner
+    and takes a path as a string; Codex names an `interface` and takes a source
+    as an object, the way its own bundled marketplace does. Folding that into
+    one object with flags would hide the fact that they agree on nothing here
+    but the name of the plugin.
+    """
+    for_claude = {
+        "name": MARKETPLACE_NAME,
+        "description": LONG_SUMMARY,
+        "owner": {"name": DISPLAY_NAME},
+        "plugins": [
+            {
+                "name": SERVER_NAME,
+                "description": SUMMARY,
+                "version": __version__,
+                "category": "productivity",
+                "source": f"./plugins/{CLAUDE_CODE.plugin_dir}",
+            }
+        ],
+    }
+    for_codex = {
+        "name": MARKETPLACE_NAME,
+        "interface": {"displayName": DISPLAY_NAME},
+        "plugins": [
+            {
+                "name": SERVER_NAME,
+                "category": "Developer Tools",
+                "source": {"source": "local", "path": f"./plugins/{CODEX.plugin_dir}"},
+            }
+        ],
+    }
+    return {
+        CLAUDE_CODE.marketplace_path: _json_text(for_claude),
+        CODEX.marketplace_path: _json_text(for_codex),
+    }
+
+
 def write_plugins(root: Path | None = None) -> list[Path]:
     """Write the plugin directories out. The only writer aimed at this repository.
 
@@ -387,6 +446,11 @@ def write_plugins(root: Path | None = None) -> list[Path]:
             target.parent.mkdir(parents=True, exist_ok=True)
             _write_atomically(target, text)
             written.append(target)
+    for relative, text in marketplace_files().items():
+        target = where / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomically(target, text)
+        written.append(target)
     return written
 
 
