@@ -413,13 +413,16 @@ def test_a_folder_names_a_project_only_when_the_vault_has_one():
 
 def test_a_folder_matches_a_project_exactly_and_never_loosely():
     """Matching loosely would hand a session in the wrong folder somebody
-    else's decisions without ever saying so. A project name may carry capitals,
-    and a folder on Linux is case sensitive."""
-    areas = {"project/beaconX", "project/atlas"}
-    assert context.project_for("beaconX", areas) == "beaconX"
-    assert context.project_for("beaconx", areas) is None
-    assert context.project_for("Atlas", areas) is None
+    else's decisions without ever saying so. The folder name is folded first,
+    because an area name is lower case by rule while a repository is called
+    whatever its owner called it; after the fold the match is exact again."""
+    areas = {"project/beacon-two", "project/atlas"}
+    assert context.project_for("atlas", areas) == "atlas"
+    assert context.project_for("Atlas", areas) == "atlas", "the folder may carry capitals"
+    assert context.project_for("ATLAS", areas) == "atlas"
     assert context.project_for("atlas-old", areas) is None
+    assert context.project_for("beacon", areas) is None, "a prefix is not a match"
+    assert context.project_for("beacon two", areas) is None
 
 
 def test_the_payload_opens_by_naming_the_project_it_was_built_for():

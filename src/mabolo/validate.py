@@ -322,11 +322,24 @@ def _check_block(block: dict[str, Any], out: _Collector, expected_area: str | No
     else:
         area = area.strip()
         if not schema.area_is_known(area, tuple(areas)):
-            out.err(
-                "mabolo.area.unknown",
-                f"area {area!r} is not configured and is not project/<name>",
-                "mabolo.area",
-            )
+            folded = area.lower()
+            if folded != area and schema.area_is_known(folded, tuple(areas)):
+                # Naming the rename, because this one is not a typo: a vault
+                # written before project names were folded has a real folder
+                # with a capital in it, and on a file system that folds case
+                # that folder is the same folder as its lower case twin.
+                out.err(
+                    "mabolo.area.capitals",
+                    f"area {area!r} has capitals. Rename the folder and the area to {folded!r}: "
+                    "a file system that folds case cannot keep the two apart",
+                    "mabolo.area",
+                )
+            else:
+                out.err(
+                    "mabolo.area.unknown",
+                    f"area {area!r} is not configured and is not project/<name>",
+                    "mabolo.area",
+                )
         elif expected_area is not None and area != expected_area:
             out.err(
                 "mabolo.area.mismatch",

@@ -9,7 +9,7 @@ Plain Markdown files in a Git repository. Nothing is written without your yes.
 
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-8A2447)](LICENSE)
 [![Status: early](https://img.shields.io/badge/status-early-A8660F)](#what-works-today)
-[![Platforms: Linux and macOS](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS-3F6248)](#limits)
+[![Platforms: Linux, macOS untested](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20macOS%20untested-3F6248)](#limits)
 [![Format: OKF v0.2](https://img.shields.io/badge/format-OKF%20v0.2-2F58C9)](https://github.com/GoogleCloudPlatform/open-knowledge-format)
 
 </div>
@@ -206,8 +206,13 @@ uv run mabolo --config /tmp/mabolo-demo.toml init --vault /tmp/my-vault --yes
 
 ## Limits
 
-* **Linux and macOS.** Windows is not supported. File names are normalised to
-  NFC on write, so an entry keeps one identity across sync tools.
+* **Linux.** macOS should work and has not been run: the code uses nothing
+  Linux only, and two things can only be confirmed by a first run there. One is
+  that two spellings of a directory differing in case are treated as one place,
+  which is what the consent check compares. The other is that a vault written
+  on Linux survives a clone onto a volume that folds case, which is why a
+  project name is lower case. Windows is not supported. File names are
+  normalised to NFC on write, so an entry keeps one identity across sync tools.
 * **A vault belongs to one person.** There is no team mode and no cloud.
 * **The approval gate holds for Mabolo's own tools.** Any program on your
   machine can still edit a Markdown file. What the gate adds is that a tool

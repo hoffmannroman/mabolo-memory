@@ -42,7 +42,14 @@ ACTOR_PROCESS = re.compile(r"^process:[a-z0-9][a-z0-9._-]{0,63}$")
 #: Entry names are file names, so they are kebab-case and unique in the vault.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
 #: Project names come from directory names elsewhere and keep their own shape.
-PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+#: A project name is an entry name. It was allowed capitals once, so that a
+#: folder called `Atlas` could be a project spelled the way its repository is.
+#: That put a capital into a path, and a file system that folds case then turns
+#: `project/Atlas` and `project/atlas` into one folder holding two areas: on a
+#: clone, entries land together and one of the two areas quietly disappears.
+#: The folder name is folded when it is matched instead, which gives the same
+#: answer without the path ever carrying the capital.
+PROJECT_NAME_RE = NAME_RE
 #: An alias is a search key, not a file name, so it keeps the spelling a person
 #: would actually type. It may not contain a path separator or a control
 #: character, because a search resolves it and a resolver must not walk.

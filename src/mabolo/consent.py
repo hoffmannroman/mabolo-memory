@@ -65,7 +65,10 @@ MAX_LINES = 500
 #: The environment variable a client may set so that a session can be named.
 ENV_SESSION = "MABOLO_SESSION_ID"
 
-_SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
+#: A session id becomes a file name, and a file system that does not tell
+#: `abc` from `ABC` would then let one session's sentences authorise another's
+#: writes. Folding the case here costs nothing and closes that.
+_SAFE_ID = re.compile(r"[^a-z0-9._-]+")
 _SPACE = re.compile(r"\s+")
 
 #: Assignments that carry a secret. A prompt is the one place where a person
@@ -122,7 +125,7 @@ def prompt_dir() -> Path:
 def session_id(value: object = None) -> str:
     """A file name for a session, from whatever the client called it."""
     raw = value if isinstance(value, str) and value.strip() else os.environ.get(ENV_SESSION, "")
-    cleaned = _SAFE_ID.sub("-", str(raw).strip())[:64].strip("-")
+    cleaned = _SAFE_ID.sub("-", str(raw).strip().lower())[:64].strip("-")
     return cleaned or "unnamed"
 
 
@@ -203,6 +206,24 @@ def forget_old(directory: Path | None = None, *, now: dt.datetime | None = None,
     return gone
 
 
+def _same_place(one: str | Path, other: str | Path) -> bool:
+    """Whether two paths are the same directory, asked of the file system.
+
+    Comparing the resolved text is wrong on a file system that does not
+    distinguish case: the same folder written two ways becomes two places, and
+    a sentence the person really typed stops authorising anything. `samefile`
+    asks about inodes, which is the question actually being asked. It needs
+    both to exist, so the text comparison stays as the fallback.
+    """
+    try:
+        return os.path.samefile(one, other)
+    except OSError:
+        try:
+            return str(Path(one).resolve()) == str(Path(other).resolve())
+        except OSError:
+            return False
+
+
 def _read(path: Path) -> list[Prompt]:
     session = path.stem
     out: list[Prompt] = []
@@ -260,12 +281,8 @@ def seen(*, cwd: str | Path | None = None, session: object = None, now: dt.datet
             if not named:
                 if prompt.at < cutoff:
                     continue
-                if here and prompt.cwd:
-                    try:
-                        if str(Path(prompt.cwd).resolve()) != here:
-                            continue
-                    except OSError:
-                        continue
+                if here and prompt.cwd and not _same_place(prompt.cwd, here):
+                    continue
             prompts.append(prompt)
     return sorted(prompts, key=lambda p: p.at, reverse=True)
 

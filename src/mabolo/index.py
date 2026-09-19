@@ -300,7 +300,19 @@ class Index:
         self.names = frozenset(self.targets)
         self._by_key = {doc.key: doc for doc in self.documents}
         self._db = sqlite3.connect(":memory:")
-        self._db.executescript(_SCHEMA)
+        try:
+            self._db.executescript(_SCHEMA)
+        except sqlite3.OperationalError as exc:
+            # FTS5 is compiled into SQLite or it is not, and a Python built
+            # without it fails here with three words and a traceback. The
+            # session start hook swallows everything and would simply go quiet,
+            # so a person would see a memory that knows nothing rather than a
+            # tool that cannot search. One sentence is the difference.
+            self._db.close()
+            raise MaboloError(
+                "this Python's SQLite was built without the FTS5 extension, so the search "
+                f"index cannot be created ({exc})."
+            ) from exc
         self._db.executemany(_INSERT, [(i, *doc.fields) for i, doc in enumerate(self.documents)])
 
     @classmethod

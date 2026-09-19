@@ -32,6 +32,31 @@ _CREDENTIALS = re.compile(r"(?<=//)[^/@\s]+(?=@)")
 TIMEOUT_SECONDS = 30
 
 
+def _environment() -> dict[str, str]:
+    """The environment every git call runs in, and why it is not the caller's.
+
+    Two things are taken out and one is put in.
+
+    A stray `GIT_DIR`, `GIT_WORK_TREE`, `GIT_OBJECT_DIRECTORY` or `GIT_INDEX_FILE`
+    points the command at a repository nobody named, which is what the
+    containment check exists to prevent. `hash_object` used to build its own
+    environment and miss this, so one call out of all of them could write a
+    blob into somebody else's object store.
+
+    And the messages are forced to C. Git speaks the user's language, and this
+    module reads its output: a German git turned a refused push into
+    "unreachable", and the caller then moved the local branch past a remote
+    that had just said no. The classification no longer rests on the wording,
+    but an error quoted back to a person should still be the wording the
+    project's own documentation uses.
+    """
+    environment = dict(os.environ)
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_INDEX_FILE"):
+        environment.pop(name, None)
+    environment.update(LC_ALL="C", LANGUAGE="", LANG="C")
+    return environment
+
+
 def redact(text: str) -> str:
     """A message with any credentials in a URL replaced."""
     return _CREDENTIALS.sub("***", text)
@@ -47,12 +72,7 @@ def available() -> bool:
 
 def run(root: Path, *args: str, check: bool = True, index: Path | None = None) -> subprocess.CompletedProcess[str]:
     """Run git in `root`. Failures become `MaboloError`, never a traceback."""
-    environment = dict(os.environ)
-    # A stray GIT_DIR or GIT_WORK_TREE in the environment points the command at
-    # a repository the caller never named, which is exactly what the containment
-    # check above is meant to prevent.
-    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY"):
-        environment.pop(name, None)
+    environment = _environment()
     if index is not None:
         environment["GIT_INDEX_FILE"] = str(index)
     try:
@@ -233,6 +253,7 @@ def hash_object(root: Path, data: bytes) -> str:
             capture_output=True,
             check=True,
             timeout=TIMEOUT_SECONDS,
+            env=_environment(),
         )
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or b"").decode("utf-8", "replace").strip().splitlines()
@@ -285,10 +306,14 @@ def push(root: Path, remote: str, branch: str, commit: str, expect: str | None) 
     result = run(root, "push", *lease, remote, f"{commit}:{target}", check=False)
     if result.returncode == 0:
         return "pushed"
-    text = f"{result.stderr}\n{result.stdout}".lower()
-    if "stale info" in text or "rejected" in text or "non-fast-forward" in text:
-        return "rejected"
-    return "unreachable"
+    # Ask the remote whether it was there, rather than reading the refusal.
+    # Both answers look like a failed push and they mean opposite things: a
+    # refusal must stop the mutation, an unreachable host must not. Git says
+    # which one in the user's own language, so the words are the wrong
+    # evidence. `--exit-code` gives 2 for "reachable, no such ref", which is
+    # still reachable.
+    asked = run(root, "ls-remote", "--exit-code", remote, target, check=False)
+    return "rejected" if asked.returncode in (0, 2) else "unreachable"
 
 
 def update_ref(root: Path, ref: str, new: str, old: str | None) -> None:

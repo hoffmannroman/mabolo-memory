@@ -660,7 +660,12 @@ class Vault:
                 "Mabolo does not commit into a repository somewhere else.",
             )
         if existing is None:
-            self.git("init", "-b", branch)
+            # Not `init -b`: that flag arrived in Git 2.28, and the Git that
+            # ships with a stock macOS can be older than the tool this has to
+            # run on. Setting HEAD afterwards is what the flag does anyway, and
+            # on an empty repository it is the same one step.
+            self.git("init")
+            self.git("symbolic-ref", "HEAD", f"refs/heads/{branch}")
         if git.identity_missing(self.root):
             return GitResult(
                 False,

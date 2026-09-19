@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 import pytest
 
 from mabolo import frontmatter
@@ -17,10 +20,17 @@ def isolated_environment(tmp_path, monkeypatch):
 @pytest.fixture
 def git_identity(tmp_path, monkeypatch):
     """A Git identity that exists only for this test."""
+    text = "[user]\n\tname = Test\n\temail = test@example.invalid\n"
     config = tmp_path / "gitconfig"
-    config.write_text("[user]\n\tname = Test\n\temail = test@example.invalid\n", encoding="utf-8")
+    config.write_text(text, encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    # The same identity where an older Git looks for it. GIT_CONFIG_GLOBAL
+    # arrived in 2.32, and a Git without it would read no identity at all here,
+    # because HOME already points into this test's own directory.
+    home = Path(os.environ["HOME"])
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".gitconfig").write_text(text, encoding="utf-8")
     return config
 
 

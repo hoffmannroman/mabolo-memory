@@ -110,11 +110,13 @@ def project_for(folder: str, areas: Iterable[str]) -> str | None:
     project. Matching loosely would be worse than matching nothing: a session in
     the wrong folder would be handed somebody else's decisions and never say so.
 
-    Case matters, because a project name may carry capitals and a folder on
-    Linux is case sensitive. Two folders cannot point at one project and one
-    folder cannot point at two, so there is no tie to break.
+    The folder name is folded to lower case first, because an area name is
+    lower case by rule and a repository is called whatever its owner called it.
+    After the fold the comparison is exact again: a session in the wrong folder
+    still gets nothing, and two folders still cannot point at one project.
     """
-    return folder if f"{PROJECT_PREFIX}{folder}" in set(areas) else None
+    name = folder.strip().lower()
+    return name if f"{PROJECT_PREFIX}{name}" in set(areas) else None
 
 
 def header(project: str | None) -> str:
