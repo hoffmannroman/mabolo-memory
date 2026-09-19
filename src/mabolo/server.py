@@ -34,8 +34,20 @@ from typing import Any, Callable
 
 from mcp.server import MCPServer
 
-from . import PRODUCER, __version__, consent, decide, frontmatter, inbox, journal, proposal, write
+from . import (
+    PRODUCER,
+    __version__,
+    consent,
+    decide,
+    drift,
+    frontmatter,
+    inbox,
+    journal,
+    proposal,
+    write,
+)
 from .errors import MaboloError
+from . import context
 from .index import Index, estimate_tokens
 from .schema import (
     DEFAULT_STATUS,
@@ -180,7 +192,7 @@ def build(vault: Vault, settings: Settings) -> MCPServer:
             document = frontmatter.read(path)
             out.append(
                 f"## {path.stem} ({relative(path)}, revision {document.revision})\n\n"
-                f"{path.read_text(encoding='utf-8').strip()}"
+                f"{path.read_text(encoding='utf-8').strip()}{_moved(vault, path, settings)}"
             )
         return "\n\n".join(out)
 
@@ -221,6 +233,31 @@ def build(vault: Vault, settings: Settings) -> MCPServer:
     if not settings.read_only:
         _register_writing(server, vault, settings, entry_path, relative, consent_for, commit, index)
     return server
+
+
+def _moved(vault: Vault, path: Path, settings: Settings) -> str:
+    """One line under an entry when the file it watches has moved.
+
+    Here and not in the session index. The map is paid for at every session
+    start, and a mark beside a one line description is a verdict a reader
+    cannot act on there. At read time they are about to rely on the text, which
+    is the moment the question matters. Silence means the anchor has not moved;
+    an anchor that could not be checked says so, because "not checked" and "has
+    not moved" are different answers.
+    """
+    entry = next((e for e in vault.entries() if e.path == path), None)
+    if entry is None or not entry.mabolo.anchor:
+        return ""
+    where = settings.cwd or Path.cwd()
+    judged = drift.judge(
+        entry,
+        project=context.project_for(where.name, {e.area for e in vault.entries()}),
+        repository=where,
+        moment=now(),
+    )
+    if judged.state == drift.FRESH:
+        return ""
+    return f"\n\n> {judged.reason} ({journal.one_line(entry.mabolo.anchor)})"
 
 
 def _text_of(path: Path) -> str:

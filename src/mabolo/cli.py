@@ -40,6 +40,7 @@ from . import (
     context,
     decide,
     design,
+    doctor,
     drift,
     evaluate,
     git,
@@ -47,10 +48,19 @@ from . import (
     provenance,
     proposal,
     recall,
+    recover,
     seen,
     session,
+    wiring,
 )
-from .config import Config, default_actor, default_config_path, default_vault_path, is_approver
+from .config import (
+    DEFAULT_BRANCH,
+    Config,
+    default_actor,
+    default_config_path,
+    default_vault_path,
+    is_approver,
+)
 from .errors import MaboloError
 from .index import Index
 from .schema import FIXED_AREAS, PROJECT_PREFIX, now, parse_moment, parse_time
@@ -135,6 +145,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"  {'set':7} remote origin -> {git.redact(remote)}")
     if args.no_git:
         print("  skip    Git, because --no-git was passed")
+    findings = [] if args.no_clients else [
+        one for client in wiring.installed() for one in wiring.survey(client)
+    ]
+    for finding in findings:
+        for line in finding.render():
+            print(f"  {line}")
     print("\nNothing outside these paths is touched. The vault keeps working if Mabolo is removed.")
 
     if args.dry_run:
@@ -183,8 +199,30 @@ def cmd_init(args: argparse.Namespace) -> int:
         # Git was asked for and did not happen. Saying so in passing and exiting
         # 0 is how a script concludes the vault is versioned when it is not.
         print("Git was requested but the repository has no commit yet, see the line above.")
-    print("Writing entries and wiring up an agent are not built yet.")
-    if not report.ok or (git_result is not None and not git_result.completed):
+    # Only a client that says something else is in the way. One that says
+    # nothing yet is what `init` is for, and one that already says what we
+    # would write needs no second thought.
+    blocked = [] if args.rewire else [
+        f for f in findings if f.verdict in (wiring.DIFFERENT, wiring.UNREADABLE)
+    ]
+    for finding in findings:
+        if finding.settled:
+            continue
+        if finding in blocked:
+            # Left exactly as it is. An entry somebody wrote themselves is
+            # their decision, and overwriting it quietly is the kind of repair
+            # this tool refuses. The line above already showed both versions.
+            print(f"  kept    {finding.slot.path}, run `mabolo init --rewire` to replace it")
+            continue
+        wiring.apply(finding, rewire=args.rewire)
+        print(f"  wired   {finding.slot.path}")
+    if findings and not blocked:
+        # The real functional check for this half: read the files back and see
+        # that every one of them now holds what we would write.
+        again = [one for client in wiring.installed() for one in wiring.survey(client)]
+        print(f"  every wired client reads back, {sum(1 for f in again if f.settled)} of {len(again)}")
+
+    if not report.ok or blocked or (git_result is not None and not git_result.completed):
         return EXIT_FINDINGS
     return EXIT_OK if not report.warnings else EXIT_FINDINGS
 
@@ -441,6 +479,93 @@ def _verdicts(words: list[str]) -> list[tuple[str, bool]]:
             raise MaboloError(f"{said!r} is not an answer. It is yes or no.")
         out.append((wanted, answer == "yes"))
     return out
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Say whether the machinery is sound, findings first.
+
+    Exit 1 on a finding **or** on a check that could not be run. A check nobody
+    could make is not a clean one, and counting it as clean is the exact
+    failure this whole report exists to prevent.
+    """
+    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
+    root = Path(args.path).expanduser() if args.path else (config.vault if config else None)
+    folder = repo_root(Path.cwd())
+    project = None
+    waiting: list[doctor.Pending] | None = None
+    if root and root.is_dir():
+        vault = Vault(root, areas=tuple(config.areas) if config else FIXED_AREAS)
+        if vault.is_initialised():
+            project = context.project_for(folder.name, {e.area for e in vault.entries()})
+        try:
+            waiting = [
+                doctor.Pending(name=one.id, at=one.filed_on() or now())
+                for one in inbox.pending(root)
+            ]
+        except MaboloError:
+            # The inbox lives on a branch, and a vault that has none is not a
+            # vault with a problem. Left as None it is reported as a check that
+            # did not run, which is the honest answer either way.
+            waiting = None
+    report = doctor.examine(
+        config,
+        config_path=Path(args.config).expanduser() if args.config else None,
+        root=root,
+        clients=[path for one in wiring.installed() for path in wiring.files_of(one)],
+        pending=waiting,
+        project=project,
+        repository=folder,
+    )
+    print(report.render())
+    return EXIT_OK if report.ok else EXIT_FINDINGS
+
+
+def cmd_revert(args: argparse.Namespace) -> int:
+    """Undo one commit, as a commit of its own that says what it is."""
+    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
+    vault = _vault_from(args)
+    plan = recover.plan_revert(vault.root, args.commit)
+    print(plan.render())
+    if plan.empty:
+        return EXIT_OK
+    if args.dry_run:
+        return EXIT_OK
+    result = recover.carry_out(
+        vault.root,
+        plan,
+        actor=config.actor if config else default_actor(),
+        kind="revert",
+        remote="origin" if config and config.remote_url else None,
+        branch=config.remote_branch if config else None,
+    )
+    print(result.message)
+    return EXIT_OK if result.ok else EXIT_FINDINGS
+
+
+def cmd_recover(args: argparse.Namespace) -> int:
+    """Put files back, or push what this clone has, and never decide a merge."""
+    config = Config.load_if_present(Path(args.config).expanduser() if args.config else None)
+    vault = _vault_from(args)
+    if args.what == "push":
+        branch = args.branch or (config.remote_branch if config else DEFAULT_BRANCH)
+        standing = recover.push(vault.root, remote=args.remote, branch=branch)
+        print(standing.render())
+        return EXIT_OK if standing.pushed else EXIT_FINDINGS
+
+    plan = recover.plan_files(vault.root, args.files)
+    print(plan.render())
+    if plan.empty or args.dry_run:
+        return EXIT_FINDINGS if plan.note else EXIT_OK
+    result = recover.carry_out(
+        vault.root,
+        plan,
+        actor=config.actor if config else default_actor(),
+        kind="recover",
+        remote="origin" if config and config.remote_url else None,
+        branch=config.remote_branch if config else None,
+    )
+    print(result.message)
+    return EXIT_OK if result.ok and not plan.note else EXIT_FINDINGS
 
 
 def cmd_why(args: argparse.Namespace) -> int:
@@ -873,6 +998,16 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--no-git", action="store_true", help="do not create a Git repository")
     init.add_argument("-y", "--yes", action="store_true", help="take the prepared answers, ask nothing")
     init.add_argument("--dry-run", action="store_true", help="print the plan and stop")
+    init.add_argument(
+        "--rewire",
+        action="store_true",
+        help="replace a client entry of ours that says something else",
+    )
+    init.add_argument(
+        "--no-clients",
+        action="store_true",
+        help="create the vault and the configuration, and wire up no client",
+    )
     init.set_defaults(func=cmd_init)
 
     validate = sub.add_parser("validate", help="check a vault against the schema")
@@ -972,6 +1107,29 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"give up after this long, default {PROMPT_SECONDS}",
     )
     touched.set_defaults(func=cmd_hook_pretool)
+
+    checkup = sub.add_parser("doctor", help="whether the machinery is sound")
+    checkup.add_argument("path", nargs="?", help="the vault, default is the configured one")
+    checkup.set_defaults(func=cmd_doctor)
+
+    undo = sub.add_parser("revert", help="undo one commit, as a commit of its own")
+    undo.add_argument("commit", help="the commit to undo")
+    undo.add_argument("--path", dest="path", help="the vault, default is the configured one")
+    undo.add_argument("--dry-run", action="store_true", help="print the plan and stop")
+    undo.set_defaults(func=cmd_revert)
+
+    back = sub.add_parser("recover", help="put files back, or push what this clone has")
+    kinds = back.add_subparsers(dest="what", required=True)
+    files = kinds.add_parser("files", help="rewrite named files from the last commit")
+    files.add_argument("files", nargs="+", help="paths inside the vault")
+    files.add_argument("--path", dest="path", help="the vault, default is the configured one")
+    files.add_argument("--dry-run", action="store_true", help="print the plan and stop")
+    files.set_defaults(func=cmd_recover, what="files")
+    sending = kinds.add_parser("push", help="send commits the remote does not have")
+    sending.add_argument("--path", dest="path", help="the vault, default is the configured one")
+    sending.add_argument("--remote", default="origin", help="the remote, default origin")
+    sending.add_argument("--branch", help="the branch, default the configured one")
+    sending.set_defaults(func=cmd_recover, what="push")
 
     waiting = sub.add_parser("inbox", help="what automation suggested, and your answer")
     waiting.add_argument(

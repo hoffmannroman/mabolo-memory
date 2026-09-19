@@ -265,6 +265,45 @@ def hash_object(root: Path, data: bytes) -> str:
     return result.stdout.decode("utf-8").strip()
 
 
+def read_blob(root: Path, spec: str) -> bytes:
+    """The bytes of one object, kept as bytes.
+
+    Not through `run`, which decodes with the locale's encoding: an entry is
+    UTF-8 and a machine whose locale is not would hand back a different file
+    than the one that was committed.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "blob", spec],
+            capture_output=True,
+            check=True,
+            timeout=TIMEOUT_SECONDS,
+            env=_environment(),
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+        raise MaboloError(f"git cat-file failed: {redact(detail[-1]) if detail else spec}") from exc
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        raise MaboloError(f"git cat-file could not be run: {exc}") from exc
+    return result.stdout
+
+
+def hash_object_id(root: Path, data: bytes) -> str:
+    """What these bytes would be called as a blob, without writing them."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "hash-object", "--stdin"],
+            input=data,
+            capture_output=True,
+            check=True,
+            timeout=TIMEOUT_SECONDS,
+            env=_environment(),
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        raise MaboloError(f"git hash-object could not be run: {exc}") from exc
+    return result.stdout.decode("utf-8").strip()
+
+
 def build_commit(root: Path, base: str | None, changes: dict[str, bytes | None], message: str) -> str:
     """One commit, built from `base`, without touching the working tree.
 

@@ -1,0 +1,34 @@
+{
+  "name": "mabolo",
+  "version": "0.1.0",
+  "description": "A memory for coding agents that you can read, edit and delete yourself.",
+  "author": {
+    "name": "Mabolo Memory"
+  },
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "markdown",
+    "git",
+    "okf",
+    "mcp"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Mabolo Memory",
+    "shortDescription": "Memory you can read, edit and delete yourself",
+    "longDescription": "Keeps what your agent learned as Markdown files in a Git repository, hands a session a map of them at the start, and writes nothing without a sentence you typed.",
+    "developerName": "Mabolo Memory",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "What do you already know about this project?",
+      "Remember that we deploy from main only",
+      "Where did that belief come from?"
+    ]
+  }
+}

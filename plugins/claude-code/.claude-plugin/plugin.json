@@ -1,0 +1,19 @@
+{
+  "name": "mabolo",
+  "displayName": "Mabolo Memory",
+  "version": "0.1.0",
+  "description": "A memory for coding agents that you can read, edit and delete yourself.",
+  "author": {
+    "name": "Mabolo Memory"
+  },
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "markdown",
+    "git",
+    "okf",
+    "mcp"
+  ],
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json"
+}

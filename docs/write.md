@@ -119,14 +119,16 @@ A client that speaks MCP gets these. `mabolo serve --read-only` registers only
 the first two, which is what an unattended agent, a lint pass or a subagent is
 started with: the write tools are not refused there, they do not exist.
 
-| Tool | What it does |
-|---|---|
-| `mabolo_search` | one line per entry, with what reading them all would cost |
-| `mabolo_read` | entries in full, each with its revision |
-| `mabolo_write` | a new entry, from a sentence you typed |
-| `mabolo_edit` | replaces one passage, leaving the rest of the prose alone |
-| `mabolo_forget` | removes an entry; the history keeps it |
-| `journal_add` | one line under today's date in `log.md` |
+| Tool | Mode | What it does |
+|---|---|---|
+| `mabolo_search` | always | one line per entry, with what reading them all would cost |
+| `mabolo_read` | always | entries in full, each with its revision |
+| `mabolo_propose` | always | files a suggestion for you to answer later |
+| `mabolo_write` | full | a new entry, from a sentence you typed |
+| `mabolo_edit` | full | replaces one passage, leaving the rest of the prose alone |
+| `mabolo_forget` | full | removes an entry; the history keeps it |
+| `mabolo_decide` | full | answers a proposal you named yourself |
+| `journal_add` | full | one line under today's date in `log.md` |
 
 `mabolo_search` and `mabolo_read` are two calls on purpose. A single call cannot
 announce the price of its own payload: by the time the answer arrives, the
@@ -142,10 +144,73 @@ frontmatter is re-rendered, because that part is structured data the tool owns.
 claim about you, and it is never read as a rule. Requiring a quote there would
 mean approving a sentence you never said.
 
-## What is not built yet
+## Proposals: what an agent may do alone
 
-Proposals. The state machine has a `proposed` state, an inbox on an orphan
-branch and an extraction pass that mines finished transcripts behind eight
-gates. None of that exists yet. Today the shape is simpler and the claim is
-narrower: a tool call carrying a sentence you just typed writes; everything
-else reads.
+An agent with nothing of yours to quote cannot write. It can suggest.
+
+```
+                   dropped after 30 days
+                 +----------------------+
+                 v                      |
+ automation -> proposed --approved--> committed --git revert--> gone
+                 |                      |
+                 +-- refused            +-- conflict
+                     id stays on file       push refused, read again
+```
+
+**A proposal waits on a branch that is never merged.** An orphan branch called
+`inbox` in the vault's own repository, one JSON file per suggestion, rebuilt as
+a single parentless commit from the union of what this clone and the remote
+hold. So an unapproved suggestion never enters the history of the vault, it is
+still visible on every machine, and one filed while you were offline goes out
+with the next thing that touches the branch. The branch is never checked out.
+
+**The id is derived, not invented.** A hash of the action, the target and the
+sentence, folded the way the consent check folds it. The same suggestion made
+twice is one id twice, so an extraction pass that runs over a transcript again
+does not turn one thought into two things to read, and a suggestion you refused
+in March is recognised when it comes back in June.
+
+**You answer, and the answer is written down.** At a terminal:
+
+```bash
+mabolo inbox                 # what is waiting
+mabolo inbox a3f2 yes 7c01 no
+```
+
+A yes writes the entry and the line recording it in one commit, because two
+commits would leave a window in which the vault holds a claim nothing accounts
+for. A no writes only the line. Both go into `.mabolo/decided.md`, which lives
+in the vault beside the entries so that the answer travels with them. The
+sentence a proposal quoted is never written there: a refusal is often precisely
+"I do not want this remembered".
+
+Through MCP the same answer needs the sentence you typed, and that sentence has
+to name the proposal: `mabolo_decide` accepts "a3f2 yes" and refuses a bare
+"yes". A machine generated id in a prompt is a signature of having looked at
+the inbox; "yes" is a signature of nothing. This is the one place the twelve
+character floor is lowered, and the shape stands in for the length.
+
+## Extraction: where proposals come from
+
+Proposals are mined from finished transcripts, behind gates that each exist
+because something went wrong without them.
+
+1. **Signal words only.** No signal, no model call, no cost.
+2. **A window** of the signal message and three exchanges before it, with tool
+   output stripped.
+3. **Redact, then shorten.** In that order, so that shortening cannot cut a
+   secret in half and leave the half that matters.
+4. **An isolated model run.** No tools, a byte cap, a timeout, and the window
+   counted as data rather than as instruction. The model is a command line from
+   your configuration, not a dependency: Mabolo ships no vendor and no API key
+   handling, and with nothing configured the pass says so instead of doing
+   nothing quietly.
+5. **The quote must match verbatim** a real message of the window, or the
+   proposal is discarded and counted.
+6. **The validator runs** on the finished entry before a proposal is built at
+   all, and again when you approve it, because the vault has moved in between.
+
+The pass reports how many candidates there were and where each one went. A run
+that silently produced nothing is indistinguishable from one that never
+happened, and this project treats that as the failure to avoid.

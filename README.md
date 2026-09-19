@@ -159,21 +159,34 @@ This is early, and the README says only what exists:
   See [quiet recall](docs/recall.md).
 * `mabolo serve` runs the MCP server your client talks to. It offers
   `mabolo_search` and `mabolo_read`, which are two calls on purpose so that the
-  price of a payload is known before it arrives, and four tools that change the
-  vault: `mabolo_write`, `mabolo_edit`, `mabolo_forget` and `journal_add`. Each
-  of the first three takes the sentence that authorised it, word for word, and
-  the server checks that sentence against what you actually typed. Every change
-  is one commit, taken through a lock, a revision check and a push with a lease,
-  and your working tree is never reset or cleaned.
-  With `--read-only` the write tools are not registered at all, which is what an
-  unattended agent gets. See [writing](docs/write.md).
+  price of a payload is known before it arrives, and the tools that change the
+  vault: `mabolo_write`, `mabolo_edit`, `mabolo_forget`, `mabolo_decide` and
+  `journal_add`. Each write takes the sentence that authorised it, word for
+  word, and the server checks that sentence against what you actually typed.
+  Every change is one commit, taken through a lock, a revision check and a push
+  with a lease, and your working tree is never reset or cleaned.
+  With `--read-only` none of those are registered, which is what an unattended
+  agent gets. See [writing](docs/write.md).
+* **An agent alone can suggest, not write.** `mabolo_propose` files a proposal
+  on an orphan branch that is never merged into your history, so an unapproved
+  suggestion never enters it, and it is still visible on every machine.
+  `mabolo inbox` shows what is waiting and `mabolo inbox a3f2 yes` answers it: a
+  yes writes the entry and the record of your answer in one commit. The
+  extraction pass that mines proposals out of a finished transcript is built
+  too, behind its gates, and it runs a command line you configure rather than
+  depending on anybody's model.
+* `mabolo why <entry>` prints where one entry came from: who produced it, who
+  approved it and when, the sentences it rests on with the sources that back
+  them, every commit that touched it including across a rename, and whether the
+  file it watches has moved.
+* **Rules about files arrive when the file does.** An entry in the `design`
+  area carries `applies_to`, and `mabolo hook pretool` raises it when a tool is
+  about to open a matching file. Three at most, capped, counted, and not
+  repeated at every touch. The eval measures that tier like every other one.
+  See [taste, delivered when the file is opened](docs/design.md).
 * The entry schema and its validator, with the example vault as the reference.
 * A Git remote, if you want one: `init` sets it, and the vault is an ordinary
   repository you can pull and push yourself.
-
-Proposals are not built yet: an agent that has no sentence of yours to quote
-cannot write, and cannot leave a suggestion either. Nor is the extraction pass
-that would mine one from a finished transcript.
 
 ## Try it
 
@@ -198,6 +211,11 @@ echo '{"prompt": "raising the job count on the build server"}' \
 
 # The MCP server, as a client starts it. Add --read-only for the tools alone.
 uv run mabolo serve examples/vault
+
+# The rules a file raises, and where one entry came from.
+echo '{"tool_input": {"file_path": "src/styles/landing.css"}}' \
+  | uv run mabolo hook pretool examples/vault
+uv run mabolo why no-centred-layouts examples/vault
 
 # A throwaway vault and a throwaway configuration to go with it. Without
 # --config, `init` writes the real one in your config directory.

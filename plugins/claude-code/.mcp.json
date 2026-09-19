@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "mabolo": {
+      "type": "stdio",
+      "command": "mabolo",
+      "args": [
+        "serve"
+      ]
+    }
+  }
+}

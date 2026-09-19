@@ -81,6 +81,9 @@ KINDS = (
     # from.
     "propose",
     "unfile",
+    # The way back, which must not itself look like a commit from nowhere.
+    "revert",
+    "recover",
 )
 
 

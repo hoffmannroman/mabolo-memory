@@ -1,4 +1,5 @@
 import io
+import os
 import time
 import json
 from pathlib import Path
@@ -929,3 +930,75 @@ def test_why_names_an_entry_it_cannot_find(tmp_path, capsys):
     hook_vault(tmp_path)
     assert main(["why", "nothing-like-this", str(hook_vault(tmp_path).root)]) == 2
     assert "nothing-like-this" in capsys.readouterr().err
+
+
+# `init` wires up the clients it finds, and refuses to overwrite what somebody
+# else put under our own keys.
+
+
+def claude_home(tmp_path):
+    home = Path(os.environ["HOME"])
+    (home / ".claude").mkdir(parents=True, exist_ok=True)
+    (home / ".claude" / "settings.json").write_text('{"hooks": {}}', encoding="utf-8")
+    (home / ".claude.json").write_text("{}", encoding="utf-8")
+    return home
+
+
+def test_init_wires_up_a_client_it_finds(tmp_path, capsys, git_identity):
+    home = claude_home(tmp_path)
+    code = main(["--config", str(tmp_path / "c.toml"), "init", "--vault", str(tmp_path / "v"),
+                 "--yes"])
+    assert code == 0
+    settings = json.loads((home / ".claude" / "settings.json").read_text())
+    assert sorted(settings["hooks"]) == ["PreToolUse", "SessionStart", "UserPromptSubmit"]
+    assert json.loads((home / ".claude.json").read_text())["mcpServers"]["mabolo"]
+    assert "wired" in capsys.readouterr().out
+
+
+def test_init_run_twice_changes_a_wired_client_not_at_all(tmp_path, capsys, git_identity):
+    home = claude_home(tmp_path)
+    arguments = ["--config", str(tmp_path / "c.toml"), "init", "--vault", str(tmp_path / "v"),
+                 "--yes"]
+    main(arguments)
+    before = (home / ".claude" / "settings.json").read_bytes()
+    capsys.readouterr()
+    main(arguments)
+    assert (home / ".claude" / "settings.json").read_bytes() == before
+    written = [line for line in capsys.readouterr().out.splitlines() if line.startswith("  wired")]
+    assert written == [], "a second run writes nothing and says nothing about writing"
+
+
+def test_init_leaves_an_entry_of_ours_that_says_something_else(tmp_path, capsys, git_identity):
+    """Somebody wrote that themselves. Overwriting it quietly is the kind of
+    repair this tool refuses, and a half wired client is not a success."""
+    home = claude_home(tmp_path)
+    (home / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"mabolo": {"command": "somewhere-else"}}}), encoding="utf-8"
+    )
+    code = main(["--config", str(tmp_path / "c.toml"), "init", "--vault", str(tmp_path / "v"),
+                 "--yes"])
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "--rewire" in out
+    assert json.loads((home / ".claude.json").read_text())["mcpServers"]["mabolo"] == {
+        "command": "somewhere-else"
+    }
+
+
+def test_init_rewires_when_it_is_told_to(tmp_path, capsys, git_identity):
+    home = claude_home(tmp_path)
+    (home / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"mabolo": {"command": "somewhere-else"}}}), encoding="utf-8"
+    )
+    assert main(["--config", str(tmp_path / "c.toml"), "init", "--vault", str(tmp_path / "v"),
+                 "--yes", "--rewire"]) == 0
+    assert json.loads((home / ".claude.json").read_text())["mcpServers"]["mabolo"]["command"] != (
+        "somewhere-else"
+    )
+
+
+def test_init_can_be_told_to_wire_up_nothing(tmp_path, capsys, git_identity):
+    home = claude_home(tmp_path)
+    main(["--config", str(tmp_path / "c.toml"), "init", "--vault", str(tmp_path / "v"),
+          "--yes", "--no-clients"])
+    assert json.loads((home / ".claude" / "settings.json").read_text()) == {"hooks": {}}

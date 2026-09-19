@@ -1,9 +1,12 @@
 """The tools a client sees, and the gate in front of the four that write."""
 
+import subprocess
+
 import anyio
 import pytest
 from mcp import Client
 
+from conftest import entry_text
 from mabolo import consent, frontmatter, inbox, validate
 from mabolo.server import MAX_READ, Settings, build
 
@@ -326,3 +329,41 @@ def test_an_id_that_names_nothing_is_a_sentence(server):
     assert "no open proposal" in call(server, "mabolo_decide", {
         "id": "beef", "verdict": "yes", "quote": "beef yes",
     })
+
+
+def test_a_read_says_when_the_file_an_entry_watches_has_moved(git_vault, prompts, tmp_path):
+    """Here and not in the session index. At read time the reader is about to
+    rely on the text, which is the moment the question matters."""
+    repository = tmp_path / "work"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    watched = repository / "build.yml"
+    watched.write_text("one\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repository), "commit", "-qm", "later than the entry"],
+                   check=True)
+
+    area = git_vault.root / "project" / "work"
+    area.mkdir(parents=True)
+    (area / "watched.md").write_text(
+        entry_text(
+            area="project/work",
+            description="d",
+            generated={"by": "mabolo/0.1.0", "at": "2020-01-01T00:00:00+00:00"},
+            mabolo={"anchor": "build.yml"},
+        ),
+        encoding="utf-8",
+    )
+    server = build(
+        git_vault,
+        Settings(actor="human:alex", cwd=repository, session="s", prompts=prompts),
+    )
+    answer = call(server, "mabolo_read", {"names": ["watched"]})
+    assert "the file it watches moved" in answer
+    assert "build.yml" in answer
+
+
+def test_a_read_of_an_entry_that_watches_nothing_says_nothing_extra(server, git_vault):
+    written(server)
+    answer = call(server, "mabolo_read", {"names": ["deploy-from-main"]})
+    assert ">" not in answer.split("---")[-1]
