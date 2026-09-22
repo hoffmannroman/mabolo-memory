@@ -57,13 +57,28 @@ wrapper is not recorded at all. A quote from one then fails to verify, the
 write is refused, and the model has to go and ask. **No session can manufacture
 consent for another one**, however plainly it reports what you told it.
 
-**What it cannot claim.** A client starts the MCP server without telling it
-which session it belongs to. So unless the client sets `MABOLO_SESSION_ID`, the
-server cannot honestly say "this sentence, in this conversation". What it can
-say is "this sentence, typed in this directory, within the last twelve hours",
-and that is what it does: notes from another directory do not count, and notes
-older than the window do not either. With a session named, that session's notes
-are the evidence and the window does not apply.
+**What it can claim, and what it falls back to.** The strongest claim is "this
+sentence, in this conversation": that session's notes are the evidence, and the
+window does not apply. The server gets the name from `MABOLO_SESSION_ID` if the
+client sets it, and otherwise from the host — Claude Code puts its own session
+id into the environment of every MCP server it starts
+(`ENV_SESSION_FALLBACKS`). A name the caller gives is a claim and is honoured
+even when it finds nothing; a name merely read off the host is a guess, so if
+that session has no notes yet the server falls back rather than refusing
+everything.
+
+The fallback is the older, weaker claim: "this sentence, typed in this
+directory, within the last twelve hours". Notes from another directory do not
+count, and notes older than the window do not either.
+
+Until 2026-09-22 this document said a client starts the server without telling
+it which session it belongs to. That was true of the protocol and false of the
+client in front of us, and the cost was real: an agent that `cd`s into a
+project — which is most of an afternoon's work — left the directory the
+sentence had been typed in, and writes were refused for sentences the person
+really had typed. Reading the host's session id makes the gate **narrower**,
+not kinder: once a session has notes, no other session's sentence counts for
+it, which the directory rule alone never guaranteed.
 
 This is written down rather than glossed over, because the difference matters:
 the gate proves a person typed the sentence, not that they typed it at the

@@ -70,6 +70,105 @@ def test_a_prompt_from_another_project_does_not_count(tmp_path):
     assert consent.check(quote, cwd=other, now=at(1), directory=tmp_path / "p").verified
 
 
+def test_the_host_can_name_the_session_and_a_cd_stops_mattering(tmp_path, monkeypatch):
+    """The sentence was typed in a subdirectory; the check runs a level up.
+
+    This is the ordinary shape of an agent session: the person says yes, the
+    agent cd's into a project to work, and the next write is refused although
+    nothing about the consent changed. Reading the session id off the host
+    fixes it without loosening anything — see ENV_SESSION_FALLBACKS.
+    """
+    deeper = tmp_path / "a-project"
+    deeper.mkdir()
+    consent.record("remember that the pilot runs in one region", cwd=deeper, at=at(),
+                   session="s-1", directory=tmp_path / "p")
+    quote = "the pilot runs in one region"
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s-1")
+    assert consent.check(quote, cwd=tmp_path, now=at(1), directory=tmp_path / "p").verified
+
+
+def test_the_host_session_narrows_once_it_has_notes(tmp_path, monkeypatch):
+    """Another session's sentence stops counting, even in the same directory.
+
+    The guarantee is exactly this and no more: a session that has written
+    something is the boundary. A session with nothing in it yet falls back to
+    the window and the directory — see the test below — because a hard refusal
+    there would lock the person out whenever the hook has not run yet.
+    """
+    consent.record("remember that the pilot runs in one region", cwd=tmp_path, at=at(),
+                   session="someone-else", directory=tmp_path / "p")
+    consent.record("remember that the staging box is rebuilt nightly", cwd=tmp_path, at=at(),
+                   session="s-1", directory=tmp_path / "p")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s-1")
+    quote = "the pilot runs in one region"
+    assert not consent.check(quote, cwd=tmp_path, now=at(1), directory=tmp_path / "p").verified
+    # Its own sentence still counts, wherever the agent has wandered off to.
+    assert consent.check("the staging box is rebuilt nightly", cwd=tmp_path, now=at(1),
+                         directory=tmp_path / "p").verified
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    assert consent.check(quote, cwd=tmp_path, now=at(1), directory=tmp_path / "p").verified
+
+
+def test_a_host_session_with_no_notes_does_not_lock_the_person_out(tmp_path, monkeypatch):
+    """A guess that finds nothing falls back; it does not refuse everything."""
+    consent.record("remember that the pilot runs in one region", cwd=tmp_path, at=at(),
+                   directory=tmp_path / "p")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "a-session-that-never-wrote-anything")
+    assert consent.check("the pilot runs in one region", cwd=tmp_path, now=at(1),
+                         directory=tmp_path / "p").verified
+
+
+def test_a_named_session_still_beats_the_host(tmp_path, monkeypatch):
+    """What the caller says outranks what the environment happens to hold."""
+    consent.record("remember that the pilot runs in one region", cwd=tmp_path, at=at(),
+                   session="caller", directory=tmp_path / "p")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "host")
+    quote = "the pilot runs in one region"
+    assert consent.check(quote, cwd=tmp_path, session="caller", now=at(1),
+                         directory=tmp_path / "p").verified
+    assert not consent.check(quote, cwd=tmp_path, session="host", now=at(1),
+                             directory=tmp_path / "p").verified
+
+
+def test_a_refusal_names_the_directory_that_filtered_the_sentence(tmp_path):
+    """The sentence exists; only the directory kept it out. Say so.
+
+    Without this the message reads as "you mistyped the quote", and an agent
+    that believes it retries with variants — the one behaviour the check is
+    there to discourage. Happened on 2026-09-22: three refusals in a row for
+    sentences the person really had typed, because the agent had cd'd into a
+    subdirectory in between.
+    """
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    consent.record("remember that the pilot runs in one region", cwd=other, at=at(),
+                   directory=tmp_path / "p")
+    given = consent.check("the pilot runs in one region", cwd=tmp_path, now=at(1),
+                          directory=tmp_path / "p")
+    assert not given.verified
+    assert str(other) in given.reason
+    assert "did type that sentence" in given.reason
+
+
+def test_a_refusal_names_the_window_when_that_is_what_filtered_it(tmp_path):
+    consent.record("remember that the pilot runs in one region", cwd=tmp_path, at=at(),
+                   directory=tmp_path / "p")
+    given = consent.check("the pilot runs in one region", cwd=tmp_path,
+                          now=at(consent.WINDOW_HOURS + 5), directory=tmp_path / "p")
+    assert not given.verified
+    assert "older than" in given.reason
+
+
+def test_a_sentence_nobody_typed_still_gets_the_plain_refusal(tmp_path):
+    """The kinder message must not soften the case it was not written for."""
+    consent.record("remember that releases are cut from main", cwd=tmp_path, at=at(),
+                   directory=tmp_path / "p")
+    given = consent.check("releases are cut from a tag", cwd=tmp_path, now=at(1),
+                          directory=tmp_path / "p")
+    assert not given.verified
+    assert "no prompt on this machine holds that sentence" in given.reason
+
+
 def test_a_named_session_beats_the_window_and_the_directory(tmp_path):
     other = tmp_path / "elsewhere"
     other.mkdir()

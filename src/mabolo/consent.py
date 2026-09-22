@@ -52,6 +52,9 @@ RETENTION_DAYS = 7
 #: sentence cannot authorise today's write.
 WINDOW_HOURS = 12
 
+#: Only for explaining a refusal, never for verifying one. See `_why_not`.
+_FOREVER_HOURS = 24 * 365 * 100
+
 #: The shortest quote that can be recognised at all. Twelve is roughly three
 #: ordinary words: below that a sentence is not a sentence, and "yes", "do it"
 #: and "that one" all appear in half of every day's prompts, so a floor under
@@ -69,6 +72,21 @@ MAX_LINES = 500
 
 #: The environment variable a client may set so that a session can be named.
 ENV_SESSION = "MABOLO_SESSION_ID"
+
+#: Where else to look for the name of this conversation, in order.
+#:
+#: Claude Code does not set MABOLO_SESSION_ID, but it does put its own session
+#: id into the environment of every MCP server it starts — the same session
+#: whose prompts the hook is writing, under the same name. Reading it makes the
+#: check *narrower*, not looser: only this conversation's sentences count,
+#: instead of any session that shared a directory inside the window. It also
+#: stops a plain `cd` from invalidating a sentence the person really typed,
+#: which is what a coding agent does all day.
+#:
+#: Found on 2026-09-22, after three refusals in a row for sentences that were
+#: in the notes the whole time. The agent had moved into a subdirectory between
+#: the first write and the second.
+ENV_SESSION_FALLBACKS = ("CLAUDE_CODE_SESSION_ID",)
 
 #: A session id becomes a file name, and a file system that does not tell
 #: `abc` from `ABC` would then let one session's sentences authorise another's
@@ -311,6 +329,15 @@ def _read(path: Path) -> list[Prompt]:
     return out
 
 
+def _session_from_host() -> str:
+    """The session this process belongs to, according to whoever started it."""
+    for name in ENV_SESSION_FALLBACKS:
+        found = os.environ.get(name, "").strip()
+        if found:
+            return found
+    return ""
+
+
 def seen_prompts(*, cwd: str | Path | None = None, session: object = None, now: dt.datetime | None = None,
          window_hours: int = WINDOW_HOURS, directory: Path | None = None) -> list[Prompt]:
     """The prompts a quote may be checked against, newest first.
@@ -323,14 +350,25 @@ def seen_prompts(*, cwd: str | Path | None = None, session: object = None, now: 
     where = Path(directory) if directory else prompt_dir()
     moment = now or dt.datetime.now().astimezone()
     asked = session if isinstance(session, str) else ""
-    named = asked.strip() or os.environ.get(ENV_SESSION, "").strip()
+    claimed = asked.strip() or os.environ.get(ENV_SESSION, "").strip()
+    guessed = "" if claimed else _session_from_host()
+    named = claimed or guessed
     try:
         files = sorted(where.glob("*.jsonl"))
     except OSError:
         return []
     if named:
         wanted = session_id(named)
-        files = [f for f in files if f.stem == wanted]
+        mine = [f for f in files if f.stem == wanted]
+        # A name the caller gave is a claim, and an empty result is the right
+        # answer to it: that is how one session's notes stay out of another's.
+        # A name merely read off the host is a guess, and a guess with no notes
+        # behind it must not lock the person out of their own memory — fall
+        # back to the window and the directory, which is where we were before.
+        if mine or claimed:
+            files = mine
+        else:
+            named = ""
     prompts: list[Prompt] = []
     here = str(Path(cwd).resolve()) if cwd else ""
     cutoff = moment - dt.timedelta(hours=window_hours)
@@ -472,11 +510,46 @@ def check(quote: str, *, cwd: str | Path | None = None, session: object = None,
     for prompt in seen_prompts(cwd=cwd, session=session, now=now, directory=directory):
         if wanted in normalise(prompt.text).casefold():
             return Consent(quote=text, verified=True, at=prompt.at, session=prompt.session)
-    return Consent(
-        quote=text,
-        verified=False,
-        reason=(
-            "no prompt on this machine holds that sentence. The quote has to be what the "
-            "person typed, word for word, in this session"
-        ),
-    )
+    return Consent(quote=text, verified=False, reason=_why_not(wanted, cwd=cwd, now=now,
+                                                              directory=directory))
+
+
+def _why_not(wanted: str, *, cwd: str | Path | None, now: dt.datetime | None,
+             directory: Path | None) -> str:
+    """Why a sentence that exists somewhere did not count here.
+
+    The old message said only that no prompt holds the sentence, which reads
+    as "you mistyped it". An agent that believes that retries with variants —
+    the one behaviour this check exists to discourage. So when the sentence is
+    on this machine and was merely filtered out, the reason says which filter
+    did it, and the caller can act instead of guess.
+
+    The search behind this message ignores the window and the directory on
+    purpose. That is safe because nothing here verifies anything: it only
+    explains a refusal that has already happened.
+    """
+    generic = ("no prompt on this machine holds that sentence. The quote has to be what the "
+               "person typed, word for word, in this session")
+    try:
+        elsewhere = [p for p in seen_prompts(cwd=None, now=now, directory=directory,
+                                             window_hours=_FOREVER_HOURS)
+                     if wanted in normalise(p.text).casefold()]
+    except OSError:
+        return generic
+    if not elsewhere:
+        return generic
+    prompt = elsewhere[0]
+    moment = now or dt.datetime.now().astimezone()
+    here = str(Path(cwd).resolve()) if cwd else ""
+    if here and prompt.cwd and not _same_place(prompt.cwd, here):
+        return (
+            f"the person did type that sentence, but in {prompt.cwd} — this check ran in "
+            f"{here}, and a sentence counts in the directory it was typed in. Do not retry "
+            "with a different wording: ask them to say it again here, or run from there"
+        )
+    if prompt.at < moment - dt.timedelta(hours=WINDOW_HOURS):
+        return (
+            f"the person did type that sentence, but at {prompt.at:%Y-%m-%d %H:%M}, which is "
+            f"older than the {WINDOW_HOURS} hour window. Ask them to say it again"
+        )
+    return generic
