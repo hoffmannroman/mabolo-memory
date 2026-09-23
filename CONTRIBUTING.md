@@ -38,8 +38,12 @@ uncommitted work with it.
 nothing for a running client until you reinstall and the client restarts it:
 
 ```bash
-uv tool install --force .
+uv tool install --force --reinstall .
 ```
+
+`--reinstall` is not optional. uv keys its build cache on `pyproject.toml`,
+not on `src/`, so while the version number stays the same `--force` alone
+installs the wheel it built last time and says it succeeded.
 
 **Before opening an issue:** say which operating system and which version, what
 you expected and what happened. A vault is personal, so never paste entries you
