@@ -1,6 +1,6 @@
 import pytest
 
-from mabolo.config import Config, default_config_path, default_vault_path
+from mabolo.config import Config, default_config_path, default_vault_path, locale_language
 from mabolo.errors import MaboloError
 
 
@@ -184,6 +184,21 @@ def test_a_language_that_is_not_a_code_is_refused(tmp_path):
                     encoding="utf-8")
     with pytest.raises(MaboloError, match="short code"):
         Config.load(path)
+
+
+@pytest.mark.parametrize("environ, expected", [
+    ({"LANG": "de_DE.UTF-8"}, "de"),
+    ({"LANG": "pt_BR"}, "pt"),
+    ({"LANG": "sr_RS@latin"}, "sr"),
+    ({"LC_MESSAGES": "fr_FR.UTF-8", "LANG": "de_DE.UTF-8"}, "fr"),
+    ({"LC_ALL": "C", "LANG": "de_DE.UTF-8"}, None),
+    ({"LANG": "C.UTF-8"}, None),
+    ({"LANG": "POSIX"}, None),
+    ({"LC_ALL": "", "LANG": "de_DE.UTF-8"}, "de"),
+    ({}, None),
+])
+def test_the_locale_names_a_language_or_nothing(environ, expected):
+    assert locale_language(environ) == expected
 
 
 # What extraction runs to ask a model. It is a command line and not a

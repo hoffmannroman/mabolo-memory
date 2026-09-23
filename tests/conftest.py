@@ -15,6 +15,10 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.delenv("MABOLO_VAULT", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir(exist_ok=True)
+    # `init` takes a new vault's language from the locale, so a test must not
+    # start English on one machine and German on the next.
+    for variable in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        monkeypatch.delenv(variable, raising=False)
 
 
 @pytest.fixture

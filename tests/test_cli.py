@@ -306,6 +306,61 @@ def test_init_run_twice_does_not_restate_the_language_of_an_existing_vault(tmp_p
     assert Vault(tmp_path / "v").declared_language() == "de"
 
 
+def test_init_starts_a_new_vault_in_the_language_of_the_locale(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("LANG", "de_DE.UTF-8")
+    config = str(tmp_path / "c.toml")
+    main(["--config", config, "init", "--vault", str(tmp_path / "v"), "--yes", "--no-git"])
+    assert "language de  (from the locale" in capsys.readouterr().out
+    assert Vault(tmp_path / "v").declared_language() == "de"
+    assert Config.load(tmp_path / "c.toml").language == "de"
+
+
+def test_init_takes_the_language_it_is_given_over_the_locale(tmp_path, monkeypatch):
+    monkeypatch.setenv("LANG", "de_DE.UTF-8")
+    main(["--config", str(tmp_path / "c.toml"), "init", "--vault", str(tmp_path / "v"),
+          "--language", "fr", "--yes", "--no-git"])
+    assert Vault(tmp_path / "v").declared_language() == "fr"
+
+
+def test_init_starts_a_second_vault_like_the_configuration_says(tmp_path, monkeypatch):
+    config = str(tmp_path / "c.toml")
+    main(["--config", config, "init", "--vault", str(tmp_path / "v"), "--language", "de",
+          "--yes", "--no-git"])
+    monkeypatch.setenv("LANG", "fr_FR.UTF-8")
+    main(["--config", config, "init", "--vault", str(tmp_path / "w"), "--yes", "--no-git"])
+    assert Vault(tmp_path / "w").declared_language() == "de"
+
+
+def test_init_adopting_a_vault_takes_its_language_into_the_configuration(tmp_path, capsys, monkeypatch):
+    """The configuration must not say one language while the vault says another."""
+    main(["--config", str(tmp_path / "first.toml"), "init", "--vault", str(tmp_path / "v"),
+          "--language", "de", "--yes", "--no-git"])
+    monkeypatch.setenv("LANG", "en_US.UTF-8")
+    main(["--config", str(tmp_path / "second.toml"), "init", "--vault", str(tmp_path / "v"),
+          "--yes", "--no-git"])
+    assert "language de  (declared by the vault)" in capsys.readouterr().out
+    assert Config.load(tmp_path / "second.toml").language == "de"
+    assert Vault(tmp_path / "v").declared_language() == "de"
+
+
+def test_init_refuses_a_language_that_contradicts_the_vault(tmp_path, capsys):
+    main(["--config", str(tmp_path / "c.toml"), "init", "--vault", str(tmp_path / "v"),
+          "--language", "de", "--yes", "--no-git"])
+    capsys.readouterr()
+    code = main(["--config", str(tmp_path / "c.toml"), "init", "--language", "en",
+                 "--yes", "--no-git"])
+    assert code == 2
+    assert "declares its language as de" in capsys.readouterr().err
+    assert Vault(tmp_path / "v").declared_language() == "de"
+
+
+def test_init_refuses_a_language_that_is_not_a_code(tmp_path, capsys):
+    code = main(["--config", str(tmp_path / "c.toml"), "init", "--vault", str(tmp_path / "v"),
+                 "--language", "Deutsch", "--yes", "--no-git"])
+    assert code == 2
+    assert not (tmp_path / "v").exists()
+
+
 # `mabolo context`: what a session would start with
 
 

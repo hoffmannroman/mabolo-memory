@@ -76,10 +76,19 @@ from .config import (
     default_config_path,
     default_vault_path,
     is_approver,
+    locale_language,
 )
 from .errors import MaboloError
 from .index import Index
-from .schema import FIXED_AREAS, PROJECT_PREFIX, now, parse_moment, parse_time
+from .schema import (
+    DEFAULT_LANGUAGE,
+    FIXED_AREAS,
+    PROJECT_PREFIX,
+    is_language,
+    now,
+    parse_moment,
+    parse_time,
+)
 from .validate import validate_vault
 from .vault import Vault
 
@@ -98,6 +107,37 @@ def _ask(question: str, default: str, interactive: bool) -> str:
     except EOFError:
         return default
     return answer or default
+
+
+def _starting_language(
+    args: argparse.Namespace, existing: Config | None, root: Path, fresh: bool
+) -> tuple[str, str]:
+    """The language `init` uses, and where it came from, for the plan to say.
+
+    A vault that already declares one keeps it, and a `--language` that says
+    otherwise is refused rather than ignored: the vault is not rewritten from
+    a flag. A new vault takes the flag, then an earlier configuration on this
+    machine, then the locale, and English only when none of them says.
+    """
+    wanted = args.language.strip().lower() if args.language else None
+    if wanted is not None and not is_language(wanted):
+        raise MaboloError(f"--language {args.language!r} is a short code such as en or de")
+    if not fresh:
+        declared = Vault(root).declared_language()
+        if wanted is not None and wanted != declared:
+            raise MaboloError(
+                f"the vault at {root} declares its language as {declared}, and init does not "
+                f"change that. Leave out --language {wanted}, or change the vault's index.md"
+            )
+        return declared, "declared by the vault"
+    if wanted is not None:
+        return wanted, "from --language"
+    if existing is not None:
+        return existing.language, f"from {existing.path or 'the configuration'}"
+    from_locale = locale_language()
+    if from_locale is not None:
+        return from_locale, "from the locale, --language to choose another"
+    return DEFAULT_LANGUAGE, "the default, --language to choose another"
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -143,17 +183,22 @@ def cmd_init(args: argparse.Namespace) -> int:
     # The language is written into a vault that is being created, and left
     # alone in one that already declares its own. `init` is safe to run twice,
     # and a second run must not quietly restate what the vault says about
-    # itself from a file on this machine.
+    # itself from a file on this machine. The configuration follows the vault
+    # it adopts, so that it never names one language while the vault names
+    # another, and a second vault started here begins like this one.
     fresh = not Vault(config.vault).is_initialised()
+    language, source = _starting_language(args, existing, config.vault, fresh)
+    config = replace(config, language=language)
     vault = Vault(
         config.vault,
         areas=tuple(config.areas),
-        language=config.language if fresh else None,
+        language=language if fresh else None,
     )
 
     print("\nPlan")
     for action in vault.plan():
         print(action.render(vault.root))
+    print(f"  {'use':7} language {language}  ({source})")
     print(f"  {'exists' if config_path.exists() else 'create':7} {config_path}  (configuration)")
     if remote and not args.no_git:
         # Through redact(), like every other place a URL is shown: this line
@@ -1201,6 +1246,10 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--vault", help="where the vault lives")
     init.add_argument("--actor", help="who approves entries, as human:<id>")
     init.add_argument("--remote", help="Git remote for syncing, empty for a local vault")
+    init.add_argument(
+        "--language",
+        help="the language a new vault is written in, as a short code; default from the locale",
+    )
     init.add_argument("--no-git", action="store_true", help="do not create a Git repository")
     init.add_argument("-y", "--yes", action="store_true", help="take the prepared answers, ask nothing")
     init.add_argument("--dry-run", action="store_true", help="print the plan and stop")

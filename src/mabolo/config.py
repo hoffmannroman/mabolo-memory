@@ -85,6 +85,28 @@ def default_actor() -> str:
     return f"human:{_SAFE_ID.sub('-', login.strip().lower()) or 'me'}"
 
 
+#: Where a person's language is read from, in the order the C library reads it
+#: for messages. `LANGUAGE` is left out: it only counts once one of these is set.
+LOCALE_VARIABLES = ("LC_ALL", "LC_MESSAGES", "LANG")
+
+
+def locale_language(environ: dict[str, str] | None = None) -> str | None:
+    """The language of this machine's locale as a short code, or None.
+
+    `de_DE.UTF-8` is `de`. The first variable that is set decides, as it does
+    for every other program, so an `LC_ALL=C` means "no language" and is not
+    passed over for a `LANG` further down. `C` and `POSIX` name no language.
+    """
+    env = os.environ if environ is None else environ
+    for variable in LOCALE_VARIABLES:
+        value = env.get(variable, "").strip()
+        if not value:
+            continue
+        code = re.split(r"[_.@]", value, maxsplit=1)[0].lower()
+        return code if is_language(code) and code not in ("c", "posix") else None
+    return None
+
+
 def is_approver(value: str) -> bool:
     """True only for `human:<id>`.
 
@@ -161,6 +183,8 @@ class Config:
     #: the search reads, in its root index.md; this is only the answer given
     #: when one is created, so that a second vault on this machine starts the
     #: same way. `init` does not ask for it: four questions are the budget.
+    #: It takes it from `--language`, an earlier configuration or the locale,
+    #: and when it adopts a vault, from what that vault declares.
     language: str = DEFAULT_LANGUAGE
     remote_url: str | None = None
     remote_branch: str = DEFAULT_BRANCH

@@ -100,6 +100,12 @@ and cuts suffixes by its rules, so a vault that carried its language in a local
 configuration file would answer differently on two clones of itself. A vault
 that says nothing is read as English.
 
+`mabolo init` writes it once, when it creates the vault: from `--language`,
+else from an earlier configuration on that machine, else from the locale
+(`de_DE.UTF-8` is `de`), else English. The plan says which of these it was. A
+vault that already declares a language keeps it, and the configuration takes
+it over, so that the next vault started on that machine begins the same way.
+
 One folder in a vault is not made of entries. `.mabolo/` holds what is derived
 and disposable and is ignored by Git, with one exception: `.mabolo/eval/` holds
 the questions the memory is measured with, and those are versioned alongside the
