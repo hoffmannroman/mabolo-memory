@@ -48,6 +48,7 @@ from dataclasses import dataclass, replace
 
 from . import (
     __version__,
+    catchup,
     consent,
     context,
     decide,
@@ -1011,9 +1012,18 @@ def _session_payload(args: argparse.Namespace) -> str:
         # A vault named on the command line needs no configuration: that is how
         # the hook is tried out before it is installed, and how a test runs it.
         return NO_CONFIG
-    vault = _vault_from(args)
+    config = Config.load_if_present(config_path)
+    vault = _vault_from(args, config)
     if not vault.is_initialised():
         return NO_CONFIG
+
+    # Before anything is read: a machine that was off for a fortnight would
+    # otherwise start on the vault of a fortnight ago. Only for the configured
+    # vault, because the remote in the configuration belongs to that one.
+    synced = None
+    if config is not None and not args.path and not args.no_fetch:
+        _, remote, branch = config.target()
+        synced = catchup.catch_up(vault.root, remote, branch)
 
     where = event.get("cwd") or Path.cwd()
     folder = repo_root(Path(where)).name
@@ -1025,8 +1035,12 @@ def _session_payload(args: argparse.Namespace) -> str:
         # for cutting and the cheapest to be sure of.
         for problem in found:
             print(f"mabolo: {problem}", file=sys.stderr)
-        return context.degraded(payload)
-    return payload.text()
+        text = context.degraded(payload)
+    else:
+        text = payload.text()
+    # Said only when something is off. A vault that is current costs nothing.
+    note = synced.note() if synced else ""
+    return f"{note}\n\n{text}" if note and text else (note or text)
 
 
 def _hook_event() -> dict:
@@ -1323,6 +1337,9 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--no-project", action="store_true", help="no project at all")
     start.add_argument(
         "--no-clock", action="store_true", help="do not read the clock, so nothing counts as recent"
+    )
+    start.add_argument(
+        "--no-fetch", action="store_true", help="do not catch up with the remote first"
     )
     start.add_argument("--budget", type=int, default=context.DEFAULT_TARGET_TOKENS, help="map budget")
     start.add_argument(

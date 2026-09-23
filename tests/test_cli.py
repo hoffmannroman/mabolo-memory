@@ -687,6 +687,53 @@ def test_the_hook_says_one_sentence_when_nothing_is_configured(tmp_path, capsys,
     assert out["hookSpecificOutput"]["additionalContext"] == cli.NO_CONFIG
 
 
+def synced_setup(tmp_path, git_vault, remote):
+    """A configured vault with a remote, and a second clone standing in for another machine."""
+    import subprocess
+
+    config = Config.default(vault=git_vault.root, actor="human:someone")
+    config.remote_url = str(remote)
+    config.save(tmp_path / "c.toml")
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-q", str(remote), str(other)], check=True)
+    (other / "infra" / "laptop.md").write_text(
+        entry_text(title="Laptop", description="Written on the other machine"), encoding="utf-8"
+    )
+    for step in (["add", "infra/laptop.md"], ["commit", "-q", "-m", "laptop"], ["push", "-q"]):
+        subprocess.run(["git", "-C", str(other), *step], check=True, capture_output=True)
+    return str(tmp_path / "c.toml")
+
+
+def test_the_hook_starts_a_session_on_what_another_machine_wrote(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    config = synced_setup(tmp_path, git_vault, remote)
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert main(["--config", config, "hook", "session-start"]) == 0
+    text = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert (git_vault.root / "infra" / "laptop.md").exists()
+    assert "not synced" not in text
+
+
+def test_the_hook_says_so_when_it_could_not_catch_up(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    config = synced_setup(tmp_path, git_vault, remote)
+    remote.rename(tmp_path / "gone.git")
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert main(["--config", config, "hook", "session-start"]) == 0
+    text = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert text.startswith("Memory not synced with the other machines: origin could not be reached")
+    assert not (git_vault.root / "infra" / "laptop.md").exists()
+
+
+def test_the_hook_can_be_told_not_to_fetch(tmp_path, capsys, monkeypatch, git_vault, remote):
+    config = synced_setup(tmp_path, git_vault, remote)
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    main(["--config", config, "hook", "session-start", "--no-fetch"])
+    assert not (git_vault.root / "infra" / "laptop.md").exists()
+
+
 def test_the_hook_reads_the_project_from_the_folder_the_session_is_in(tmp_path, capsys, monkeypatch):
     made = hook_vault(tmp_path)
     folder = made.area_dir("project/atlas")

@@ -419,3 +419,30 @@ selection did not know it made. It repairs nothing: a payload that fails is
 replaced by the standing rules alone, plus a line saying the map could not be
 built. Losing the map costs a session the knowledge that an entry exists, and
 that can be recovered by asking. A rule that silently went missing cannot.
+
+## It catches up first
+
+A write fetches, lines up and pushes, so what one machine writes reaches the
+remote at once. Reading did none of that, and a laptop that had been off for a
+fortnight started its first session on the vault of a fortnight ago without a
+word about it. So before the payload is built, the hook asks the remote where
+it is and moves the vault forward to it.
+
+Only forward, and only when that is safe. It holds the same lock a write
+holds, so it cannot move the branch under a write another session is making.
+A clone that has moved on by itself is never merged into, and a file somebody
+edited by hand is never overwritten: Git's `--ff-only` refuses both. The fetch
+has two and a half seconds of the hook's five, so a slow or absent network
+costs the fetch and not the session.
+
+When it worked, nothing is said. When it did not, the payload opens with one
+line that says why, for instance:
+
+```
+Memory not synced with the other machines: origin could not be reached, this is the state of the last sync
+```
+
+Commits made here that never reached the remote are left alone and reported;
+the next write sends them. `mabolo context` does not fetch: it shows what a
+session would be handed from the vault as it is on disk.
+`mabolo hook session-start --no-fetch` skips the catch-up.

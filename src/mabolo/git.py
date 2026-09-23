@@ -35,7 +35,7 @@ TIMEOUT_SECONDS = 30
 def _environment() -> dict[str, str]:
     """The environment every git call runs in, and why it is not the caller's.
 
-    Two things are taken out and one is put in.
+    Two things are taken out and two are put in.
 
     A stray `GIT_DIR`, `GIT_WORK_TREE`, `GIT_OBJECT_DIRECTORY` or `GIT_INDEX_FILE`
     points the command at a repository nobody named, which is what the
@@ -54,6 +54,10 @@ def _environment() -> dict[str, str]:
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_INDEX_FILE"):
         environment.pop(name, None)
     environment.update(LC_ALL="C", LANGUAGE="", LANG="C")
+    # Nobody is at a terminal to answer a password prompt: the server talks
+    # over a pipe and a hook runs before the person has typed anything. A
+    # prompt would only hold the call until its timeout.
+    environment["GIT_TERMINAL_PROMPT"] = "0"
     return environment
 
 
@@ -70,8 +74,18 @@ def available() -> bool:
     return True
 
 
-def run(root: Path, *args: str, check: bool = True, index: Path | None = None) -> subprocess.CompletedProcess[str]:
-    """Run git in `root`. Failures become `MaboloError`, never a traceback."""
+def run(
+    root: Path,
+    *args: str,
+    check: bool = True,
+    index: Path | None = None,
+    timeout: float = TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    """Run git in `root`. Failures become `MaboloError`, never a traceback.
+
+    `timeout` is for the one caller that has less time than a write does: the
+    session start, which fetches inside a hook with a deadline of its own.
+    """
     environment = _environment()
     if index is not None:
         environment["GIT_INDEX_FILE"] = str(index)
@@ -81,7 +95,7 @@ def run(root: Path, *args: str, check: bool = True, index: Path | None = None) -
             capture_output=True,
             text=True,
             check=check,
-            timeout=TIMEOUT_SECONDS,
+            timeout=timeout,
             env=environment,
         )
     except subprocess.CalledProcessError as exc:
@@ -89,7 +103,7 @@ def run(root: Path, *args: str, check: bool = True, index: Path | None = None) -
         detail = redact(message[-1]) if message else f"exit status {exc.returncode}"
         raise MaboloError(f"git {args[0]} failed: {detail}") from exc
     except subprocess.TimeoutExpired as exc:
-        raise MaboloError(f"git {args[0]} did not finish within {TIMEOUT_SECONDS} seconds") from exc
+        raise MaboloError(f"git {args[0]} did not finish within {timeout:g} seconds") from exc
     except OSError as exc:
         raise MaboloError(f"git could not be run: {exc.strerror}") from exc
 
@@ -254,6 +268,13 @@ def staged_and_edited(root: Path) -> list[str]:
         if status[0] not in " ?" and status[1] not in " ":
             out.append(field[3:])
     return out
+
+
+def count_between(root: Path, earlier: str, later: str) -> int:
+    """How many commits `later` has that `earlier` does not."""
+    result = run(root, "rev-list", "--count", f"{earlier}..{later}", check=False)
+    text = result.stdout.strip()
+    return int(text) if result.returncode == 0 and text.isdigit() else 0
 
 
 def is_ancestor(root: Path, earlier: str, later: str) -> bool:

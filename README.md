@@ -139,7 +139,12 @@ Two sessions writing at the same time is what the write path is built around:
 every change is one commit, pushed synchronously with a lease on the commit the
 remote was on when the change started. If the remote moved meanwhile, the push
 is refused, nothing local changes, and you are told to read the entry again.
-Pulling by hand is still plain `git pull`.
+
+Reading catches up as well: every session start fetches and moves the vault
+forward to the remote before it reads, so a machine that was off for two weeks
+starts on today's memory. Only by fast forward, never by merging; when that is
+not possible, the session is told why. See
+[what a session starts with](docs/context.md#it-catches-up-first).
 
 ## What works today
 
@@ -249,8 +254,8 @@ it does not mention:
   `uv tool install`. The plugin marketplaces are in place and read correctly by
   both clients, but the plugin they hand over starts `mabolo`, so the tool still
   has to be on your PATH first.
-* **No run on macOS**, and no run on a second machine. The syncing is built and
-  tested against local repositories, not against two machines in a room.
+* **No run on macOS.** Syncing has run across three Linux machines sharing one
+  remote, and is tested against local repositories.
 * **No monthly pass.** Extraction runs when you run it, over a transcript you
   hand it, with a model command you configured.
 
