@@ -36,7 +36,8 @@ PROBLEMS_FILE = "problems.jsonl"
 
 STALE_NOTE = (
     "Note for the person: Mabolo was updated after this server started, so it is "
-    "still running the old code. Reconnect it: /mcp, then mabolo, then Reconnect."
+    "still running the old code. Reconnect it with `/mcp reconnect mabolo`; a plain "
+    "`/mcp reconnect` only retries servers that are not connected, and this one is."
 )
 
 

@@ -35,7 +35,7 @@ def test_old_code_is_named_and_current_code_is_not(tmp_path):
     loaded = health.code_fingerprint(where)
     assert health.stale_note(loaded, where) == ""
     (where / "three.py").write_text("z = 3\n", encoding="utf-8")
-    assert "Reconnect" in health.stale_note(loaded, where)
+    assert "`/mcp reconnect mabolo`" in health.stale_note(loaded, where)
 
 
 def test_a_server_on_old_code_says_so_in_every_answer(git_vault, tmp_path, monkeypatch):
