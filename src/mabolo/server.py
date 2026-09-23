@@ -54,6 +54,7 @@ from . import (
     decide,
     drift,
     frontmatter,
+    health,
     inbox,
     journal,
     lint,
@@ -118,6 +119,11 @@ class Settings:
     prompts: Path | None = None
 
 
+#: The code this server loaded, taken when the module is imported, which is
+#: when `mabolo serve` starts. See `health`.
+LOADED = health.code_fingerprint()
+
+
 def _sentence(function: Callable[..., str]) -> Callable[..., str]:
     """Turn a refusal into a sentence the model can act on.
 
@@ -129,11 +135,15 @@ def _sentence(function: Callable[..., str]) -> Callable[..., str]:
     @wraps(function)
     def guarded(*args: Any, **kwargs: Any) -> str:
         try:
-            return function(*args, **kwargs)
+            said = function(*args, **kwargs)
         except MaboloError as exc:
-            return f"refused: {exc}"
+            said = f"refused: {exc}"
         except (OSError, ValueError) as exc:
-            return f"refused: {exc}"
+            said = f"refused: {exc}"
+        # Every answer, because an answer is the one thing a session is sure
+        # to read, and the old code is still answering until somebody acts.
+        note = health.stale_note(LOADED)
+        return f"{said}\n\n{note}" if note else said
 
     return guarded
 

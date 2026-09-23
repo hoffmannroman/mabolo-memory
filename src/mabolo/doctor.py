@@ -53,7 +53,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import consent, drift, git, proposal, seen, validate, write
+from . import consent, drift, git, health, proposal, seen, validate, write
 from .config import CONFIG_MODE, Config, default_config_path
 from .errors import MaboloError
 from .vault import Vault
@@ -430,7 +430,29 @@ def _wiring_checks(clients: ClientSource, executable: str | None) -> list[Check]
         # remote group is absent from a vault that has no remote: nothing is
         # unknown about hooks nobody asked for.
         checks.append(_hooks_seen_check())
+        checks.append(_hooks_failed_check())
     return checks
+
+
+def _hooks_failed_check() -> Check:
+    """Whether a hook gave up since the last session start reported it.
+
+    Read without using it up: the session start is the one that reports and
+    forgets, and a person running doctor to find out why must still see it.
+    """
+    trouble = health.pending()
+    findings = (
+        (
+            _f(
+                CONFIGURATION,
+                f"a hook gave up: {health.summary(trouble)}",
+                tuple(f"{item.get('at', '')}  {item['hook']}: {item.get('error', '')}" for item in trouble[-5:]),
+            ),
+        )
+        if trouble
+        else ()
+    )
+    return Check("wiring.failures", CONFIGURATION, findings=findings)
 
 
 def _hooks_seen_check() -> Check:

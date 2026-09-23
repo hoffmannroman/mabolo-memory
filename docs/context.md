@@ -401,7 +401,10 @@ that gets nothing starts the way it would have without Mabolo installed. A
 memory that can stop a session from starting is worse than no memory: the
 failure arrives before the person has typed anything and looks like the agent
 is broken. What went wrong goes to stderr, where a person debugging the hook
-looks and a session does not.
+looks and a session does not, and it is written down. The next session start
+opens with one line saying which hook gave up, how often and why, and then
+forgets it; `mabolo doctor` shows the same without using it up. A hook that
+failed silently used to look exactly like an empty memory.
 
 **It gives up on time.** Five seconds, and then nothing. The deadline is a
 promise to the person waiting, so it is kept by giving up rather than by

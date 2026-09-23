@@ -58,6 +58,7 @@ from . import (
     evaluate,
     extract,
     git,
+    health,
     inbox,
     lint,
     move,
@@ -873,9 +874,11 @@ def _run_hook(
     except SystemExit:
         raise
     except BaseException as exc:
-        # Quietly, on stderr, where a person debugging the hook will look and a
-        # session will not. The exit code stays 0: see the docstring.
+        # On stderr, where a person debugging the hook will look and a session
+        # will not, and written down, so that the next session start can say
+        # it once. The exit code stays 0: see the docstring.
         _say(f"mabolo: {contract.label} gave up ({type(exc).__name__}: {exc})")
+        health.record(contract.label, f"{type(exc).__name__}: {exc}")
     return EXIT_OK
 
 
@@ -1038,9 +1041,16 @@ def _session_payload(args: argparse.Namespace) -> str:
         text = context.degraded(payload)
     else:
         text = payload.text()
-    # Said only when something is off. A vault that is current costs nothing.
-    note = synced.note() if synced else ""
-    return f"{note}\n\n{text}" if note and text else (note or text)
+    # Said only when something is off. A vault that is current and hooks that
+    # all ran cost nothing.
+    notes = [synced.note() if synced else ""]
+    trouble = health.take()
+    if trouble:
+        notes.append(
+            f"Mabolo had trouble since the last session: {health.summary(trouble)}. "
+            "Tell the person; `mabolo doctor` shows more."
+        )
+    return "\n\n".join(part for part in [*notes, text] if part)
 
 
 def _hook_event() -> dict:
