@@ -169,6 +169,7 @@ exist.
 | `mabolo_write` | full | a new entry, from a sentence you typed |
 | `mabolo_edit` | full | replaces one passage, leaving the rest of the prose alone |
 | `mabolo_describe` | full | replaces the description, the line a session is shown |
+| `mabolo_status` | full | sets whether an entry is current: draft, stable or deprecated |
 | `mabolo_forget` | full | removes an entry; the history keeps it |
 | `mabolo_decide` | full | answers a proposal you named yourself |
 | `journal_add` | full | one line under today's date in `log.md` |
@@ -219,6 +220,14 @@ however plainly you said it. `mabolo_describe` takes the same gate and the same
 revision check, refuses a description that would not fit one line of an index
 rather than letting it be cut there, and does record a verification: unlike a
 link, a description is a claim about what the entry holds.
+
+**So does the status, for the same reason.** It sits in the frontmatter too,
+so a project brought back from the archive kept `deprecated`, and every search
+went on marking it as dead however plainly you said it was back. `mabolo_status`
+takes the gate and the revision check, accepts `draft`, `stable` and
+`deprecated` and nothing else (active is `stable`), and records a verification.
+Its answer repeats the description, because the line written when an entry was
+retired often says so, and then that wants `mabolo_describe` as well.
 
 **A body keeps its paragraphs.** Trailing whitespace goes, a run of blank lines
 becomes one, an indent the whole body shares is dropped, and nothing else is

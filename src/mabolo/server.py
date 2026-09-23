@@ -69,6 +69,7 @@ from .schema import (
     QUOTE_ID,
     DEFAULT_STATUS,
     KNOWN_TYPES,
+    STATUSES,
     Entry,
     Generated,
     MaboloBlock,
@@ -330,7 +331,7 @@ def _register_writing(
         return f"{said}\n\n{given.source_note()}, approved by {settings.actor}"
 
     def answer(result: write.Result, where: str) -> str:
-        """What a write tool says, in one shape for all four of them."""
+        """What a write tool says, in one shape for all of them."""
         if not result.ok:
             return f"{result.outcome}: {result.message}"
         revision = result.revisions.get(where)
@@ -479,6 +480,54 @@ def _register_writing(
             "edit",
         )
         return answer(result, where)
+
+    @server.tool()
+    @_sentence
+    def mabolo_status(name: str, status: str, quote: str, revision: str) -> str:
+        """Set whether an entry is current: draft, stable or deprecated.
+
+        Its own tool for the reason `mabolo_describe` is one: the status sits
+        in the frontmatter, where `mabolo_edit` cannot reach. A project brought
+        back from the archive kept `deprecated`, and every search went on
+        marking it as dead however plainly the person said it was back.
+
+        `stable` is what "active" means here. The answer repeats the
+        description, because the line written when an entry was retired often
+        says so, and then it wants `mabolo_describe` as well.
+        """
+        given = consent_for(quote)
+        if not given.verified:
+            return refuse(given)
+        wanted = status.strip().lower()
+        if wanted not in STATUSES:
+            return f"refused: a status is one of {', '.join(STATUSES)}. Active means stable."
+        path = entry_path(name)
+        document = frontmatter.read(path)
+        if document.revision != revision:
+            return (
+                f"refused: {path.stem} is at revision {document.revision}, not {revision}. "
+                "Read it again and decide."
+            )
+        entry = vault.read_entry(path)
+        if entry.status == wanted:
+            return f"{relative(path)} is already {wanted}, so nothing was written."
+        was = entry.status
+        entry.status = wanted
+        entry.approve(settings.actor, iso(given.at or now()) or "")
+        target, data = vault.render_entry(entry)
+        where = relative(target)
+        result = commit(
+            [write.Change(path=where, data=data, expect=document.revision)],
+            message(f"status {where}: {was} -> {wanted}", given),
+            "edit",
+        )
+        said = answer(result, where)
+        if not result.ok:
+            return said
+        return (
+            f"{said} It was {was}. Its description still reads: {entry.description!r}. "
+            "If that no longer fits, correct it with mabolo_describe."
+        )
 
     @server.tool()
     @_sentence

@@ -1,4 +1,4 @@
-"""The tools a client sees, and the gate in front of the four that claim."""
+"""The tools a client sees, and the gate in front of the ones that claim."""
 
 import datetime as dt
 import subprocess
@@ -77,6 +77,7 @@ def test_the_full_server_offers_everything_that_writes(server):
         "mabolo_write",
         "mabolo_edit",
         "mabolo_describe",
+        "mabolo_status",
         "mabolo_forget",
         "mabolo_decide",
         "journal_add",
@@ -750,6 +751,68 @@ def test_a_description_that_would_not_fit_one_line_is_refused(server, git_vault)
 
     assert "refused" in answer and "400" in answer, answer
     assert frontmatter.read(path).meta["description"] != "x" * 400
+
+
+# The status: whether an entry is current, the other line of frontmatter a person governs
+
+
+def status_of(git_vault) -> str:
+    return frontmatter.read(git_vault.root / "infra" / "deploy-from-main.md").meta["status"]
+
+
+def set_status(server, git_vault, status, quote=QUOTE):
+    path = git_vault.root / "infra" / "deploy-from-main.md"
+    return call(server, "mabolo_status", {
+        "name": "deploy-from-main", "status": status,
+        "quote": quote, "revision": frontmatter.read(path).revision,
+    })
+
+
+def test_an_entry_retired_and_brought_back_says_so_in_every_search(server, git_vault):
+    """The gap this fills: a project brought back from the archive kept
+    `deprecated`, because the status sits where `mabolo_edit` cannot reach."""
+    written(server)
+    set_status(server, git_vault, "deprecated")
+    assert status_of(git_vault) == "deprecated"
+    assert "[deprecated]" in call(server, "mabolo_search", {"query": "releases main"})
+
+    answer = set_status(server, git_vault, "stable")
+
+    assert "refused" not in answer, answer
+    assert status_of(git_vault) == "stable"
+    assert "It was deprecated" in answer and "mabolo_describe" in answer
+    assert "[deprecated]" not in call(server, "mabolo_search", {"query": "releases main"})
+    assert git_vault.validate().ok
+
+
+def test_active_is_not_a_status_and_the_refusal_says_what_is(server, git_vault):
+    written(server)
+    answer = set_status(server, git_vault, "active")
+    assert answer.startswith("refused:") and "Active means stable" in answer, answer
+    assert status_of(git_vault) == "stable"
+
+
+def test_a_status_that_is_already_set_writes_nothing(server, git_vault):
+    written(server)
+    before = git_vault.git("rev-parse", "HEAD").stdout
+    assert "already stable" in set_status(server, git_vault, "stable")
+    assert git_vault.git("rev-parse", "HEAD").stdout == before
+
+
+def test_a_status_needs_a_sentence_the_person_typed(server, git_vault):
+    written(server)
+    answer = set_status(server, git_vault, "deprecated", quote="nobody ever said this")
+    assert answer.startswith("nothing was written"), answer
+    assert status_of(git_vault) == "stable"
+
+
+def test_a_status_against_an_old_revision_is_refused(server, git_vault):
+    written(server)
+    answer = call(server, "mabolo_status", {
+        "name": "deploy-from-main", "status": "deprecated", "quote": QUOTE, "revision": "0" * 12,
+    })
+    assert "Read it again" in answer, answer
+    assert status_of(git_vault) == "stable"
 
 
 def test_correcting_a_description_is_a_claim_and_records_a_verification(server, git_vault, prompts, tmp_path):
