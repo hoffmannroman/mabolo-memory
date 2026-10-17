@@ -420,7 +420,9 @@ made a map that was well inside its budget look like it had broken it. The check
 selection that produced it, which is the only way it can catch a mistake the
 selection did not know it made. It repairs nothing: a payload that fails is
 replaced by the standing rules alone, plus a line saying the map could not be
-built. Losing the map costs a session the knowledge that an entry exists, and
+built and that `mabolo context` shows why. That line used to stop there, and
+sessions guessed at a remedy: reconnecting the server, which cannot help,
+because the server does not build the map. Losing the map costs a session the knowledge that an entry exists, and
 that can be recovered by asking. A rule that silently went missing cannot.
 
 ## It catches up first

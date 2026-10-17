@@ -44,6 +44,7 @@ What it no longer does is grow by a line each time a project folder appears.
 from __future__ import annotations
 
 import datetime as dt
+import sys
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
@@ -516,7 +517,9 @@ class SessionIndex:
 #: What a payload says instead of the map when the map could not be trusted.
 DEGRADED = (
     "The map of this vault could not be built for this session. "
-    "The standing rules above hold. Search the memory by name or topic."
+    "The standing rules above hold. Search the memory by name or topic. "
+    "Tell the person that `mabolo context` shows why. Reconnecting the server "
+    "does not help: a hook builds the map, anew for every session."
 )
 
 
@@ -914,9 +917,18 @@ def _fit(
     # here moves the opening by a digit or two. The first is the budget being
     # too small for the map's own shape, which this function documents and a
     # test pins down; the second is smaller than the rounding in a token count.
+    #
+    # What it must not do is reserve the line as it reads now. An area that
+    # takes a bare name later leaves the line, and a line that was cut at its
+    # ceiling then has room for names it did not hold before. On a real vault
+    # that grew it from 791 characters to 798, the payload failed its check at
+    # 601 tokens against 600, and every session in that folder started without
+    # a map. So the line is measured uncut, and the ceiling caps it: fewer areas
+    # never make an uncut line longer, and no line is longer than its ceiling.
     empty = sorted((a, c) for a, c in counts.items() if a not in candidate_areas)
     if empty:
-        fixed += min(ELSEWHERE_CHARS, len(elsewhere(empty))) + 2
+        uncut = elsewhere(empty, limit=sys.maxsize)
+        fixed += min(ELSEWHERE_CHARS, len(uncut)) + 2
     longest_footer = max(len(footer(0)), len(footer(total)), len(footer(total, total)))
     budget = target_tokens * CHARS_PER_TOKEN - fixed - longest_footer
 

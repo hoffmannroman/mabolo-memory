@@ -386,6 +386,23 @@ def test_a_newline_in_an_area_name_cannot_forge_a_heading_on_that_line():
     assert not line.startswith("## ")
 
 
+def test_an_area_that_leaves_a_cut_line_does_not_make_the_line_longer_than_reserved():
+    """The line about empty areas was reserved as it read before any name was
+    fitted. When an area then took a bare name it left that line, and a line cut
+    at its ceiling filled the room with names it had not held: 791 characters
+    reserved, 798 written, 601 tokens against 600, and the hook threw the map
+    away for every session in that folder. `persona` sorts before the project
+    folders, so it is the area that leaves and opens the room."""
+    docs = [doc("shown", area="infra", days_ago=1), doc("p", area="persona", days_ago=400)]
+    docs += [
+        doc(f"e{i:02d}", area=f"project/{'x' * (i % 20)}{i:03d}", days_ago=400)
+        for i in range(41)
+    ]
+    for target in range(300, 420, 2):
+        index = context.build(docs, as_of=NOW, target_tokens=target)
+        assert context.violations(index) == (), (target, index.text())
+
+
 def test_an_area_opened_by_a_bare_name_pays_for_its_own_heading():
     """`_fit` reserves a heading only for an area some line could land in. An
     area that gets no line and then takes a bare name is written out for the
