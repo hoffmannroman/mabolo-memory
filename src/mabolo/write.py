@@ -103,6 +103,9 @@ KINDS = (
     # and readdresses links and changes nothing about what the memory knows, so
     # a reader of the history can tell it from a commit that does.
     "move",
+    # The reports branch, where every machine puts its record of what went
+    # wrong with Mabolo itself. Like the inbox it is never merged.
+    "reports",
 )
 
 

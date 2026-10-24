@@ -226,8 +226,9 @@ This is early, and the README says only what exists:
   touches the journal: what the journal says was true on the day it was
   written. Those it lists instead, for a person to decide about.
 * **Mabolo writes down its own faults.** A hook that gave up, a tool that
-  broke, and what a session reports through `mabolo_report` are kept per
-  machine until somebody deals with them, and `mabolo reports` lists them.
+  broke, and what a session reports through `mabolo_report` are kept until
+  somebody deals with them, shared between machines on a branch of the vault's
+  repository, and `mabolo reports` lists them.
   `mabolo improve` hands one to an agent in a worktree of its own, and pushes the
   fix only when the tests, the eval and the validation hold, no test was lost
   and the consent gate was not touched. See [when Mabolo itself goes

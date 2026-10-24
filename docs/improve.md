@@ -10,9 +10,11 @@ hand one at a time to an agent that tries to fix it.
 mabolo reports                 # what is open on this machine
 mabolo reports --all           # including what was fixed or looked at
 mabolo reports --close <id>    # settle one by hand, with --note for why
+mabolo reports --local         # this machine only, without fetching the others
 ```
 
-Three kinds of fault arrive, all in `~/.local/state/mabolo/reports.jsonl`:
+Three kinds of fault arrive, all in `~/.local/state/mabolo/reports.jsonl`
+first:
 
 * **A hook that gave up.** The next session start still says so once, as it
   always did. That notice is used up when it is shown; the record is not.
@@ -29,8 +31,19 @@ seen forty times. Nothing is ever deleted when it is dealt with. A status is
 appended, and a problem that happens again afterwards is open again, which is
 how a fix that did not work announces itself.
 
-The record is per machine and stays out of the vault. The vault holds what a
-person agreed to keep; this is not that.
+**Every machine sees every machine's faults.** The record is kept per machine,
+and published on a branch called `reports` in the vault's repository, one file
+per machine named after it. Like the inbox, the branch is a single commit with
+no history, never merged into `main` and never checked out, so none of it
+becomes an entry. Each machine only ever replaces its own file, so there is
+nothing to merge. `mabolo reports` and `mabolo improve` publish and fetch
+before they read, and a session start publishes in the background when this
+machine's record changed. A fault from one machine can be fixed and settled on
+another; `--local` reads this machine alone.
+
+What is published is what was recorded: exception messages, the place they
+happened, a session's account. That can name paths and projects, so the vault's
+remote has to be one you would show your notes to.
 
 ## Fixing one
 

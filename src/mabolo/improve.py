@@ -129,14 +129,14 @@ Agent = Callable[[Path, str, str], str]
 Measurer = Callable[[Path], Measure]
 
 
-def choose(wanted: str | None = None) -> reports.Problem | None:
+def choose(wanted: str | None = None, elsewhere: list[dict] | None = None) -> reports.Problem | None:
     """The problem a run takes: the one named, or the most frequent open one."""
     if wanted:
-        found = reports.find(wanted)
+        found = reports.find(wanted, elsewhere)
         if found is None:
             raise MaboloError(f"there is no problem {wanted!r}. `mabolo reports --all` lists them.")
         return found
-    waiting = reports.open_problems()
+    waiting = reports.open_problems(elsewhere)
     return waiting[0] if waiting else None
 
 
@@ -240,21 +240,23 @@ def run(
     remote: str = "origin",
     branch: str = "main",
     install: bool = True,
+    elsewhere: list[dict] | None = None,
     agent: Agent = claude,
     checks: Measurer = measure,
     say: Callable[[str], None] = print,
 ) -> Outcome:
     """Fix one problem, or say why not. See the module docstring."""
     repo = _repository(repo)
-    problem = choose(wanted)
+    problem = choose(wanted, elsewhere)
     if problem is None:
         return Outcome(NOTHING, "", "no problem is waiting.")
     with _lock():
         return _attempt(repo, problem, model, guard or [], share or [], remote, branch,
-                        install, agent, checks, say)
+                        install, agent, checks, say, elsewhere or [])
 
 
-def _attempt(repo, problem, model, guard, share, remote, branch, install, agent, checks, say) -> Outcome:
+def _attempt(repo, problem, model, guard, share, remote, branch, install, agent, checks, say,
+             elsewhere) -> Outcome:
     say(f"taking {reports.line(problem)}")
     if not guard:
         say("no guard is configured, so only the tests, the eval and the validation decide")
@@ -278,22 +280,22 @@ def _attempt(repo, problem, model, guard, share, remote, branch, install, agent,
         said = agent(where, prompt_for(problem, model), model)
         head = _git(where, "rev-parse", "HEAD").stdout.strip()
         if head == base:
-            reports.settle(problem.id, reports.EXAMINED, note=said)
+            reports.settle(problem.id, reports.EXAMINED, note=said, elsewhere=elsewhere)
             _drop(repo, where, name)
             return Outcome(NOTHING, problem.id, f"the agent changed nothing. It said:\n{said}")
         reason = _held_back(where, base, before, checks, guard)
         if not reason:
             reason, head = _onto_latest(where, remote, branch, base, checks)
         if reason:
-            reports.settle(problem.id, reports.EXAMINED, note=f"kept on {name}: {reason}\n{said}")
+            reports.settle(problem.id, reports.EXAMINED, note=f"kept on {name}: {reason}\n{said}", elsewhere=elsewhere)
             _git(repo, "worktree", "remove", "--force", str(where))
             return Outcome(KEPT, problem.id, f"kept on {name}, not pushed: {reason}\n\n{said}", head)
         pushed = _git(where, "push", "-q", remote, f"HEAD:{branch}", check=False)
         if pushed.returncode != 0:
-            reports.settle(problem.id, reports.EXAMINED, note=f"kept on {name}: the push failed")
+            reports.settle(problem.id, reports.EXAMINED, note=f"kept on {name}: the push failed", elsewhere=elsewhere)
             _git(repo, "worktree", "remove", "--force", str(where))
             return Outcome(KEPT, problem.id, f"kept on {name}: the push failed.\n{pushed.stderr}", head)
-        reports.settle(problem.id, reports.FIXED, note=said, commit=head)
+        reports.settle(problem.id, reports.FIXED, note=said, commit=head, elsewhere=elsewhere)
         _drop(repo, where, name)
         after = _update(repo, remote, branch, install)
         return Outcome(PUSHED, problem.id, f"pushed {head[:12]} to {remote}/{branch}. {after}\n\n{said}", head)

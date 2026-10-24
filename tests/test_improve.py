@@ -231,3 +231,14 @@ def test_a_directory_that_is_not_mabolo_is_refused(tmp_path, git_identity, probl
     subprocess.run(["git", "init", "-q", str(tmp_path / "elsewhere")], check=True)
     with pytest.raises(MaboloError, match="not a checkout of Mabolo"):
         improve.run(tmp_path / "elsewhere", agent=editing("x", "y"), checks=steady(), say=lambda line: None)
+
+
+def test_a_problem_from_another_machine_is_taken_and_settled(checkout):
+    elsewhere = [{"id": "feedbeef", "at": "2026-01-02T10:00:00+03:00", "host": "other",
+                  "source": reports.TOOL, "where": "mabolo_read tool", "message": "OSError: gone"}]
+    assert improve.choose() is None, "nothing on this machine"
+    done = run(checkout, elsewhere=elsewhere)
+    assert done.status == improve.PUSHED, done.message
+    assert done.problem == "feedbeef"
+    settled = reports.find("feedbeef", elsewhere)
+    assert settled.status["status"] == reports.FIXED, "the status line counts for the other machine's problem"

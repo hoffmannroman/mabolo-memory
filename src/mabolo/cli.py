@@ -39,6 +39,7 @@ import argparse
 import json
 import shutil
 import signal
+import subprocess
 import sys
 import datetime as dt
 from pathlib import Path
@@ -817,12 +818,23 @@ def cmd_reports(args: argparse.Namespace) -> int:
     Open problems only, unless `--all`: one that was fixed or looked at stays on
     record, and comes back here by itself the next time it happens.
     """
+    if args.sync:
+        # What the session start leaves running in the background. It has
+        # nobody to tell, so it says nothing and never fails.
+        try:
+            _reports_elsewhere(args)
+        except Exception:
+            pass
+        return EXIT_OK
+    elsewhere = [] if args.local else _reports_elsewhere(args)
     if args.close:
-        if not reports.settle(args.close, reports.CLOSED, note=args.note or ""):
+        if not reports.settle(args.close, reports.CLOSED, note=args.note or "", elsewhere=elsewhere):
             raise MaboloError(f"there is no problem {args.close!r}. `mabolo reports --all` lists them.")
+        if not args.local:
+            _reports_elsewhere(args)
         print(f"{args.close} is closed. It opens again if it happens once more.")
         return EXIT_OK
-    shown = reports.problems() if args.all else reports.open_problems()
+    shown = reports.problems(elsewhere) if args.all else reports.open_problems(elsewhere)
     if not shown:
         print("nothing is waiting." if not args.all else "nothing was ever reported on this machine.")
         return EXIT_OK
@@ -837,8 +849,9 @@ def cmd_reports(args: argparse.Namespace) -> int:
 def cmd_improve(args: argparse.Namespace) -> int:
     """Hand one recorded problem to an agent, and push its fix if it holds."""
     config = Config.load_if_present(_config_path(args))
+    elsewhere = _reports_elsewhere(args)
     if args.dry_run:
-        problem = improve.choose(args.problem)
+        problem = improve.choose(args.problem, elsewhere)
         if problem is None:
             print("no problem is waiting.")
             return EXIT_OK
@@ -851,9 +864,44 @@ def cmd_improve(args: argparse.Namespace) -> int:
         guard=config.improve_guard if config else [],
         share=config.improve_share if config else [],
         install=not args.no_install,
+        elsewhere=elsewhere,
     )
+    # Published again, so the other machines learn what became of it.
+    _reports_elsewhere(args)
     print(done.message)
     return EXIT_OK if done.status != improve.KEPT else EXIT_ERROR
+
+
+def _reports_elsewhere(args: argparse.Namespace) -> list[dict]:
+    """Publish this machine's reports and fetch the other machines', when the
+    vault has a remote. Nothing, and a line on stderr, when that fails."""
+    config = Config.load_if_present(_config_path(args))
+    if config is None:
+        return []
+    _, remote, _ = config.target()
+    try:
+        return reports.sync(config.vault, remote)
+    except MaboloError as exc:
+        _say(f"mabolo: the other machines' reports are not included ({exc})")
+        return []
+
+
+def _publish_reports_later(args: argparse.Namespace) -> None:
+    """Start a sync of this machine's reports that outlives the hook.
+
+    Only when the record changed since it was last published, which is
+    almost never. It runs on its own, because a fetch and a push do not fit
+    into the deadline of a session start, and nothing waits for it.
+    """
+    if not reports.needs_sync():
+        return
+    given = _config_path(args)
+    argv = [sys.executable, "-m", "mabolo", *(["--config", str(given)] if given else []), "reports", "--sync"]
+    try:
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -1091,6 +1139,7 @@ def _session_payload(args: argparse.Namespace) -> str:
     # Said only when something is off. A vault that is current and hooks that
     # all ran cost nothing.
     notes = [synced.note() if synced else ""]
+    _publish_reports_later(args)
     trouble = health.take()
     if trouble:
         notes.append(
@@ -1511,6 +1560,8 @@ def build_parser() -> argparse.ArgumentParser:
     trouble.add_argument("--all", action="store_true", help="the settled problems as well")
     trouble.add_argument("--close", metavar="ID", help="settle a problem by hand")
     trouble.add_argument("--note", help="why, with --close")
+    trouble.add_argument("--local", action="store_true", help="this machine only, without the other machines")
+    trouble.add_argument("--sync", action="store_true", help="publish and fetch, quietly, and print nothing")
     trouble.set_defaults(func=cmd_reports)
 
     better = sub.add_parser("improve", help="let an agent fix one reported problem, and push it if it holds")
