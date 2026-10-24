@@ -1,3 +1,4 @@
+import datetime as dt
 import io
 import os
 import time
@@ -1352,8 +1353,11 @@ def test_the_inbox_brings_itself_up_to_date_before_listing(tmp_path, capsys, git
     first.git_initialise()
     first.git_set_remote(str(origin))
     first.git("push", "-q", "origin", "main")
+    # Filed now, not on a fixed date: a proposal expires, and a dated one
+    # turned this test red thirty days after it was written.
     filed = Proposal(action="forget", target="a-thing", quote="please forget the thing",
-                     source="process:extract", filed_at="2026-09-19T10:00:00+03:00")
+                     source="process:extract",
+                     filed_at=dt.datetime.now().astimezone().isoformat(timespec="seconds"))
     inbox.file(first.root, filed, remote="origin")
 
     second = tmp_path / "two"
