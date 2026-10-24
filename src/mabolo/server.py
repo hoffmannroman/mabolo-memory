@@ -86,7 +86,8 @@ from .vault import PassageNotUnique, Vault
 #: into a context that the whole project exists to keep small.
 INSTRUCTIONS = (
     "A memory made of Markdown and Git. Search for what is known, read what "
-    "looks relevant, and write only what the person just said, quoting them."
+    "looks relevant, and write only what the person just said, quoting them. "
+    "When Mabolo itself misbehaves, tell the person and file it with mabolo_report."
 )
 
 # The id a quote gets lives in `schema`, with the function that writes it.
