@@ -175,7 +175,8 @@ This is early, and the README says only what exists:
   See [quiet recall](docs/recall.md).
 * `mabolo serve` runs the MCP server your client talks to. It offers
   `mabolo_search` and `mabolo_read`, which are two calls on purpose so that the
-  price of a payload is known before it arrives, and the tools that change the
+  price of a payload is known before it arrives, `mabolo_report` for a fault in
+  Mabolo itself, and the tools that change the
   vault: `mabolo_write`, `mabolo_edit`, `mabolo_describe`, `mabolo_status`,
   `mabolo_forget`, `mabolo_decide`, `journal_add` and `mabolo_reindex`. The ones that make a
   claim about you take the sentence that authorised it, word for word, and the
@@ -224,6 +225,13 @@ This is early, and the README says only what exists:
   the folder, and does it in one commit. It does not rewrite prose and it never
   touches the journal: what the journal says was true on the day it was
   written. Those it lists instead, for a person to decide about.
+* **Mabolo writes down its own faults.** A hook that gave up, a tool that
+  broke, and what a session reports through `mabolo_report` are kept per
+  machine until somebody deals with them, and `mabolo reports` lists them.
+  `mabolo improve` hands one to an agent in a worktree of its own, and pushes the
+  fix only when the tests, the eval and the validation hold, no test was lost
+  and the consent gate was not touched. See [when Mabolo itself goes
+  wrong](docs/improve.md).
 * `mabolo revert` and `mabolo recover` are the way back. Everything Mabolo
   writes is one commit, so `git revert` already works; these add the trailer,
   the lease, and a refusal to throw away a hand edit while repairing.

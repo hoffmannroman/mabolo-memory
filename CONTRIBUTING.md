@@ -49,6 +49,10 @@ A server whose code changed on disk after it started ends every answer with a
 line saying so, so a session left open across an update finds out and can be
 reconnected.
 
+**A fault you can hand over.** `mabolo reports` lists what went wrong on this
+machine, and `mabolo improve` lets an agent try one in a worktree, keeping the
+fix back unless every check holds. See `docs/improve.md`.
+
 **Before opening an issue:** say which operating system and which version, what
 you expected and what happened. A vault is personal, so never paste entries you
 would not publish.

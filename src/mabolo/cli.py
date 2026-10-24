@@ -59,6 +59,7 @@ from . import (
     extract,
     git,
     health,
+    improve,
     inbox,
     lint,
     move,
@@ -66,6 +67,7 @@ from . import (
     proposal,
     recall,
     recover,
+    reports,
     seen,
     session,
     wiring,
@@ -809,6 +811,51 @@ def cmd_why(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_reports(args: argparse.Namespace) -> int:
+    """List what went wrong with Mabolo itself, or settle one problem by hand.
+
+    Open problems only, unless `--all`: one that was fixed or looked at stays on
+    record, and comes back here by itself the next time it happens.
+    """
+    if args.close:
+        if not reports.settle(args.close, reports.CLOSED, note=args.note or ""):
+            raise MaboloError(f"there is no problem {args.close!r}. `mabolo reports --all` lists them.")
+        print(f"{args.close} is closed. It opens again if it happens once more.")
+        return EXIT_OK
+    shown = reports.problems() if args.all else reports.open_problems()
+    if not shown:
+        print("nothing is waiting." if not args.all else "nothing was ever reported on this machine.")
+        return EXIT_OK
+    for problem in shown:
+        print(reports.line(problem))
+    if args.all:
+        return EXIT_OK
+    print(f"\n`mabolo improve` takes the first one, `mabolo improve --problem <id>` another.")
+    return EXIT_OK
+
+
+def cmd_improve(args: argparse.Namespace) -> int:
+    """Hand one recorded problem to an agent, and push its fix if it holds."""
+    config = Config.load_if_present(_config_path(args))
+    if args.dry_run:
+        problem = improve.choose(args.problem)
+        if problem is None:
+            print("no problem is waiting.")
+            return EXIT_OK
+        print(improve.prompt_for(problem, args.model))
+        return EXIT_OK
+    done = improve.run(
+        Path(args.repo or Path.cwd()),
+        wanted=args.problem,
+        model=args.model,
+        guard=config.improve_guard if config else [],
+        share=config.improve_share if config else [],
+        install=not args.no_install,
+    )
+    print(done.message)
+    return EXIT_OK if done.status != improve.KEPT else EXIT_ERROR
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Run the MCP server on stdin and stdout until the client goes away.
 
@@ -1048,7 +1095,7 @@ def _session_payload(args: argparse.Namespace) -> str:
     if trouble:
         notes.append(
             f"Mabolo had trouble since the last session: {health.summary(trouble)}. "
-            "Tell the person; `mabolo doctor` shows more."
+            "Tell the person; `mabolo reports` keeps it, `mabolo improve` can take it up."
         )
     return "\n\n".join(part for part in [*notes, text] if part)
 
@@ -1459,6 +1506,20 @@ def build_parser() -> argparse.ArgumentParser:
     why.add_argument("entry", help="the entry's name, or one of its aliases")
     why.add_argument("path", nargs="?", help="the vault, default is the configured one")
     why.set_defaults(func=cmd_why)
+
+    trouble = sub.add_parser("reports", help="what went wrong with Mabolo itself, on this machine")
+    trouble.add_argument("--all", action="store_true", help="the settled problems as well")
+    trouble.add_argument("--close", metavar="ID", help="settle a problem by hand")
+    trouble.add_argument("--note", help="why, with --close")
+    trouble.set_defaults(func=cmd_reports)
+
+    better = sub.add_parser("improve", help="let an agent fix one reported problem, and push it if it holds")
+    better.add_argument("--repo", help="Mabolo's own checkout, default is the current directory")
+    better.add_argument("--problem", metavar="ID", help="the problem to take, default is the most frequent")
+    better.add_argument("--model", default=improve.DEFAULT_MODEL, help="the model the agent runs on")
+    better.add_argument("--dry-run", action="store_true", help="print what the agent would be told, and stop")
+    better.add_argument("--no-install", action="store_true", help="do not reinstall after a push")
+    better.set_defaults(func=cmd_improve)
 
     serve = sub.add_parser("serve", help="run the MCP server a client talks to")
     serve.add_argument("path", nargs="?", help="the vault, default is the configured one")

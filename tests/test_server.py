@@ -66,7 +66,8 @@ def test_read_mode_does_not_offer_a_way_to_write(git_vault, prompts, tmp_path):
         git_vault,
         Settings(actor="human:alex", cwd=tmp_path, session="s", prompts=prompts, read_only=True),
     )
-    assert tool_names(reading) == ["mabolo_search", "mabolo_read", "mabolo_propose"]
+    # A report writes nothing into the vault, so read mode keeps it.
+    assert tool_names(reading) == ["mabolo_search", "mabolo_read", "mabolo_propose", "mabolo_report"]
 
 
 def test_the_full_server_offers_everything_that_writes(server):
@@ -74,6 +75,7 @@ def test_the_full_server_offers_everything_that_writes(server):
         "mabolo_search",
         "mabolo_read",
         "mabolo_propose",
+        "mabolo_report",
         "mabolo_write",
         "mabolo_edit",
         "mabolo_describe",

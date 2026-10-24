@@ -157,7 +157,7 @@ The way back from any change is `git revert` of a single commit.
 ## The tools
 
 A client that speaks MCP gets these. `mabolo serve --read-only` registers only
-the three marked always, which is what an unattended agent, a lint pass or a
+the four marked always, which is what an unattended agent, a lint pass or a
 subagent is started with: the write tools are not refused there, they do not
 exist.
 
@@ -166,6 +166,7 @@ exist.
 | `mabolo_search` | always | one line per entry, with what reading them all would cost |
 | `mabolo_read` | always | entries in full, each with its revision |
 | `mabolo_propose` | always | files a suggestion for you to answer later |
+| `mabolo_report` | always | records that Mabolo itself misbehaved, outside the vault; see [improve.md](improve.md) |
 | `mabolo_write` | full | a new entry, from a sentence you typed |
 | `mabolo_edit` | full | replaces one passage, leaving the rest of the prose alone |
 | `mabolo_describe` | full | replaces the description, the line a session is shown |

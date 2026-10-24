@@ -59,6 +59,7 @@ from . import (
     journal,
     lint,
     proposal,
+    reports,
     session,
     validate,
     write,
@@ -140,7 +141,14 @@ def _sentence(function: Callable[..., str]) -> Callable[..., str]:
         except MaboloError as exc:
             said = f"refused: {exc}"
         except (OSError, ValueError) as exc:
+            # Not a refusal: nothing decided against the call, something broke
+            # under it. Written down, so that it is still known once the
+            # session that saw it is gone.
+            health.record(f"{function.__name__} tool", f"{type(exc).__name__}: {exc}", source=reports.TOOL)
             said = f"refused: {exc}"
+        except Exception as exc:
+            health.record(f"{function.__name__} tool", f"{type(exc).__name__}: {exc}", source=reports.TOOL)
+            raise
         # Every answer, because an answer is the one thing a session is sure
         # to read, and the old code is still answering until somebody acts.
         note = health.stale_note(LOADED)
@@ -262,6 +270,29 @@ def build(vault: Vault, settings: Settings) -> MCPServer:
         if not result.ok:
             return f"{result.outcome}: {result.message}"
         return f"{made.id} is waiting for an answer: {result.message}."
+
+    @server.tool()
+    @_sentence
+    def mabolo_report(what: str, expected: str = "") -> str:
+        """Report that Mabolo itself misbehaved, so that it can be fixed.
+
+        For a fault in this memory, not for a fact about the person: a tool
+        that answered wrongly or not at all, a start block that left out what
+        it should hold, a refusal that was wrong. Say what happened in `what`
+        and, when you know it, what should have happened in `expected`. Leave
+        out anything private that the fault does not need.
+
+        This needs no quote and writes nothing into the vault. It is kept on
+        this machine until somebody has dealt with it. Tell the person as well.
+        """
+        said = what.strip()
+        if not said:
+            return "refused: say what went wrong in `what`."
+        if expected.strip():
+            said = f"{said}\nexpected: {expected.strip()}"
+        where = settings.cwd.name if settings.cwd else ""
+        found = reports.add(reports.SESSION, where, said)
+        return f"reported as {found}. `mabolo reports` lists it until it is dealt with."
 
     if not settings.read_only:
         _register_writing(server, vault, settings, entry_path, relative, consent_for, commit, index)

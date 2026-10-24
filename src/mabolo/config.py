@@ -201,6 +201,14 @@ class Config:
     #: this tool may guess, and a feature that silently does nothing is worse
     #: than one that is switched off out loud.
     extract_command: list[str] = field(default_factory=list)
+    #: What `mabolo improve` runs before it pushes a fix, as an argument list,
+    #: in the working copy the fix was made in. A failure keeps the fix back.
+    #: This is where a check belongs that only this machine can make, such as
+    #: a list of strings that must never reach a public repository.
+    improve_guard: list[str] = field(default_factory=list)
+    #: Untracked paths of the repository that the working copy of a fix links
+    #: to, for a guard or a Git hook that reads files nobody commits.
+    improve_share: list[str] = field(default_factory=list)
     #: True when the vault came from the environment, so `save` refuses to make
     #: a one-run override permanent.
     vault_from_environment: bool = False
@@ -243,6 +251,14 @@ class Config:
             )
         if not isinstance(command, list) or not all(isinstance(one, str) for one in command):
             raise MaboloError(f"{where}: extract.command is a list of arguments, as text")
+
+        improve = data.get("improve", {})
+        if not isinstance(improve, dict):
+            raise MaboloError(f"{where}: [improve] must be a table")
+        for key in ("guard", "share"):
+            value = improve.get(key, [])
+            if not isinstance(value, list) or not all(isinstance(one, str) for one in value):
+                raise MaboloError(f"{where}: improve.{key} is a list of strings")
 
         remote = data.get("remote", {})
         if not isinstance(remote, dict):
@@ -288,7 +304,7 @@ class Config:
             )
 
         override = os.environ.get(ENV_VAULT)
-        known = {"version", "vault", "actor", "areas", "language", "remote", "extract"}
+        known = {"version", "vault", "actor", "areas", "language", "remote", "extract", "improve"}
         known_remote = {"url", "branch"}
         return cls(
             vault=Path(override or vault).expanduser(),
@@ -296,6 +312,8 @@ class Config:
             areas=list(areas),
             language=language,
             extract_command=list(command),
+            improve_guard=list(improve.get("guard", [])),
+            improve_share=list(improve.get("share", [])),
             remote_url=str(remote["url"]) if remote.get("url") else None,
             remote_branch=branch,
             version=raw_version,
@@ -380,6 +398,17 @@ class Config:
             f"command = {_toml_value(self.extract_command)}",
             "",
         ]
+        if self.improve_guard or self.improve_share:
+            # Only when set: it is for working on Mabolo itself, and a section
+            # every configuration carries would read like something to fill in.
+            lines += [
+                "[improve]",
+                "# What `mabolo improve` runs before it pushes a fix, and the",
+                "# untracked paths its working copy links to. See docs/improve.md.",
+                f"guard = {_toml_value(self.improve_guard)}",
+                f"share = {_toml_value(self.improve_share)}",
+                "",
+            ]
         for key, value in self.unknown.items():
             if isinstance(value, dict):
                 lines.append(f"[{key}]")

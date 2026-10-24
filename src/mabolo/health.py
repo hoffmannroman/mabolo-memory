@@ -12,7 +12,8 @@ code it loaded, and every answer it gives says so once that code has changed.
 **A hook that gave up.** A hook never fails a session, which is right, and it
 says why on stderr, which nobody reads. The reason is now also written down
 here, and the next session start reports it once. `doctor` reports it too,
-without using it up.
+without using it up. A tool that failed is reported the same way. Both are
+kept in `reports` as well, where they stay after the notice is gone.
 
 Nothing here raises. It is called from the two places that must keep working
 whatever happens, a hook and a tool answer.
@@ -26,6 +27,7 @@ import json
 import os
 from pathlib import Path
 
+from . import reports
 from .consent import state_home
 
 #: How many failures are kept. A hook that fails on every prompt would
@@ -69,8 +71,13 @@ def problems_path() -> Path:
     return state_home() / "mabolo" / PROBLEMS_FILE
 
 
-def record(hook: str, message: str, at: dt.datetime | None = None) -> None:
-    """Write down that a hook gave up, and why."""
+def record(hook: str, message: str, at: dt.datetime | None = None, source: str = reports.HOOK) -> None:
+    """Write down that a hook gave up, and why.
+
+    Twice: here, for the notice the next session start gives and then forgets,
+    and in `reports`, which keeps it until somebody has dealt with it.
+    """
+    reports.add(source, hook, message, kind=message.split(":", 1)[0], at=at)
     moment = (at or dt.datetime.now().astimezone()).isoformat(timespec="seconds")
     line = json.dumps({"at": moment, "hook": hook, "error": message}, ensure_ascii=False)
     path = problems_path()

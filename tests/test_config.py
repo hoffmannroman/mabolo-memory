@@ -233,3 +233,29 @@ def test_one_line_instead_of_a_list_is_refused_rather_than_split(tmp_path):
     with pytest.raises(MaboloError) as caught:
         Config.load(path)
     assert "list of arguments" in str(caught.value)
+
+
+# What `mabolo improve` runs before it pushes, and what its worktree shares.
+
+
+def test_the_improve_settings_survive_a_round_trip(tmp_path):
+    made = Config.default(tmp_path / "v")
+    made.improve_guard = ["python3", "check.py", "--history"]
+    made.improve_share = ["notes"]
+    path = made.save(tmp_path / "c.toml")
+    loaded = Config.load(path)
+    assert loaded.improve_guard == ["python3", "check.py", "--history"]
+    assert loaded.improve_share == ["notes"]
+    assert "improve" not in loaded.unknown
+
+
+def test_a_configuration_that_does_not_improve_carries_no_section_for_it(tmp_path):
+    path = Config.default(tmp_path / "v").save(tmp_path / "c.toml")
+    assert "[improve]" not in path.read_text(encoding="utf-8")
+
+
+def test_an_improve_guard_given_as_one_line_is_refused(tmp_path):
+    path = tmp_path / "c.toml"
+    path.write_text(f'vault = "{tmp_path / "v"}"\n[improve]\nguard = "check --all"\n', encoding="utf-8")
+    with pytest.raises(MaboloError, match="improve.guard"):
+        Config.load(path)
