@@ -489,15 +489,30 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         print("Answer with `mabolo inbox <id> yes` or `<id> no`, ids may be shortened.")
         return EXIT_OK
 
-    decisions = _verdicts(args.verdicts)
-    answers = []
-    for wanted, approved in decisions:
-        one = proposal.resolve(wanted, listing.proposals)
-        answers.append(
-            decide.answer(vault, one, approved=approved, by=actor, remote=remote, branch=branch)
-        )
-        print(answers[-1].line())
-    return EXIT_OK if all(a.ok for a in answers) else EXIT_FINDINGS
+    # Every id is resolved before anything is written, so a typo in the last
+    # pair refuses the whole line instead of leaving half of it carried out.
+    decisions = [
+        (proposal.resolve(wanted, listing.proposals), approved)
+        for wanted, approved in _verdicts(args.verdicts)
+    ]
+    # Then each answer on its own. One proposal a yes cannot carry out used to
+    # stop the loop, and every answer after it, a no included, was dropped
+    # without a word; the person had to notice which ids were still listed.
+    failed = 0
+    for one, approved in decisions:
+        try:
+            answered = decide.answer(
+                vault, one, approved=approved, by=actor, remote=remote, branch=branch
+            )
+        except MaboloError as wrong:
+            failed += 1
+            _say(f"mabolo: {one.id} was not answered: {wrong}")
+            continue
+        print(answered.line())
+        failed += not answered.ok
+    if failed:
+        _say(f"mabolo: {failed} of {len(decisions)} not done, the rest went through.")
+    return EXIT_FINDINGS if failed else EXIT_OK
 
 
 def _verdicts(words: list[str]) -> list[tuple[str, bool]]:

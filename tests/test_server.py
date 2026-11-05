@@ -834,3 +834,31 @@ def test_correcting_a_description_is_a_claim_and_records_a_verification(server, 
 
     after = frontmatter.read(path)
     assert len(after.meta["verified"]) > len(before.meta["verified"])
+
+
+@pytest.mark.parametrize("over", [
+    # The three shapes that waited in a real inbox for weeks and failed only at
+    # the yes: an area for a target with the file's name in `entry`, a bare
+    # name for a target, and the whole file in `new` with a path in `entry`.
+    {"target": "infra", "entry": "deploy-from-main", "new": ENTRY_TEXT},
+    {"target": "deploy-from-main"},
+    {"entry": "infra/deploy-from-main.md", "new": ENTRY_TEXT},
+], ids=["area-only", "name-only", "content-in-new"])
+def test_a_proposal_a_yes_could_not_carry_out_is_refused_when_filed(server, git_vault, over):
+    answer = propose(server, **over)
+    assert answer.startswith("refused: a yes could not carry this out")
+    assert inbox.pending(git_vault.root) == []
+
+
+def test_a_proposal_to_write_an_entry_that_exists_is_refused_when_filed(server, git_vault):
+    (git_vault.root / "infra" / "deploy-from-main.md").write_text(ENTRY_TEXT, encoding="utf-8")
+    assert "already an entry" in propose(server)
+    assert inbox.pending(git_vault.root) == []
+
+
+def test_an_edit_whose_passage_is_not_there_is_refused_when_filed(server, git_vault):
+    (git_vault.root / "infra" / "deploy-from-main.md").write_text(ENTRY_TEXT, encoding="utf-8")
+    answer = propose(server, action="edit", target="deploy-from-main", entry="",
+                     old="cut from a branch", new="cut from main")
+    assert answer.startswith("refused")
+    assert inbox.pending(git_vault.root) == []

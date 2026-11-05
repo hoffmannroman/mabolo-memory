@@ -1435,3 +1435,58 @@ def test_reindex_commits_through_the_same_door_as_every_other_change(tmp_path, c
     assert "Mabolo:" in message, message
     assert "reindex" in message, message
     assert Vault(root).git("status", "--porcelain").stdout.strip() == "", "nothing left uncommitted"
+
+
+def test_one_answer_that_cannot_be_carried_out_does_not_drop_the_others(
+    tmp_path, capsys, git_identity
+):
+    """`a yes, b yes, c no` with b broken carried out a and then stopped, so
+    the no for c was never recorded and nothing said so."""
+    from mabolo import inbox
+    from mabolo.proposal import Proposal
+
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    vault.git_initialise()
+    config = tmp_path / "c.toml"
+    config.write_text(f'vault = "{vault.root}"\nactor = "human:alex"\n', encoding="utf-8")
+    filed_at = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    good = Proposal(action="write", target="infra/good", quote="keep the good one",
+                    entry=entry_text(area="infra", description="The good one"),
+                    source="process:extract", filed_at=filed_at)
+    # Filed straight onto the branch, past the check a tool call now makes.
+    broken = Proposal(action="write", target="infra", quote="keep the broken one",
+                      entry="broken", source="process:extract", filed_at=filed_at)
+    refused = Proposal(action="forget", target="a-thing", quote="forget the thing",
+                       source="process:extract", filed_at=filed_at)
+    for one in (good, broken, refused):
+        inbox.file(vault.root, one)
+
+    code = main(["--config", str(config), "inbox",
+                 good.id, "yes", broken.id, "yes", refused.id, "no"])
+    out = capsys.readouterr()
+    assert code != 0
+    assert f"{broken.id} was not answered" in out.err
+    assert f"{refused.id} refused" in out.out
+    assert (vault.root / "infra" / "good.md").exists()
+    assert [p.id for p in inbox.pending(vault.root)] == [broken.id]
+
+
+def test_an_id_that_matches_nothing_refuses_the_whole_line(tmp_path, capsys, git_identity):
+    from mabolo import inbox
+    from mabolo.proposal import Proposal
+
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    vault.git_initialise()
+    config = tmp_path / "c.toml"
+    config.write_text(f'vault = "{vault.root}"\nactor = "human:alex"\n', encoding="utf-8")
+    waiting = Proposal(action="forget", target="a-thing", quote="forget the thing",
+                       source="process:extract",
+                       filed_at=dt.datetime.now().astimezone().isoformat(timespec="seconds"))
+    inbox.file(vault.root, waiting)
+    before = vault.git("rev-parse", "HEAD").stdout
+
+    assert main(["--config", str(config), "inbox", waiting.id, "no", "ffff", "yes"]) != 0
+    assert vault.git("rev-parse", "HEAD").stdout == before, "nothing was half done"
+    assert [p.id for p in inbox.pending(vault.root)] == [waiting.id]

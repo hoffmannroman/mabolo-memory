@@ -251,6 +251,19 @@ def build(vault: Vault, settings: Settings) -> MCPServer:
         `quote` is still the person's own sentence, and it is not checked here,
         because a proposal is not a claim about them yet. It is checked when
         they answer.
+
+        The shape depends on `action`:
+
+        * `write`: `target` is `<area>/<name>` (for example `hosts/laptop` or
+          `project/shop/returns`, no `.md`), and `entry` is the whole file,
+          frontmatter with at least `type`, `description` and `mabolo.area`,
+          then the body. `old` and `new` stay empty.
+        * `edit`: `target` is the entry's name, `old` a passage that occurs in
+          it exactly once, `new` what replaces it.
+        * `forget`: `target` is the entry's name.
+
+        A proposal that a yes could not carry out is refused here, with the
+        reason, instead of failing weeks later when the person answers.
         """
         if action not in proposal.ACTIONS:
             return f"refused: a proposal asks for one of {', '.join(proposal.ACTIONS)}."
@@ -265,6 +278,10 @@ def build(vault: Vault, settings: Settings) -> MCPServer:
             source=PRODUCER,
             filed_at=iso(now()) or "",
         )
+        try:
+            decide.check(vault, made, by=settings.actor)
+        except MaboloError as wrong:
+            return f"refused: a yes could not carry this out, so it was not filed. {wrong}"
         result = inbox.file(vault.root, made, remote=settings.remote)
         if result.outcome == inbox.ALREADY:
             return f"{made.id} was already waiting, so nothing was added."

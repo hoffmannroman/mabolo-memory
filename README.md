@@ -189,7 +189,9 @@ This is early, and the README says only what exists:
   on an orphan branch that is never merged into your history, so an unapproved
   suggestion never enters it, and it is still visible on every machine.
   `mabolo inbox` shows what is waiting and `mabolo inbox a3f2 yes` answers it: a
-  yes writes the entry and the record of your answer in one commit. The
+  yes writes the entry and the record of your answer in one commit. A proposal
+  that a yes could not carry out is refused when it is filed, and one answer
+  that fails on the way does not stop the others on the same line. The
   extraction pass that mines proposals out of a finished transcript is built
   too, behind its gates, and it runs a command line you configure rather than
   depending on anybody's model.

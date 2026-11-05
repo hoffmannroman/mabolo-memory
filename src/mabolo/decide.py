@@ -14,8 +14,8 @@ Three things that are not obvious:
   the ledger, so the pass that suggested it does not suggest the same sentence
   again next week. The sentence itself is never written there: a refusal is
   often precisely "I do not want this remembered".
-* **The validator runs again here.** It ran when the proposal was filed, and
-  the vault has moved since: an entry that was valid against last week's areas
+* **The validator runs again here.** It ran when a tool call filed the
+  proposal (`check`), and the vault has moved since: an entry that was valid against last week's areas
   may not be valid now, and approving is a write like any other.
 
 The consent gate is not repeated at this door for the command line, because
@@ -131,6 +131,32 @@ def _forgotten(vault: Vault, proposal: Proposal) -> write.Change:
         data=None,
         expect=frontmatter.read(path).revision,
     )
+
+
+def check(vault: Vault, proposal: Proposal, *, by: str) -> None:
+    """Refuse, now, a proposal that a yes could not carry out.
+
+    Builds the change an approval would make and throws it away. Without this a
+    proposal of the wrong shape (a write whose target names no area, or whose
+    entry is a name instead of a file with frontmatter) was filed without a
+    word, waited for weeks, and failed only at the moment the person said yes,
+    which is the one moment nobody can fix it any more.
+
+    The vault can still move between filing and answering, so `answer` builds
+    the change again. This is the same check, earlier, not a replacement.
+    `by` is the person who would answer, because an approval is made out to a
+    person and the validator refuses anything else.
+    """
+    if proposal.action == "write":
+        change = _written(vault, proposal, by=by, at=now())
+        if (vault.root / change.path).exists():
+            raise MaboloError(
+                f"{change.path} is already an entry. Read it and propose an edit instead."
+            )
+    elif proposal.action == "edit":
+        _edited(vault, proposal, by=by, at=now())
+    else:
+        _forgotten(vault, proposal)
 
 
 def answer(
