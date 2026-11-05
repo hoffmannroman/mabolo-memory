@@ -616,7 +616,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
         result = inbox.file(
             vault.root, one, remote=config.target()[1]
         )
-        if result.outcome == inbox.ALREADY:
+        if result.outcome in (inbox.ALREADY, inbox.ANSWERED):
             continue
         filed += 1
         print(f"  {one.id} {one.action} {one.target}: {result.message}")

@@ -285,6 +285,8 @@ def build(vault: Vault, settings: Settings) -> MCPServer:
         result = inbox.file(vault.root, made, remote=settings.remote)
         if result.outcome == inbox.ALREADY:
             return f"{made.id} was already waiting, so nothing was added."
+        if result.outcome == inbox.ANSWERED:
+            return f"{made.id} was answered already, so nothing was added."
         if not result.ok:
             return f"{result.outcome}: {result.message}"
         return f"{made.id} is waiting for an answer: {result.message}."

@@ -30,7 +30,9 @@ Five things that are not obvious:
   is a line in the vault's own ledger at `.mabolo/decided.md`, so the answer
   survives this branch being rebuilt and travels with the entries. This module
   reads that ledger and renders one line for it; writing it goes through
-  `write.apply` like any other change to the vault.
+  `write.apply` like any other change to the vault. Every rebuild drops what
+  the ledger answered, on disk or on the remote, because a union is only as
+  current as its oldest clone.
 
 What is deliberately missing: the quote never reaches the ledger. A rejection
 is often precisely "I do not want this remembered", and a record that repeats
@@ -74,6 +76,10 @@ LEDGER_HEADING = (
 #: not do.
 ALREADY = "already"
 
+#: And a sixth: the proposal was answered once already, so it is not filed
+#: again. Its id is in the ledger, and a rebuild would only take it off again.
+ANSWERED = "answered"
+
 #: A file on the branch is named after the id it carries. Anything else is not
 #: ours: it is left where it is and named, never parsed and never deleted.
 _FILENAME = re.compile(rf"^[0-9a-f]{{{ID_CHARS}}}\.json$")
@@ -107,7 +113,7 @@ class Result:
 
     @property
     def ok(self) -> bool:
-        return self.outcome in (WRITTEN, LOCAL, OFFLINE, NOTHING, ALREADY)
+        return self.outcome in (WRITTEN, LOCAL, OFFLINE, NOTHING, ALREADY, ANSWERED)
 
 
 @dataclass(frozen=True)
@@ -305,13 +311,20 @@ def _plan(
     add: Proposal | None,
     drop: frozenset[str],
     now: dt.datetime,
+    answered: frozenset[str] = frozenset(),
 ) -> _Plan:
-    """What the branch should hold: both sides, minus the stale and the decided."""
+    """What the branch should hold: both sides, minus the stale and the decided.
+
+    `drop` is what this operation answers, `answered` everything the ledger
+    says was answered before. The second is what keeps a clone with an old
+    copy of the branch from bringing back, in a union, what was answered on
+    another machine since it last looked.
+    """
     union = _merge(mine, theirs)
     expired = tuple(sorted(name for name, data in union.items() if _stale(name, data, now)))
     for name in expired:
         union.pop(name)
-    removed = tuple(sorted(name for name in drop if name in union))
+    removed = tuple(sorted(name for name in drop | answered if name in union))
     for name in removed:
         union.pop(name)
     already = add is not None and add.filename in union
@@ -349,7 +362,7 @@ def _sync(
             "the inbox is a branch, so it needs a Git repository. "
             "This vault is a plain folder, and a proposal would have nowhere to wait."
         )
-    here = git.current_branch(root)
+    here_branch = here = git.current_branch(root)
     if here is not None and branch == here:
         # The inbox is rebuilt as one parentless commit every time, so pointing
         # it at the branch the vault lives on would replace the entire history
@@ -371,7 +384,14 @@ def _sync(
             reachable, there = _fetch_branch(root, str(remote), branch)
         theirs = _files(root, there)
 
-        plan = _plan(mine, theirs, add=add, drop=drop, now=now)
+        answered = _answered(root, str(remote) if reachable else None, here_branch)
+        if add is not None and add.filename in answered:
+            return Result(
+                ANSWERED,
+                f"{add.id} was answered already, so it was not filed again",
+                ids=(add.id,),
+            )
+        plan = _plan(mine, theirs, add=add, drop=drop, now=now, answered=answered)
         ids = (add.id,) if add is not None else plan.removed
 
         if plan.files == mine and (not reachable or plan.files == theirs):
@@ -394,7 +414,9 @@ def _sync(
                 # a third round against a remote that keeps moving is a loop,
                 # and the caller can see a conflict and try again.
                 reachable, there = _fetch_branch(root, str(remote), branch)
-                plan = _plan(mine, _files(root, there), add=add, drop=drop, now=now)
+                plan = _plan(
+                    mine, _files(root, there), add=add, drop=drop, now=now, answered=answered
+                )
                 ids = (add.id,) if add is not None else plan.removed
                 commit = git.build_commit(root, None, dict(plan.files), signed(message, kind, actor or PRODUCER))
                 sent = "rejected"
@@ -537,6 +559,11 @@ def decisions(root: Path) -> list[Decision]:
         text = (root / LEDGER).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return []
+    return _read_ledger(text)
+
+
+def _read_ledger(text: str) -> list[Decision]:
+    """The decisions in one copy of the ledger, skipping what does not parse."""
     found: list[Decision] = []
     for line in text.splitlines():
         match = _DECISION.match(line.rstrip())
@@ -552,6 +579,36 @@ def decisions(root: Path) -> list[Decision]:
                 )
             )
     return found
+
+
+def _answered(root: Path, remote: str | None, branch: str | None) -> frozenset[str]:
+    """The file names of every proposal either ledger says was answered.
+
+    Two copies, because the one on disk can be behind. A machine that has not
+    pulled for a week holds a ledger without this week's answers and an inbox
+    branch with this week's proposals still on it, and the union of that with
+    the remote put every one of them back on the branch for everybody. So the
+    ledger on the remote's copy of the vault's branch counts too, fetched into
+    its remote-tracking ref the way a plain `git fetch` would. The working tree
+    is not touched.
+
+    An unreachable remote, or a vault on no branch, leaves only the copy on
+    disk, which is no worse than before.
+    """
+    texts: list[str] = []
+    try:
+        texts.append((root / LEDGER).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        pass
+    if remote and branch:
+        tracking = f"refs/remotes/{remote}/{branch}"
+        spec = f"+refs/heads/{branch}:{tracking}"
+        if git.run(root, "fetch", "--quiet", remote, spec, check=False).returncode == 0:
+            try:
+                texts.append(git.read_blob(root, f"{tracking}:{LEDGER}").decode("utf-8"))
+            except (MaboloError, UnicodeDecodeError):
+                pass
+    return frozenset(f"{one.id}.json" for text in texts for one in _read_ledger(text))
 
 
 def decided(root: Path, id: str) -> Decision | None:

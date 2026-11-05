@@ -372,3 +372,59 @@ def test_the_inbox_refuses_to_be_the_branch_the_vault_lives_on(git_vault):
         inbox.file(git_vault.root, made(), branch="main")
     assert "cannot live on 'main'" in str(caught.value)
     assert git.rev(git_vault.root, "refs/heads/main") == before
+
+
+# What was answered stays answered, on every machine
+
+
+def answer_on_main(root, proposal, *, approved=True) -> None:
+    """The ledger line a decision writes, committed and pushed the way `decide` does."""
+    ledger(root, inbox.decision_line(proposal, approved=approved, by="human:alex",
+                                     at=dt.date.today()))
+    git.run(root, "add", inbox.LEDGER)
+    git.run(root, "commit", "-q", "-m", f"answer {proposal.id}")
+    git.run(root, "push", "-q", "origin", "main")
+
+
+def test_a_clone_that_is_behind_does_not_bring_back_what_was_answered(
+    git_vault, remote, tmp_path
+):
+    """What happened on 05.11.2026. Two machines had pulled the inbox weeks ago
+    and not the vault since. Six proposals were answered on a third, and the
+    first `mabolo inbox` on each of the two put all six back for everybody:
+    their branch still had the files, their ledger did not have the answers,
+    and the union of that with the remote is the old inbox."""
+    waiting = made()
+    inbox.file(git_vault.root, waiting, remote="origin")
+    behind = clone(tmp_path, remote)
+    inbox.sync(behind, remote="origin")
+    assert on_branch(behind) == [waiting.filename], "the stale copy is in place"
+
+    answer_on_main(git_vault.root, waiting, approved=False)
+    inbox.forget(git_vault.root, [waiting.id], remote="origin")
+    assert on_branch(remote) == []
+
+    inbox.sync(behind, remote="origin")
+    assert not (behind / inbox.LEDGER).exists(), "the clone's own vault was never pulled"
+    assert on_branch(remote) == []
+    assert on_branch(behind) == []
+
+
+def test_an_answered_proposal_is_not_filed_again(git_vault, remote):
+    once = made()
+    answer_on_main(git_vault.root, once)
+    result = inbox.file(git_vault.root, once, remote="origin")
+    assert result.outcome == inbox.ANSWERED
+    assert result.ok
+    assert on_branch(git_vault.root) == []
+
+
+def test_a_ledger_on_disk_counts_without_a_remote(git_vault):
+    """A line somebody appended a minute ago and has not committed is an answer
+    too, and a vault with no remote has only this copy."""
+    once = made()
+    inbox.file(git_vault.root, once)
+    ledger(git_vault.root, inbox.decision_line(once, approved=True, by="human:alex",
+                                               at=dt.date.today()))
+    inbox.sync(git_vault.root)
+    assert on_branch(git_vault.root) == []
