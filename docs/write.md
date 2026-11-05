@@ -283,10 +283,21 @@ out of that sentence rather than taken from the call. The word has to stand next
 to the id, so "a3f2 yes" answers and "a3f2 yesterday we looked at it" does not,
 and one sentence answering two proposals answers each the way you wrote it: a
 call claiming yes for the one you refused is turned down naming what you said.
-An id you answered both ways is refused rather than resolved. A machine
-generated id in a prompt is a signature of having looked at the inbox; "yes" is
-a signature of nothing, which is why this is the one place the twelve character
-floor is lowered and the shape stands in for the length.
+An id you answered both ways is refused rather than resolved, and at the
+terminal one id twice on one line is refused before anything is written. A
+machine generated id in a prompt is a signature of having looked at the inbox;
+"yes" is a signature of nothing, which is why this is the one place the twelve
+character floor is lowered and the shape stands in for the length.
+
+**An id is answered once.** The ledger is the truth on every machine: a rebuild
+of the inbox drops whatever it records, read from disk and from the remote's
+copy of the configured branch, so a clone that has not pulled for weeks cannot
+bring an answered proposal back. Answering an id the ledger already has is
+refused, and so is filing it again, which makes a refusal final for that
+sentence and that target. One gap remains by design: an answer given while
+offline is in the ledger only on that machine until its commit is pushed, and
+until then the others still list the proposal. Push, or answer where you are
+online.
 
 ## Extraction: where proposals come from
 

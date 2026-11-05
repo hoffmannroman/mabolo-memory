@@ -1490,3 +1490,26 @@ def test_an_id_that_matches_nothing_refuses_the_whole_line(tmp_path, capsys, git
     assert main(["--config", str(config), "inbox", waiting.id, "no", "ffff", "yes"]) != 0
     assert vault.git("rev-parse", "HEAD").stdout == before, "nothing was half done"
     assert [p.id for p in inbox.pending(vault.root)] == [waiting.id]
+
+
+def test_one_id_twice_on_a_line_is_refused(tmp_path, capsys, git_identity):
+    """`a3f2 yes a3f2 no` answered one proposal twice and wrote both lines."""
+    from mabolo import inbox
+    from mabolo.errors import MaboloError
+    from mabolo.proposal import Proposal
+
+    vault = Vault(tmp_path / "v")
+    vault.initialise()
+    vault.git_initialise()
+    config = tmp_path / "c.toml"
+    config.write_text(f'vault = "{vault.root}"\nactor = "human:alex"\n', encoding="utf-8")
+    waiting = Proposal(action="forget", target="a-thing", quote="forget the thing",
+                       source="process:extract",
+                       filed_at=dt.datetime.now().astimezone().isoformat(timespec="seconds"))
+    inbox.file(vault.root, waiting)
+    before = vault.git("rev-parse", "HEAD").stdout
+
+    assert main(["--config", str(config), "inbox",
+                 waiting.id[:4], "yes", waiting.id, "no"]) != 0
+    assert "twice" in capsys.readouterr().err
+    assert vault.git("rev-parse", "HEAD").stdout == before

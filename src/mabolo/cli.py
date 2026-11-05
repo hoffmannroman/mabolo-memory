@@ -470,7 +470,7 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         # branch, so an inbox filed on another machine was invisible here for
         # ever: every other operation on it is triggered by somebody filing or
         # answering, and neither happens if nothing is listed.
-        rebuilt = inbox.sync(vault.root, remote=remote)
+        rebuilt = inbox.sync(vault.root, remote=remote, ledger_branch=branch)
         if not rebuilt.ok:
             _say(f"mabolo: the inbox could not be brought up to date, {rebuilt.message}")
     listing = inbox.read(vault.root)
@@ -495,6 +495,14 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         (proposal.resolve(wanted, listing.proposals), approved)
         for wanted, approved in _verdicts(args.verdicts)
     ]
+    # One id twice on one line is refused, whichever way round: `a3f2 yes a3f2
+    # no` answered it twice and wrote both lines, and two shortened ids that
+    # resolve to the same proposal are the same mistake.
+    seen: set[str] = set()
+    for one, _ in decisions:
+        if one.id in seen:
+            raise MaboloError(f"{one.id} is answered twice on this line. Answer it once.")
+        seen.add(one.id)
     # Then each answer on its own. One proposal a yes cannot carry out used to
     # stop the loop, and every answer after it, a no included, was dropped
     # without a word; the person had to notice which ids were still listed.
@@ -609,14 +617,25 @@ def cmd_extract(args: argparse.Namespace) -> int:
     for line in found.report.lines():
         print(line)
     filed = 0
+    actor, remote, ledger_branch = config.target()
     for one in found.proposals:
+        # The same check a tool call gets, so that what extraction files is
+        # something a yes can carry out, and so that the README is true of both.
+        try:
+            decide.check(vault, one, by=actor)
+        except MaboloError as wrong:
+            print(f"  {one.id} {one.action} {one.target}: not filed, {wrong}")
+            continue
         # No `branch` here. That argument names the inbox's own branch, and
         # handing it the branch the vault lives on would rebuild `main` as one
         # parentless commit holding nothing but proposals.
-        result = inbox.file(
-            vault.root, one, remote=config.target()[1]
-        )
+        result = inbox.file(vault.root, one, remote=remote, ledger_branch=ledger_branch)
         if result.outcome in (inbox.ALREADY, inbox.ANSWERED):
+            continue
+        if not result.ok:
+            # A double refusal from the remote leaves it on neither branch, and
+            # counting it as waiting was a claim about something that is not.
+            print(f"  {one.id} {one.action} {one.target}: not filed, {result.message}")
             continue
         filed += 1
         print(f"  {one.id} {one.action} {one.target}: {result.message}")

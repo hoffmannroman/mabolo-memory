@@ -428,3 +428,54 @@ def test_a_ledger_on_disk_counts_without_a_remote(git_vault):
                                                at=dt.date.today()))
     inbox.sync(git_vault.root)
     assert on_branch(git_vault.root) == []
+
+
+def test_a_detached_head_still_reads_the_remote_ledger(git_vault, remote, tmp_path):
+    """In the middle of a rebase HEAD is detached, and the remote's answers were
+    left out: a stale clone pushed an answered proposal back, as on 05.11."""
+    waiting = made()
+    inbox.file(git_vault.root, waiting, remote="origin")
+    behind = clone(tmp_path, remote)
+    inbox.sync(behind, remote="origin")
+    git.run(behind, "checkout", "-q", "--detach")
+
+    answer_on_main(git_vault.root, waiting)
+    inbox.forget(git_vault.root, [waiting.id], remote="origin")
+    inbox.sync(behind, remote="origin", ledger_branch="main")
+    assert on_branch(remote) == []
+
+
+def test_the_retry_after_a_refused_push_reads_the_ledger_again(
+    git_vault, remote, tmp_path, monkeypatch
+):
+    """The push is refused because somebody moved the inbox, most likely by
+    answering. The retry used the ledger read before that and put it back."""
+    waiting = made()
+    inbox.file(git_vault.root, waiting, remote="origin")
+    behind = clone(tmp_path, remote)
+    inbox.sync(behind, remote="origin")
+    other = made(quote="remember that atlas is the build host", target="infra/atlas")
+
+    real = git.push
+    calls = []
+
+    def answered_meanwhile(root, *args, **kwargs):
+        if not calls:
+            calls.append(1)
+            # Between this machine's fetch and its push, the first machine
+            # answers the waiting proposal and takes it off the remote.
+            answer_on_main(git_vault.root, waiting)
+            inbox.forget(git_vault.root, [waiting.id], remote="origin")
+            return "rejected"
+        return real(root, *args, **kwargs)
+
+    monkeypatch.setattr(git, "push", answered_meanwhile)
+    inbox.file(behind, other, remote="origin")
+    assert on_branch(remote) == [other.filename]
+
+
+def test_an_empty_inbox_does_not_fetch_the_ledger(git_vault, remote, monkeypatch):
+    asked = []
+    monkeypatch.setattr(inbox, "_answered", lambda *a: asked.append(a) or frozenset())
+    inbox.sync(git_vault.root, remote="origin")
+    assert asked == []

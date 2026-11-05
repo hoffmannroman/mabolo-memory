@@ -45,6 +45,9 @@ class Answer:
     result: write.Result
     #: Where the entry went, for a yes. Empty for a no.
     where: str = ""
+    #: Why the proposal may still be listed although the answer is written.
+    #: Empty when the inbox was cleaned up too.
+    pending: str = ""
 
     @property
     def ok(self) -> bool:
@@ -53,7 +56,10 @@ class Answer:
     def line(self) -> str:
         said = "approved" if self.approved else "refused"
         target = f" {self.where}" if self.where else ""
-        return f"{self.id} {said}{target}: {self.result.message}"
+        line = f"{self.id} {said}{target}: {self.result.message}"
+        if self.pending:
+            line += f" (still listed in the inbox until the next rebuild: {self.pending})"
+        return line
 
 
 def _ledger(vault: Vault, proposal: Proposal, *, approved: bool, by: str,
@@ -178,6 +184,13 @@ def answer(
     inbox forgot the proposal is a decision with no record, which is not.
     """
     moment = at or now()
+    # Answered once, on any machine. A clone that is behind still lists what
+    # was answered elsewhere, and answering it here wrote a second line for the
+    # same id, the opposite way as often as not.
+    if proposal.id in inbox.answered(vault.root, remote=remote, ledger_branch=branch):
+        earlier = inbox.decided(vault.root, proposal.id)
+        when = f" ({earlier.answer}, {earlier.at})" if earlier else " (on another machine)"
+        raise MaboloError(f"{proposal.id} was answered already{when}, so nothing was written")
     changes = [_ledger(vault, proposal, approved=approved, by=by, at=moment)]
     where = ""
     if approved:
@@ -202,6 +215,19 @@ def answer(
         remote=remote,
         branch=branch,
     )
+    pending = ""
     if result.ok:
-        inbox.forget(vault.root, [proposal.id], remote=remote)
-    return Answer(id=proposal.id, approved=approved, result=result, where=where)
+        # The answer is written by now, and that is what counts: the ledger is
+        # the truth and the next rebuild drops the id anyway. A failure here
+        # used to escape as "not answered", and the person answered again.
+        try:
+            cleaned = inbox.forget(
+                vault.root, [proposal.id], remote=remote, ledger_branch=branch
+            )
+            if not cleaned.ok:
+                pending = cleaned.message
+        except MaboloError as wrong:
+            pending = str(wrong)
+    return Answer(
+        id=proposal.id, approved=approved, result=result, where=where, pending=pending
+    )

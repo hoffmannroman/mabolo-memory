@@ -210,13 +210,20 @@ def sync(root: Path, remote: str | None) -> list[dict]:
     if not remote or not git.is_repository_inside(root) or not git.has_remote(root, remote):
         return []
     name = f"{host()}.jsonl"
-    mine = _own_bytes()
+    own = _own_bytes()
+    mine = own
     with lock(root):
         # The inbox's two readers: where the remote's branch is, and what its
         # one commit holds. The shape is the same, a parentless commit of files.
         reachable, there = inbox._fetch_branch(root, remote, BRANCH)
         theirs = inbox._files(root, there)
         for _ in range(2):
+            # This machine's file on the remote is merged with, not replaced
+            # by, the one on disk. Replacing it threw away every status line
+            # it held whenever the state directory had been wiped or a second
+            # machine answered to the same short host name, and each problem
+            # those lines had settled opened again everywhere.
+            mine = _merged(own, theirs.get(name, b""))
             if not reachable or not mine or theirs.get(name) == mine:
                 break
             files = {**theirs, name: mine}
@@ -228,9 +235,39 @@ def sync(root: Path, remote: str | None) -> list[dict]:
             # now is, and this one's is put beside it once more.
             reachable, there = inbox._fetch_branch(root, remote, BRANCH)
             theirs = inbox._files(root, there)
-    if theirs.get(name) == mine:
-        _write_marker(_digest(mine))
-    return [item for other, data in theirs.items() if other != name for item in _parse(data)]
+    if mine and theirs.get(name) == mine:
+        _write_marker(_digest(own))
+    # The lines of this host's file that are not on disk here count too: they
+    # were written by an earlier install, or by a machine of the same name.
+    local = set(_lines(reports_path()))
+    ours = [item for raw in _split(theirs.get(name, b"")) if raw not in local
+            for item in _parse(raw.encode("utf-8"))]
+    return ours + [item for other, data in theirs.items() if other != name for item in _parse(data)]
+
+
+def _split(data: bytes) -> list[str]:
+    return [one for one in data.decode("utf-8", "replace").splitlines() if one.strip()]
+
+
+def _merged(own: bytes, published: bytes) -> bytes:
+    """This machine's lines and the published ones, each once, in order, trimmed."""
+    lines = _split(own)
+    seen = set(lines)
+    lines += [one for one in _split(published) if one not in seen]
+    if not lines:
+        return b""
+    # Put in order by moment, the way `problems` reads them. Each line is
+    # parsed into its own mapping, so its identity leads back to the raw text.
+    items = [_first(raw) for raw in lines]
+    raw_of = {id(item): raw for raw, item in zip(lines, items)}
+    ordered = [raw_of[id(item)] for item in _ordered(items)]
+    return ("\n".join(_trimmed(ordered)) + "\n").encode("utf-8")
+
+
+def _first(raw: str) -> dict:
+    """One line as a mapping, or an empty one, which sorts as undated."""
+    found = _parse(raw.encode("utf-8"))
+    return found[0] if found else {}
 
 
 def _stamp(at: dt.datetime | None) -> str:
@@ -313,8 +350,28 @@ def _trim(path: Path) -> None:
     if len(lines) <= 2 * KEEP:
         return
     temporary = path.with_suffix(".tmp")
-    temporary.write_text("\n".join(lines[-KEEP:]) + "\n", encoding="utf-8")
+    temporary.write_text("\n".join(_trimmed(lines)) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+
+
+def _trimmed(lines: list[str]) -> list[str]:
+    """The last `KEEP` lines, and every older status line about a problem this
+    file has no occurrence of.
+
+    A status line settles a problem wherever it was seen. When a fix for
+    another machine's problem was recorded here, the occurrences are in that
+    machine's file, and cutting the status line off this one opened the
+    problem again on every machine.
+    """
+    if len(lines) <= 2 * KEEP:
+        return lines
+    dropped, kept = lines[:-KEEP], lines[-KEEP:]
+    seen_here = {item.get("id") for item in map(_first, lines) if "status" not in item}
+    foreign = [
+        raw for raw in dropped
+        if "status" in (item := _first(raw)) and item.get("id") not in seen_here
+    ]
+    return foreign + kept
 
 
 def _items() -> list[dict]:

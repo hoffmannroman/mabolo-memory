@@ -282,7 +282,9 @@ def build(vault: Vault, settings: Settings) -> MCPServer:
             decide.check(vault, made, by=settings.actor)
         except MaboloError as wrong:
             return f"refused: a yes could not carry this out, so it was not filed. {wrong}"
-        result = inbox.file(vault.root, made, remote=settings.remote)
+        result = inbox.file(
+            vault.root, made, remote=settings.remote, ledger_branch=settings.branch
+        )
         if result.outcome == inbox.ALREADY:
             return f"{made.id} was already waiting, so nothing was added."
         if result.outcome == inbox.ANSWERED:
@@ -632,6 +634,9 @@ def _register_writing(
         wanted = verdict.strip().lower()
         if wanted not in consent.VERDICTS:
             return f"refused: a verdict is {' or '.join(consent.VERDICTS)}."
+        # Brought up to date first, so that an id answered on another machine is
+        # not resolved from a copy of the branch that still lists it.
+        inbox.sync(vault.root, remote=settings.remote, ledger_branch=settings.branch)
         waiting = inbox.read(vault.root).proposals
         one = proposal.resolve(id, waiting)
         given = consent.check(

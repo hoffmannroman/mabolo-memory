@@ -145,3 +145,47 @@ def test_an_answer_carries_the_kind_of_commit_it_is(git_vault):
     trailer = git_vault.git("log", "-1", "--format=%(trailers:key=Mabolo,valueonly)").stdout
     assert trailer.strip().startswith("approve by human:alex")
     assert "approve" in write.KINDS and "reject" in write.KINDS
+
+
+def clone_of(tmp_path, remote, name="behind"):
+    import subprocess
+
+    from mabolo.vault import Vault
+    where = tmp_path / name
+    subprocess.run(["git", "clone", "-q", str(remote), str(where)], check=True)
+    return Vault(where)
+
+
+def fresh(**over):
+    import datetime as dt
+    return suggested(filed_at=dt.datetime.now().astimezone().isoformat(timespec="seconds"), **over)
+
+
+def test_a_clone_that_is_behind_cannot_answer_again_what_was_answered(git_vault, remote, tmp_path):
+    """Refused on one machine, then approved on another whose copy of the inbox
+    still listed it: the entry was written and the ledger held both answers."""
+    one = fresh()
+    inbox.file(git_vault.root, one, remote="origin")
+    behind = clone_of(tmp_path, remote)
+    inbox.sync(behind.root, remote="origin")
+    decide.answer(git_vault, one, approved=False, by="human:alex", remote="origin", branch="main")
+
+    with pytest.raises(MaboloError, match="answered already"):
+        decide.answer(behind, one, approved=True, by="human:alex", remote="origin", branch="main")
+    assert not (behind.root / "infra" / "deploy-from-main.md").exists()
+
+
+def test_a_cleanup_that_fails_after_the_answer_is_not_reported_as_unanswered(
+    git_vault, monkeypatch
+):
+    one = fresh()
+    inbox.file(git_vault.root, one)
+
+    def broken(*args, **kwargs):
+        raise MaboloError("git fetch did not finish within 20 seconds")
+
+    monkeypatch.setattr(inbox, "forget", broken)
+    answered = decide.answer(git_vault, one, approved=True, by="human:alex")
+    assert answered.ok
+    assert "still listed" in answered.line()
+    assert (git_vault.root / "infra" / "deploy-from-main.md").exists()

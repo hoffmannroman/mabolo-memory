@@ -349,6 +349,7 @@ def _sync(
     remote: str | None = None,
     branch: str = BRANCH,
     now: dt.datetime | None = None,
+    ledger_branch: str | None = None,
 ) -> Result:
     """Rebuild the branch as one parentless commit, and try to push it.
 
@@ -362,7 +363,12 @@ def _sync(
             "the inbox is a branch, so it needs a Git repository. "
             "This vault is a plain folder, and a proposal would have nowhere to wait."
         )
-    here_branch = here = git.current_branch(root)
+    here = git.current_branch(root)
+    # The ledger is read from the branch the vault is configured to push to,
+    # not from whatever is checked out: in the middle of a rebase HEAD is
+    # detached, and on a scratch branch the remote has no such ref, and either
+    # way the remote's answers were silently left out.
+    vault_branch = ledger_branch or here
     if here is not None and branch == here:
         # The inbox is rebuilt as one parentless commit every time, so pointing
         # it at the branch the vault lives on would replace the entire history
@@ -384,7 +390,11 @@ def _sync(
             reachable, there = _fetch_branch(root, str(remote), branch)
         theirs = _files(root, there)
 
-        answered = _answered(root, str(remote) if reachable else None, here_branch)
+        answered = frozenset()
+        if mine or theirs or add is not None:
+            # Nothing on either side and nothing to add leaves nothing to drop,
+            # so the second fetch would only hold the lock longer.
+            answered = _answered(root, str(remote) if reachable else None, vault_branch)
         if add is not None and add.filename in answered:
             return Result(
                 ANSWERED,
@@ -414,6 +424,16 @@ def _sync(
                 # a third round against a remote that keeps moving is a loop,
                 # and the caller can see a conflict and try again.
                 reachable, there = _fetch_branch(root, str(remote), branch)
+                # The ledger again as well. The push was refused because somebody
+                # else moved the inbox, and the likeliest reason is that they
+                # answered something; the set read before that would put it back.
+                answered = _answered(root, str(remote) if reachable else None, vault_branch)
+                if add is not None and add.filename in answered:
+                    return Result(
+                        ANSWERED,
+                        f"{add.id} was answered already, so it was not filed again",
+                        ids=(add.id,),
+                    )
                 plan = _plan(
                     mine, _files(root, there), add=add, drop=drop, now=now, answered=answered
                 )
@@ -463,6 +483,7 @@ def file(
     *,
     remote: str | None = None,
     branch: str = BRANCH,
+    ledger_branch: str | None = None,
     now: dt.datetime | None = None,
 ) -> Result:
     """Put one proposal on the branch, unless its id is already there.
@@ -490,6 +511,7 @@ def file(
         add=proposal,
         remote=remote,
         branch=branch,
+        ledger_branch=ledger_branch,
         now=now,
     )
 
@@ -500,6 +522,7 @@ def forget(
     *,
     remote: str | None = None,
     branch: str = BRANCH,
+    ledger_branch: str | None = None,
     now: dt.datetime | None = None,
 ) -> Result:
     """Take decided proposals off the branch.
@@ -518,6 +541,7 @@ def forget(
         drop=wanted,
         remote=remote,
         branch=branch,
+        ledger_branch=ledger_branch,
         now=now,
     )
 
@@ -527,6 +551,7 @@ def sync(
     *,
     remote: str | None = None,
     branch: str = BRANCH,
+    ledger_branch: str | None = None,
     now: dt.datetime | None = None,
 ) -> Result:
     """Bring this clone's branch and the remote's into step, without deciding anything.
@@ -540,7 +565,10 @@ def sync(
     consequence of a rebuild somebody asked for, rather than in a job that runs
     on its own and deletes at a moment nobody chose.
     """
-    return _sync(root, message="inbox: rebuild", kind="propose", remote=remote, branch=branch, now=now)
+    return _sync(
+        root, message="inbox: rebuild", kind="propose", remote=remote, branch=branch, now=now,
+        ledger_branch=ledger_branch,
+    )
 
 
 # The ledger: what was answered, in the vault, on `main`.
@@ -611,12 +639,26 @@ def _answered(root: Path, remote: str | None, branch: str | None) -> frozenset[s
     return frozenset(f"{one.id}.json" for text in texts for one in _read_ledger(text))
 
 
+def answered(root: Path, *, remote: str | None = None,
+             ledger_branch: str | None = None) -> frozenset[str]:
+    """The ids either ledger says were answered: on disk, and on the remote.
+
+    For a caller about to answer one. A clone that is behind still lists what
+    another machine answered an hour ago, and answering it here wrote a second
+    line for the same id, possibly the opposite way.
+    """
+    branch = ledger_branch or git.current_branch(root)
+    return frozenset(name.removesuffix(".json") for name in _answered(root, remote, branch))
+
+
 def decided(root: Path, id: str) -> Decision | None:
     """The answer this id already got, or None.
 
-    The last line wins. The ledger is appended newest last, and a proposal that
-    was refused in March and approved in June was approved: reading the first
-    line would let one old "no" outlive every decision after it.
+    The last line wins. The ledger is appended newest last. An id is answered
+    once: a refusal is final, filing it again returns `ANSWERED`, and
+    `decide.answer` refuses an id that is already in the ledger. A ledger that
+    still has two lines for one id predates that, or was edited by hand, and
+    the later line is the one that was meant.
     """
     wanted = id.strip().lower()
     for one in reversed(decisions(root)):

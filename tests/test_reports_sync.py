@@ -165,3 +165,25 @@ def test_the_listing_includes_the_other_machines(tmp_path, machines, capsys):
     assert found in capsys.readouterr().out
     assert main(["--config", str(config), "reports", "--local"]) == 0
     assert capsys.readouterr().out.startswith("nothing is waiting")
+
+
+def test_a_wiped_state_directory_does_not_reopen_what_was_settled(machines, tmp_path, monkeypatch):
+    """Replacing a machine's file on the branch with the one on disk threw away
+    every status line it held, so after a reinstall (or a second machine with
+    the same short name) each problem it had settled was open everywhere."""
+    root = machines("beta")
+    reports.add(reports.HOOK, "file hook", "_OutOfTime", kind="_OutOfTime")
+    reports.sync(root, "origin")
+    root = machines("alpha")
+    elsewhere = reports.sync(root, "origin")
+    found = reports.open_problems(elsewhere)[0].id
+    assert reports.settle(found, reports.FIXED, elsewhere=elsewhere)
+    reports.sync(root, "origin")
+
+    # alpha comes back with an empty state directory and records something new.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state-alpha-fresh"))
+    reports.add(reports.SESSION, "proj", "after the reinstall")
+    elsewhere = reports.sync(root, "origin")
+    assert found not in [problem.id for problem in reports.open_problems(elsewhere)]
+    root = machines("beta")
+    assert found not in [problem.id for problem in reports.open_problems(reports.sync(root, "origin"))]

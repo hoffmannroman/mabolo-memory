@@ -140,3 +140,17 @@ def test_the_session_start_points_at_the_record(tmp_path, capsys, monkeypatch):
     main(["--config", config, "hook", "session-start"])
     text = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
     assert "`mabolo reports` keeps it" in text
+
+
+def test_trimming_keeps_a_status_line_about_another_machines_problem(monkeypatch):
+    """The occurrences are in the other machine's file. Cutting the fix off this
+    one opened the problem again on every machine."""
+    monkeypatch.setattr(reports, "KEEP", 5)
+    status = json.dumps({"id": "abcdef12", "status": reports.FIXED, "at": "2026-01-01T00:00:00+00:00"})
+    reports.reports_path().parent.mkdir(parents=True, exist_ok=True)
+    reports.reports_path().write_text(status + "\n", encoding="utf-8")
+    for number in range(12):
+        reports.add(reports.SESSION, "proj", f"report {number}")
+    lines = reports.reports_path().read_text(encoding="utf-8").splitlines()
+    assert status in lines
+    assert json.loads(lines[-1])["message"] == "report 11"
