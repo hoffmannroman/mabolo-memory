@@ -815,6 +815,37 @@ def test_the_prompt_hook_stays_quiet_about_a_missing_configuration(tmp_path, cap
     assert code == 0 and capsys.readouterr().out.strip() == ""
 
 
+def test_a_pasted_log_is_answered_within_the_prompt_hooks_deadline(tmp_path, capsys, monkeypatch):
+    """A prompt is often a question with a log pasted under it. Matching the
+    vault's names against it slid every name along every word, and the phrases
+    of the prompt were deduplicated in a list: a log of a couple of hundred
+    kilobytes against a vault with a few thousand names ran the hook out of its
+    two seconds, and the person got nothing and a fault in its place. The real
+    deadline, not a short one: this is about the work, not about the timer."""
+    made = Vault(tmp_path / "big")
+    made.initialise()
+    for i in range(100):
+        (made.root / "infra" / f"note-{i}.md").write_text(
+            entry_text(
+                title=f"note-{i}",
+                description=f"A machine that builds nightly, number {i}",
+                mabolo={"aliases": [f"alias {i} part {k}" for k in range(15)]},
+            ),
+            encoding="utf-8",
+        )
+    log = "\n".join(
+        f"[2026-11-03T17:{i // 60 % 60:02d}:{i % 60:02d}.{i:06d}+02:00] src/mod-{i}/cli.py:{i} gave up"
+        for i in range(3000)
+    )
+    prompt = f"why does the machine that builds nightly stop?\n\n{log}"
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": prompt})))
+    code = main(["hook", "prompt", str(made.root), "--no-record"])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "gave up" not in captured.err
+    assert "note-" in json.loads(captured.out)["hookSpecificOutput"]["additionalContext"]
+
+
 def test_the_prompt_hook_gives_up_quietly_when_it_runs_out_of_time(tmp_path, capsys, monkeypatch):
     import time
 

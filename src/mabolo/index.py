@@ -419,13 +419,19 @@ class Index:
         `keypassword storefront`.
         """
         found: dict[str, frozenset[str]] = {}
-        words = list(parsed.words)
+        words = tuple(parsed.words)
+        # Every run of the question's words, once per length a name has. Sliding
+        # each name along the question instead cost names times words, and a
+        # pasted log in a prompt ran the prompt hook out of its two seconds.
+        runs: dict[int, set[tuple[str, ...]]] = {}
         for name, owners in self.targets.items():
-            wanted = q.words_of(name)
+            wanted = tuple(q.words_of(name))
             span = len(wanted)
             if not span:
                 continue
-            if any(words[i : i + span] == wanted for i in range(len(words) - span + 1)):
+            if span not in runs:
+                runs[span] = {words[i : i + span] for i in range(len(words) - span + 1)}
+            if wanted in runs[span]:
                 found[name] = owners
         return found
 

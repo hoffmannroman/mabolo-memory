@@ -204,15 +204,15 @@ def build(text: str, language: str = "en") -> Query:
     what a word is after somebody changes the tokeniser.
     """
     tokens = tokenise(text)
-    phrases: list[str] = []
+    # A dictionary rather than a list keeps the order and makes "seen before"
+    # one lookup: a list made a prompt full of paths cost its square.
+    phrases: dict[str, None] = {}
     words: list[str] = []
     for token in tokens:
         pieces = parts(token)
         words.extend(pieces)
         if len(pieces) > 1:
-            phrase = " ".join(pieces)
-            if phrase not in phrases:
-                phrases.append(phrase)
+            phrases.setdefault(" ".join(pieces))
     return Query(
         text=str(text),
         stems=tuple(_stems(tokens, language)),
