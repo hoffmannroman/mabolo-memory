@@ -197,16 +197,19 @@ def test_a_claim_in_progress_elsewhere_is_left_to_it():
     assert catchup.claim()
 
 
-def test_a_stamp_that_cannot_be_written_claims_nothing(tmp_path):
+def test_a_stamp_that_cannot_be_written_is_said_so(monkeypatch):
+    def refused(self, *args, **kw):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(catchup.Path, "touch", refused)
+    assert not catchup.mark()
+
+
+def test_nothing_is_claimed_on_the_strength_of_a_stamp_that_was_not_written(monkeypatch):
     """Otherwise every prompt found the catch-up due and started one."""
-    where = catchup._stamp().parent
-    where.mkdir(parents=True, exist_ok=True)
-    where.chmod(0o500)
-    try:
-        assert not catchup.mark()
-        assert not catchup.claim()
-    finally:
-        where.chmod(0o700)
+    monkeypatch.setattr(catchup, "mark", lambda: False)
+    assert catchup.due()
+    assert not catchup.claim()
 
 
 def test_the_background_fetch_ends_before_a_write_stops_waiting():
@@ -241,3 +244,30 @@ def test_a_lock_that_cannot_be_made_is_a_sentence_not_a_crash(git_vault, remote,
     done = catchup.catch_up(git_vault.root, "origin", "main")
     assert done.state == catchup.BLOCKED
     assert "No space left" in done.note()
+
+
+def test_a_merge_that_runs_out_of_time_is_not_called_offline(git_vault, remote, monkeypatch, tmp_path):
+    from mabolo.errors import MaboloError
+
+    other = other_machine(tmp_path, remote)
+    commit(other)
+
+    def stuck(root, ref):
+        raise MaboloError("git merge did not finish within 120 seconds")
+
+    monkeypatch.setattr(git, "fast_forward", stuck)
+    assert catchup.catch_up(git_vault.root, "origin", "main").state == catchup.BLOCKED
+
+
+def test_a_catch_up_finishes_a_write_that_was_cut_short_first(git_vault, remote, tmp_path):
+    """Moving on from a tree behind its own branch would carry the older file
+    along, and the next write would commit it as a hand edit."""
+    commit(git_vault.root, "infra/mine.md", body="as committed")
+    (git_vault.root / "infra" / "mine.md").write_text(ENTRY.format(body="older"), encoding="utf-8")
+    git.note_writing(git_vault.root, head(git_vault.root), ["infra/mine.md"])
+    other = other_machine(tmp_path, remote)
+    commit(other, "infra/theirs.md")
+    done = catchup.catch_up(git_vault.root, "origin", "main")
+    assert done.state == catchup.MOVED, done.message
+    assert "as committed" in (git_vault.root / "infra" / "mine.md").read_text()
+    assert git.unfinished_write(git_vault.root) is None

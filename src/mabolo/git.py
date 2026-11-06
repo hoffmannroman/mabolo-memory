@@ -17,6 +17,7 @@ Two rules that are not obvious:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
@@ -33,6 +34,17 @@ from .errors import MaboloError
 _CREDENTIALS = re.compile(r"(?<=//)[^/@\s]+(?=@)")
 
 TIMEOUT_SECONDS = 30
+
+#: A fast forward is only ever ended from outside as a last resort: ended half
+#: way it leaves the tree between two commits. Local work, so this is only
+#: reached when something is badly stuck.
+FAST_FORWARD_SECONDS = 120
+
+#: Files of ours in the git directory that outlive a process that was cut
+#: short, so the next one knows: the commit a fast forward was heading for,
+#: and the commit and paths of a write whose files were not all written yet.
+FAST_FORWARD_MARKER = "mabolo-fast-forward"
+WRITE_MARKER = "mabolo-writing"
 
 
 def _environment() -> dict[str, str]:
@@ -89,6 +101,12 @@ def _execute(
     """
     if index is not None:
         env = {**env, "GIT_INDEX_FILE": str(index)}
+    # Not at a terminal the person is using, though. There ssh may have to ask
+    # for a passphrase or a host key on the terminal, and a process outside the
+    # terminal's foreground group is stopped the moment it tries: every call
+    # hung until its timeout. A person at a terminal also has Ctrl-C, which
+    # reaches the whole foreground group anyway.
+    grouped = not _in_foreground_of_a_terminal()
     process = subprocess.Popen(
         argv,
         stdin=subprocess.PIPE if stdin is not None else None,
@@ -96,20 +114,45 @@ def _execute(
         stderr=subprocess.PIPE,
         env=env,
         text=text,
-        process_group=0,
+        **({"process_group": 0} if grouped else {}),
     )
     try:
         out, err = process.communicate(stdin, timeout=timeout)
     except BaseException:
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            if grouped:
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
         except OSError:
             pass
-        process.communicate()
+        # Bounded: something that left the group but kept a pipe open would
+        # otherwise hold this wait for as long as it lives.
+        try:
+            process.communicate(timeout=1)
+        except BaseException:
+            for pipe in (process.stdout, process.stderr, process.stdin):
+                if pipe is not None:
+                    pipe.close()
+            process.wait()
         raise
     if check and process.returncode != 0:
         raise subprocess.CalledProcessError(process.returncode, argv, out, err)
     return subprocess.CompletedProcess(argv, process.returncode, out, err)
+
+
+def _in_foreground_of_a_terminal() -> bool:
+    """Whether this process is what a person at a terminal is looking at."""
+    try:
+        terminal = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
+    except OSError:
+        return False
+    try:
+        return os.tcgetpgrp(terminal) == os.getpgrp()
+    except OSError:
+        return False
+    finally:
+        os.close(terminal)
 
 
 def redact(text: str) -> str:
@@ -259,11 +302,38 @@ def mutation_in_progress(root: Path) -> str | None:
         # commit, and a write would take that for a hand edit and commit it.
         # Also there for a moment while any git writes the index, which costs
         # a write a retry and nothing else.
-        ("index.lock", "a Git command, or one that was interrupted (.git/index.lock)"),
+        ("index.lock", "a Git command, or one that was cut short (.git/index.lock; if no git "
+                       "is running, see docs/recovery.md)"),
     ):
         if (git_dir / marker).exists():
             return what
+    if _fast_forward_cut_short(root, git_dir):
+        return (f"a fast forward that was cut short (.git/{FAST_FORWARD_MARKER}; "
+                "see docs/recovery.md)")
     return None
+
+
+def _fast_forward_cut_short(root: Path, git_dir: Path) -> bool:
+    """Whether a fast forward began and never reached its commit.
+
+    Git writes the files and the index before it moves HEAD, and `index.lock`
+    is gone by the time it does: killed in between, it leaves the newer tree on
+    the older commit with no mark of its own. Ours says where it was heading.
+    Once HEAD is there, or past it, the move finished and the mark goes.
+    """
+    marker = git_dir / FAST_FORWARD_MARKER
+    try:
+        target = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    here = rev(root, "HEAD")
+    if target and here and (here == target or is_ancestor(root, target, here)):
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+        return False
+    return True
 
 
 def foreign_changes(root: Path) -> list[str]:
@@ -341,7 +411,7 @@ _SHIELDED = frozenset({signal.SIGALRM, signal.SIGTERM, signal.SIGHUP, signal.SIG
 
 
 @contextmanager
-def _shielded() -> Iterator[None]:
+def shielded() -> Iterator[None]:
     """Hold the signals that end a process until the block is done.
 
     Held, not lost: they arrive the moment it ends. git inherits the mask, so a
@@ -362,11 +432,64 @@ def fast_forward(root: Path, ref: str) -> bool:
 
     The checkout is not atomic. Killed half way, it leaves part of the newer
     files on top of the older commit, and the next write commits them as a
-    hand edit. So nothing that can be held back interrupts it; what cannot,
-    a SIGKILL or a power cut, leaves `index.lock`, which stops the next write.
+    hand edit. So nothing that can be held back interrupts it, and what cannot,
+    a SIGKILL or a power cut, leaves our mark behind, which stops the next
+    write and the next catch-up until the tree is sorted out.
     """
-    with _shielded():
-        return run(root, "merge", "--ff-only", "--quiet", ref, check=False).returncode == 0
+    target = rev(root, ref) or ref
+    git_dir = repository_dir(root)
+    marker = git_dir / FAST_FORWARD_MARKER if git_dir else None
+    if marker is not None:
+        marker.write_text(target + "\n", encoding="utf-8")
+    with shielded():
+        moved = run(
+            root, "merge", "--ff-only", "--quiet", target, check=False, timeout=FAST_FORWARD_SECONDS
+        ).returncode == 0
+    # Git ended by itself, so whatever it did, it finished doing: a refusal
+    # touches nothing. Only a git that was killed leaves the mark.
+    if marker is not None:
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+    return moved
+
+
+def note_writing(root: Path, commit: str, paths: list[str]) -> None:
+    """Say, before the branch moves, which files this commit still has to write."""
+    git_dir = repository_dir(root)
+    if git_dir is None:
+        return
+    data = json.dumps({"commit": commit, "paths": paths}).encode("utf-8")
+    temporary = git_dir / (WRITE_MARKER + ".tmp")
+    with open(temporary, "wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, git_dir / WRITE_MARKER)
+
+
+def done_writing(root: Path) -> None:
+    git_dir = repository_dir(root)
+    if git_dir is not None:
+        try:
+            (git_dir / WRITE_MARKER).unlink()
+        except FileNotFoundError:
+            pass
+
+
+def unfinished_write(root: Path) -> dict | None:
+    """The commit and paths of a write that moved the branch and stopped."""
+    git_dir = repository_dir(root)
+    if git_dir is None:
+        return None
+    try:
+        found = json.loads((git_dir / WRITE_MARKER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(found, dict) or not isinstance(found.get("paths"), list):
+        return None
+    return found
 
 
 def reachable(root: Path, remote: str, ref: str | None = None) -> bool:

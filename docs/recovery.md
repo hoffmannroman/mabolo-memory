@@ -71,15 +71,21 @@ them, then `git merge` or `git rebase` in the vault by hand. Mabolo refuses to
 write while a merge or rebase is in progress, so finish it before the next
 session starts.
 
-**A Git command that was cut short.** Writes and catch-ups refuse with
-"a Git command, or one that was interrupted (.git/index.lock)". If a git of
-yours is running in the vault, wait for it. If none is, a git was killed half
-way, most likely a fast forward: the tree may hold part of the newer state on
-top of the older commit, and committing that would turn it into a hand edit.
-Delete `.git/index.lock`, run `git status` in the vault, put whatever it lists
-aside with `git stash --include-untracked`, and let the next session start move
-the vault forward. Look at the stash with `git stash show -p` before you drop
-it: anything in it that you wrote yourself is yours to keep.
+**A Git command that was cut short.** Writes and catch-ups refuse with "a Git
+command, or one that was cut short (.git/index.lock …)" or "a fast forward that
+was cut short (.git/mabolo-fast-forward …)". If a git of yours is running in
+the vault, wait for it. If none is, a git was killed half way, most likely a
+fast forward: the tree may hold part of the newer state on top of the older
+commit, and committing that would turn it into a hand edit. Delete the file the
+message names, run `git status` in the vault, put whatever it lists aside with
+`git stash --include-untracked`, and let the next session start move the vault
+forward. Look at the stash with `git stash show -p` before you drop it:
+anything in it that you wrote yourself is yours to keep.
+
+A write cut short between moving its branch and writing its files needs none of
+this: it noted its paths in `.git/mabolo-writing`, and the next write or
+catch-up writes them from the commit. Only when the branch has moved on since
+does it refuse and leave the comparison to you.
 
 **A secret that was committed.** Git keeps it, so removing the line is not
 enough. Rewrite the history with `git filter-repo`, force push every branch to

@@ -756,14 +756,18 @@ def cmd_reindex(args: argparse.Namespace) -> int:
         print(f"  {change.path}")
     if args.dry_run:
         return EXIT_FINDINGS
+    # What was printed is the preview. The repair itself is worked out again
+    # under the lock, after the vault has caught up: an index derived before
+    # could leave out an entry that arrived in between. See `write.apply`.
     result = write.apply(
         vault.root,
-        changes,
+        [],
         f"rebuild {len(changes)} index file(s)",
         actor=actor,
         kind="reindex",
         remote=remote,
         branch=branch,
+        derive=lambda _: vault.stale_indexes(),
     )
     print(result.message)
     return EXIT_OK if result.ok else EXIT_FINDINGS
@@ -1083,16 +1087,47 @@ def _prompt_payload(args: argparse.Namespace) -> str:
     vault = _vault_from(args, config)
     if not vault.is_initialised():
         return ""
+    # The catch-up starts after the search, not before: it moves files, and
+    # this hook should not read a vault halfway through being moved forward.
+    # And whatever came of the search: a vault this session can no longer
+    # read, or not in time, is the one that most needs what another machine
+    # fixed.
     try:
         with Index.build(vault.entries(), language=vault.declared_language()) as index:
-            found = index.search(prompt, limit=recall.LIMIT)
-            return recall.block(found.hits)
-    finally:
-        # After the search, not before: the catch-up moves files, and this hook
-        # should not read a vault halfway through being moved forward. And
-        # whatever came of the search: a vault this session can no longer read,
-        # or not in time, is the one that most needs what another machine fixed.
+            text = recall.block(index.search(prompt, limit=recall.LIMIT).hits)
+    except _OutOfTime:
+        # The deadline is spent and its timer with it. Starting the catch-up
+        # gets a moment of its own, still inside what the client waits.
+        _within(CATCH_UP_START_SECONDS, _catch_up_later, args, config)
+        raise
+    except BaseException:
         _catch_up_later(args, config)
+        raise
+    _catch_up_later(args, config)
+    return text
+
+
+#: What starting a catch-up may take once the prompt's own deadline is spent.
+#: The client waits a second longer than the hook's deadline.
+CATCH_UP_START_SECONDS = 0.25
+
+
+def _within(seconds: float, call: "Callable[..., None]", *args: object) -> None:
+    """Run `call` under a deadline of its own, and drop it when that runs out.
+
+    Only inside a hook, where the alarm raises `_OutOfTime`: anywhere else the
+    alarm's default is to end the process, so nothing is armed there.
+    """
+    if signal.getsignal(signal.SIGALRM) in (signal.SIG_DFL, signal.SIG_IGN, None):
+        call(*args)
+        return
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        call(*args)
+    except _OutOfTime:
+        pass
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 def _catch_up_later(args: argparse.Namespace, config: Config | None) -> None:
@@ -1115,6 +1150,10 @@ def _catch_up_later(args: argparse.Namespace, config: Config | None) -> None:
         # sessions prompting at once, start one and not several.
         if remote and catchup.claim():
             _start_quietly(_myself(args, "hook", "catch-up"))
+    except _OutOfTime:
+        # The hook's own deadline, which this must not eat: the answer would
+        # then be printed with no timer left to bound it.
+        raise
     except Exception:
         pass
 

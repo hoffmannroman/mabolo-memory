@@ -729,7 +729,18 @@ def _register_writing(
         if not changes:
             return "every index matches the entries beside it. Nothing was written."
         where = ", ".join(change.path for change in changes)
-        result = commit(changes, f"rebuild {len(changes)} index file(s)", "reindex")
+        # Worked out again under the lock, after the vault caught up; what is
+        # above is the preview. See `write.apply`.
+        result = write.apply(
+            vault.root,
+            [],
+            f"rebuild {len(changes)} index file(s)",
+            actor=settings.actor,
+            kind="reindex",
+            remote=settings.remote,
+            branch=settings.branch,
+            derive=lambda _: vault.stale_indexes(),
+        )
         if not result.ok:
             return f"{result.outcome}: {result.message}"
         return f"rebuilt {where}: {result.message}."

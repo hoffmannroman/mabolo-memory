@@ -262,6 +262,43 @@ def _materialise(root: Path, changes: list[Change]) -> dict[str, str]:
     return revisions
 
 
+def settle_unfinished(root: Path) -> str | None:
+    """Finish a write that moved its branch and stopped, or say why not.
+
+    Its paths were noted before the branch moved. While HEAD is still that
+    commit, what those files should hold is exactly what HEAD holds, so they
+    are written from it: nothing a person wrote is involved. Once HEAD has
+    moved somewhere else, that is no longer certain, and it is left to them.
+    Call it under the lock.
+    """
+    unfinished = git.unfinished_write(root)
+    if unfinished is None:
+        return None
+    paths = [p for p in unfinished["paths"] if isinstance(p, str)]
+    if git.rev(root, "HEAD") != unfinished.get("commit"):
+        return (
+            f"a write that was cut short left {', '.join(paths)} unwritten, and the branch has "
+            "moved since. Compare them with `git log -p` in the vault, then delete "
+            f".git/{git.WRITE_MARKER}; nothing was written."
+        )
+    for path in paths:
+        if Path(path).is_absolute() or ".." in Path(path).parts:
+            continue
+        target = root / path
+        try:
+            data = git.read_blob(root, f"HEAD:{path}")
+        except MaboloError:
+            data = None
+        if data is None:
+            target.unlink(missing_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+    git.reset_paths(root, paths)
+    git.done_writing(root)
+    return None
+
+
 def apply(
     root: Path,
     changes: list[Change],
@@ -282,7 +319,7 @@ def apply(
     existed, with the revision of the one that did, and that passed every check.
     """
     message = signed(message, kind, actor)
-    if not changes:
+    if not changes and derive is None:
         return Result(NOTHING, "nothing to write")
     for change in changes:
         if Path(change.path).is_absolute() or ".." in Path(change.path).parts:
@@ -304,6 +341,9 @@ def apply(
         return Result(LOCAL, "written, but this vault is not a Git repository", revisions=revisions)
 
     with lock(root):
+        unfinished = settle_unfinished(root)
+        if unfinished:
+            return Result(BLOCKED, unfinished)
         half_made = git.staged_and_edited(root)
         if half_made:
             # The same class as a merge in progress: somebody is building a
@@ -407,22 +447,36 @@ def apply(
         # repository that is consistent with itself and a remote that holds the
         # truth, which one command puts back; the other order leaves a commit
         # the next mutation would quietly revert.
-        git.update_ref(root, f"refs/heads/{target_branch}", commit, base)
-        try:
-            revisions = _materialise(root, todo)
-            git.reset_paths(root, [c.path for c in todo])
-        except (OSError, MaboloError) as exc:
-            # `MaboloError` as well, and that is the whole point of this branch:
-            # `frontmatter.write_file` turns every `OSError` into one, so a
-            # catch on `OSError` alone never fired. The change was committed
-            # and pushed, the caller was told "refused", and the next mutation
-            # committed the stale file back as a hand edit nobody made.
-            names = " ".join(change.path for change in todo)
-            raise MaboloError(
-                f"the change is committed as {commit[:12]} and is safe, but writing the files "
-                f"failed ({getattr(exc, 'strerror', None) or exc}). Put them back with "
-                f"`mabolo recover files {names}`."
-            ) from exc
+        #
+        # Between the two the tree is behind its own branch, and the next write
+        # would commit the older files as a hand edit, reverting this one. So
+        # the paths are noted first, which the next write finishes from HEAD,
+        # and nothing that can be held back interrupts the step itself.
+        paths = [c.path for c in todo]
+        git.note_writing(root, commit, paths)
+        with git.shielded():
+            try:
+                git.update_ref(root, f"refs/heads/{target_branch}", commit, base)
+            except BaseException:
+                # The branch did not move, so there is nothing to finish.
+                git.done_writing(root)
+                raise
+            try:
+                revisions = _materialise(root, todo)
+                git.reset_paths(root, paths)
+            except (OSError, MaboloError) as exc:
+                # `MaboloError` as well, and that is the whole point of this branch:
+                # `frontmatter.write_file` turns every `OSError` into one, so a
+                # catch on `OSError` alone never fired. The change was committed
+                # and pushed, the caller was told "refused", and the next mutation
+                # committed the stale file back as a hand edit nobody made.
+                names = " ".join(paths)
+                raise MaboloError(
+                    f"the change is committed as {commit[:12]} and is safe, but writing the files "
+                    f"failed ({getattr(exc, 'strerror', None) or exc}). The next write puts them "
+                    f"back by itself, or `mabolo recover files {names}` does it now."
+                ) from exc
+        git.done_writing(root)
 
     short = commit[:12]
     said = {

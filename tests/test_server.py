@@ -862,3 +862,25 @@ def test_an_edit_whose_passage_is_not_there_is_refused_when_filed(server, git_va
                      old="cut from a branch", new="cut from main")
     assert answer.startswith("refused")
     assert inbox.pending(git_vault.root) == []
+
+
+def test_the_reindex_tool_works_its_repair_out_under_the_lock(server, git_vault, monkeypatch):
+    from mabolo import write
+
+    (git_vault.root / "infra" / "made-in-an-editor.md").write_text(
+        entry_text(title="Editor", description="Made by hand"), encoding="utf-8"
+    )
+    git_vault.git("add", "-A")
+    git_vault.git("commit", "-qm", "by hand")
+    seen = []
+    real = write.apply
+
+    def apply(root, changes, message, **kw):
+        seen.append((list(changes), kw.get("derive")))
+        return real(root, changes, message, **kw)
+
+    monkeypatch.setattr(write, "apply", apply)
+    answer = call(server, "mabolo_reindex", {})
+    assert "rebuilt" in answer, answer
+    (given, derive), = seen
+    assert given == [] and derive is not None

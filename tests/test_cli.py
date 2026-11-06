@@ -1048,6 +1048,68 @@ def test_the_prompt_hook_gives_up_quietly_when_it_runs_out_of_time(tmp_path, cap
     assert "gave up" in err
 
 
+def test_starting_the_catch_up_does_not_outlive_the_prompts_deadline(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    """The deadline covers everything the hook does. Eating its alarm while
+    starting the catch-up left the answer to be printed with no timer at all."""
+    import time
+
+    from mabolo import catchup
+
+    config = synced_setup(tmp_path, git_vault, remote)
+    monkeypatch.setattr(catchup, "claim", lambda: (time.sleep(2), True)[1])
+    spawned_catch_ups(monkeypatch)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "what changed"})))
+    started = time.monotonic()
+    assert main(["--config", config, "hook", "prompt", "--seconds", "0.3"]) == 0
+    assert time.monotonic() - started < 1
+    assert "gave up" in capsys.readouterr().err
+
+
+def test_after_a_search_that_ran_out_of_time_the_catch_up_gets_a_moment_not_more(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    import time
+
+    from mabolo import catchup
+
+    config = synced_setup(tmp_path, git_vault, remote)
+    real = cli.Index.build
+    monkeypatch.setattr(cli.Index, "build", lambda *a, **k: (time.sleep(0.5), real(*a, **k))[1])
+    monkeypatch.setattr(catchup, "claim", lambda: (time.sleep(2), True)[1])
+    spawned_catch_ups(monkeypatch)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "what changed"})))
+    started = time.monotonic()
+    assert main(["--config", config, "hook", "prompt", "--seconds", "0.2"]) == 0
+    assert time.monotonic() - started < 0.2 + 0.5 + cli.CATCH_UP_START_SECONDS + 0.4
+
+
+def test_reindex_works_its_repair_out_under_the_lock(tmp_path, capsys, monkeypatch, git_vault):
+    """What it prints is the preview; what it writes is derived again inside
+    the transaction, after the vault caught up."""
+    from mabolo import write as writing
+
+    config = Config.default(vault=git_vault.root, actor="human:someone")
+    config.save(tmp_path / "c.toml")
+    (git_vault.root / "infra" / "made-in-an-editor.md").write_text(
+        entry_text(title="Editor", description="Made by hand"), encoding="utf-8"
+    )
+    git_vault.git("add", "-A")
+    git_vault.git("commit", "-qm", "by hand")
+    seen = []
+    real = writing.apply
+
+    def apply(root, changes, message, **kw):
+        seen.append((list(changes), kw.get("derive")))
+        return real(root, changes, message, **kw)
+
+    monkeypatch.setattr(writing, "apply", apply)
+    assert main(["--config", str(tmp_path / "c.toml"), "reindex"]) == 0
+    (given, derive), = seen
+    assert given == [] and derive is not None
+
+
 def test_context_can_say_why_an_entry_has_no_line(vault, capsys):
     """A count says how much is missing. This says which lever moves it."""
     context_vault(vault)

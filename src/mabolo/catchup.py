@@ -170,15 +170,22 @@ def catch_up(
             return _catch_up(root, remote, branch, seconds)
     except MaboloError as exc:
         # The lock was busy, git could not be run, or the fetch ran out of
-        # time. All of them leave the vault exactly as it was.
-        return CatchUp(OFFLINE if "did not finish" in str(exc) else BLOCKED, str(exc))
+        # time. All of them leave the vault exactly as it was. Only the fetch
+        # running out of time is the network; anything else is not.
+        offline = str(exc).startswith("git fetch did not finish")
+        return CatchUp(OFFLINE if offline else BLOCKED, str(exc))
     except OSError as exc:
-        # The lock file itself could not be made: a vault on a full or
-        # read-only disk. Nothing was touched either.
+        # The lock file itself could not be made: a state directory on a full
+        # or read-only disk. Nothing was touched either.
         return CatchUp(BLOCKED, f"the lock could not be taken: {exc.strerror or exc}")
 
 
 def _catch_up(root: Path, remote: str, branch: str, seconds: float) -> CatchUp:
+    # A write that stopped between its branch and its files left the tree
+    # behind HEAD; moving on from there would carry the older files along.
+    unfinished = write.settle_unfinished(root)
+    if unfinished:
+        return CatchUp(BLOCKED, unfinished)
     busy = git.mutation_in_progress(root)
     if busy:
         return CatchUp(BLOCKED, f"{busy} is running in the vault")

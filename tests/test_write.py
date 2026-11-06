@@ -441,32 +441,81 @@ def test_an_interrupted_git_command_blocks_a_write(git_vault):
     assert not (git_vault.root / "infra" / "thing.md").exists()
 
 
-def test_a_timed_out_git_takes_what_it_started_with_it(tmp_path):
+def _alive(pid: int) -> bool:
+    """Running, as opposed to gone or a zombie nobody has reaped yet."""
+    import os
+
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
+            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except FileNotFoundError:
+        return False
+    except OSError:
+        pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_a_timed_out_git_takes_what_it_started_with_it(tmp_path, monkeypatch):
     """The ssh under a hung fetch outlived git's timeout and collected, one per
     retry, on a machine that retries every minute."""
     import os
     import time
 
+    monkeypatch.setattr(git, "_in_foreground_of_a_terminal", lambda: False)
     marker = tmp_path / "child.pid"
-    started = time.monotonic()
     with pytest.raises(subprocess.TimeoutExpired):
         git._execute(
             ["sh", "-c", f"sleep 30 & echo $! > {marker}; wait"],
-            env=dict(os.environ), timeout=0.5, check=False, text=True,
+            env=dict(os.environ), timeout=2, check=False, text=True,
         )
-    # Killing git alone left the child holding the pipes, and the call waited
-    # for it to finish of its own accord: the timeout bounded nothing.
-    assert time.monotonic() - started < 5
     child = int(marker.read_text().strip())
-    for _ in range(50):
-        try:
-            os.kill(child, 0)
-        except ProcessLookupError:
+    for _ in range(100):
+        if not _alive(child):
             break
         time.sleep(0.02)
     else:
         os.kill(child, 9)
         pytest.fail("the child git started was still running after the timeout")
+
+
+def test_ending_a_timed_out_git_has_a_bound_of_its_own(monkeypatch):
+    """Something that left the group but kept a pipe open held the wait after
+    the kill for as long as it lived."""
+    import os
+    import shutil
+    import time
+
+    if shutil.which("setsid") is None:
+        pytest.skip("needs setsid")
+    monkeypatch.setattr(git, "_in_foreground_of_a_terminal", lambda: False)
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        git._execute(["sh", "-c", "setsid sleep 6 & sleep 30"], env=dict(os.environ),
+                     timeout=0.5, check=False, text=True)
+    assert time.monotonic() - started < 4
+
+
+@pytest.mark.parametrize("at_a_terminal", [False, True])
+def test_git_gets_a_group_of_its_own_only_away_from_a_terminal(monkeypatch, at_a_terminal):
+    """At a terminal ssh may ask for a passphrase there, and a process outside
+    the foreground group is stopped the moment it tries."""
+    import os
+
+    seen = []
+    real = git.subprocess.Popen
+
+    def popen(argv, **kw):
+        seen.append(kw)
+        return real(argv, **kw)
+
+    monkeypatch.setattr(git, "_in_foreground_of_a_terminal", lambda: at_a_terminal)
+    monkeypatch.setattr(git.subprocess, "Popen", popen)
+    git._execute(["true"], env=dict(os.environ), timeout=5, check=True, text=True)
+    assert ("process_group" in seen[0]) is (not at_a_terminal)
 
 
 def test_git_never_asks_for_a_passphrase_through_a_window():
@@ -492,3 +541,93 @@ def test_a_fast_forward_holds_the_signals_that_would_cut_it_short(git_vault, mon
     git.fast_forward(git_vault.root, "HEAD")
     assert seen and {signal.SIGALRM, signal.SIGTERM, signal.SIGINT, signal.SIGHUP} <= seen[0]
     assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK, [])
+
+
+def test_a_write_cut_short_between_branch_and_files_is_finished_by_the_next(git_vault, monkeypatch):
+    """The branch moves first, then the files. Stopped in between, the next
+    write took the older files for a hand edit and reverted the entry."""
+    real = write._materialise
+    calls = []
+
+    def interrupted(root, todo):
+        calls.append(1)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+        return real(root, todo)
+
+    monkeypatch.setattr(write, "_materialise", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        write.apply(git_vault.root, [change()], "first", actor="human:alex")
+    result = write.apply(git_vault.root, [change("infra/other.md")], "second", actor="human:alex")
+    assert result.ok, result.message
+    assert messages(git_vault)[:2] == ["second", "first"]
+    assert (git_vault.root / "infra" / "thing.md").read_bytes() == ENTRY
+    assert "infra/thing.md" in git_vault.git("ls-tree", "-r", "--name-only", "HEAD").stdout
+    assert git.unfinished_write(git_vault.root) is None
+
+
+def test_a_branch_that_did_not_move_leaves_nothing_to_finish(git_vault, monkeypatch):
+    from mabolo.errors import MaboloError
+
+    def refused(*args, **kw):
+        raise MaboloError("git update-ref failed: cannot lock ref")
+
+    monkeypatch.setattr(git, "update_ref", refused)
+    with pytest.raises(MaboloError):
+        write.apply(git_vault.root, [change()], "x", actor="human:alex")
+    assert git.unfinished_write(git_vault.root) is None
+
+
+def test_a_fast_forward_cut_short_blocks_the_next_write(git_vault, remote, tmp_path):
+    """Git moves HEAD last and lets go of index.lock before it does; killed in
+    between, only our own mark says the tree is ahead of its commit."""
+    other = clone(tmp_path, remote)
+    (other / "infra" / "elsewhere.md").write_bytes(ENTRY)
+    subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(other), "commit", "-qm", "other"], check=True)
+    target = subprocess.run(["git", "-C", str(other), "rev-parse", "HEAD"],
+                            capture_output=True, text=True, check=True).stdout.strip()
+    (git.repository_dir(git_vault.root) / git.FAST_FORWARD_MARKER).write_text(target)
+    result = write.apply(git_vault.root, [change()], "x", actor="human:alex")
+    assert result.outcome == write.BLOCKED
+    assert "fast forward that was cut short" in result.message
+
+
+def test_a_mark_left_by_a_fast_forward_that_finished_is_cleared(git_vault):
+    marker = git.repository_dir(git_vault.root) / git.FAST_FORWARD_MARKER
+    marker.write_text(head(git_vault))
+    assert write.apply(git_vault.root, [change()], "x", actor="human:alex").ok
+    assert not marker.exists()
+
+
+def test_a_fast_forward_that_ends_by_itself_leaves_no_mark(git_vault, remote, tmp_path):
+    other = clone(tmp_path, remote)
+    (other / "infra" / "elsewhere.md").write_bytes(ENTRY)
+    subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(other), "commit", "-qm", "other"], check=True)
+    subprocess.run(["git", "-C", str(other), "push", "-q"], check=True)
+    git_vault.git("fetch", "-q", "origin")
+    assert git.fast_forward(git_vault.root, "origin/main")
+    assert not (git.repository_dir(git_vault.root) / git.FAST_FORWARD_MARKER).exists()
+
+
+def test_a_repair_with_nothing_given_is_derived_entirely_under_the_lock(git_vault):
+    """reindex hands no changes of its own: every index it writes is worked out
+    after the vault caught up."""
+    from mabolo.vault import Vault
+
+    vault = Vault(git_vault.root)
+    (git_vault.root / "infra" / "made-in-an-editor.md").write_bytes(ENTRY)
+    git_vault.git("add", "-A")
+    git_vault.git("commit", "-qm", "by hand")
+    asked = []
+
+    def derive(changes):
+        asked.append(list(changes))
+        return vault.stale_indexes()
+
+    result = write.apply(git_vault.root, [], "rebuild", actor="human:alex", derive=derive)
+    assert result.ok and asked == [[]]
+    assert "made-in-an-editor.md" in (git_vault.root / "infra" / "index.md").read_text()
+    assert write.apply(git_vault.root, [], "again", actor="human:alex",
+                       derive=lambda _: vault.stale_indexes()).outcome == write.NOTHING

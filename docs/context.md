@@ -478,7 +478,14 @@ why if it persists; a crash goes to `mabolo reports` like any other fault.
 `mabolo hook prompt --no-fetch` leaves it out.
 
 The fast forward itself holds back the signals that would end it half way, a
-hook's deadline, a stopped service, Ctrl-C, until the checkout is done. What
-cannot be held back, a SIGKILL or a power cut, leaves `.git/index.lock`, and
-every write and catch-up refuses until it is dealt with; see
-[recovery](recovery.md#the-procedures).
+hook's deadline, a stopped service, Ctrl-C, until the checkout is done, and it
+notes where it is heading in `.git/mabolo-fast-forward` before it starts. Git
+lets go of `index.lock` before it moves HEAD, so only that note covers the
+whole way. What cannot be held back, a SIGKILL or a power cut, leaves the note,
+or `index.lock`, and every write and catch-up refuses until it is dealt with;
+see [recovery](recovery.md#the-procedures). A note whose commit HEAD has
+reached is the trace of a move that finished, and goes by itself.
+
+If the start of a catch-up finds the prompt's own deadline spent, by a search
+that ran out of time, it gets a quarter of a second of its own, still inside
+what the client waits, and is dropped when that runs out.

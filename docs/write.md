@@ -99,9 +99,12 @@ the remote, where Git has the primitive for it.
 ```
   take the lock              one mutation at a time on this machine
         |
+  a write cut short?         finish it from HEAD, while HEAD is its commit
+        |
   Git already busy? ---yes--> blocked, nothing is touched
-        |                    (a merge, a rebase, or index.lock: a git
-        |                     running, or one killed half way)
+        |                    (a merge, a rebase, index.lock or our own
+        |                     fast forward note: a git running, or one
+        |                     killed half way)
         |
   fetch, remember the remote commit           this is the lease
         |
@@ -117,14 +120,25 @@ the remote, where Git has the primitive for it.
         |
   push with the lease -----refused--> conflict, nothing local moved
         |
-  move the branch, write the files, line the index up
+  note the paths, move the branch, write the files, line the index up
 ```
 
 **The indexes are derived inside the lock, after the fast forward.** An index
 describes every entry beside it, so it has to be worked out from the vault the
 commit will sit on. Worked out before the lock, a catch-up that landed in
 between left it describing a vault that no longer existed, while carrying the
-revision of the one that did, and that passed every check.
+revision of the one that did, and that passed every check. `reindex` goes the
+same way: what it prints is a preview, and the repair is worked out again
+under the lock.
+
+**A write cut short between its branch and its files is finished, not
+reverted.** The branch moves first, so a failure leaves a repository
+consistent with itself; but the files are then older than their commit, and
+the next write used to take them for a hand edit and commit them, undoing the
+write before it. So the paths are noted in `.git/mabolo-writing` before the
+branch moves, the step holds back the signals that could end it, and the next
+write or catch-up writes those paths from the commit while HEAD is still that
+commit.
 
 **Nothing is written where you can see it until the commit is safe.** The bytes
 go into Git's object store, the tree is assembled in an index of its own, and
