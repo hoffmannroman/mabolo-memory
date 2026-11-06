@@ -9,7 +9,7 @@ through, its start.
 A start is not enough for a session that never ends. One that runs for days,
 a session kept alive by a service so a phone can reach it, read the vault of
 the morning it began, while other machines went on writing. So a prompt starts
-a catch-up as well, in the background and at most once a minute: the prompt
+a catch-up as well, in the background and about once a minute: the prompt
 hook has two seconds and the person is waiting, and a fetch belongs to neither.
 What arrives is there for the next read, the tools a moment later included.
 
@@ -32,6 +32,7 @@ that must start the session whatever the network does.
 
 from __future__ import annotations
 
+import fcntl
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,9 +48,11 @@ FETCH_SECONDS = 2.5
 #: How long to wait for a write that is already running.
 LOCK_SECONDS = 0.5
 
-#: The catch-up a prompt leaves running has nobody waiting for it, so it may
-#: take longer over a slow network and wait longer for a write.
-BACKGROUND_SECONDS = 15.0
+#: The catch-up a prompt leaves running has nobody waiting for it, but it
+#: holds the write lock while it fetches, and a write waits for that lock
+#: `write.LOCK_SECONDS`. So the fetch ends well before that wait does: a slow
+#: remote costs this catch-up, never a write the person asked for.
+BACKGROUND_SECONDS = 5.0
 BACKGROUND_LOCK_SECONDS = 3.0
 
 #: How old the last catch-up may be before a prompt starts another one. Short
@@ -57,8 +60,10 @@ BACKGROUND_LOCK_SECONDS = 3.0
 #: two, long enough that a burst of prompts costs one fetch and not ten.
 STALE_SECONDS = 60
 
-#: When this machine last tried, as the modification time of an empty file.
+#: When this machine last tried, as the modification time of an empty file,
+#: and the lock that makes "is it due, then mark it" one step.
 STAMP_FILE = "caught-up"
+CLAIM_FILE = "caught-up.lock"
 
 CURRENT = "current"
 MOVED = "moved"
@@ -96,29 +101,54 @@ def _stamp() -> Path:
 def due(now: float | None = None) -> bool:
     """Whether the last catch-up on this machine is old enough to try again.
 
-    A stamp from the future, after the clock was set back, counts as due:
-    otherwise the vault would stand still until the clock caught up.
+    A stamp far in the future, after the clock was set back, counts as due:
+    otherwise the vault would stand still until the clock caught up. A little
+    ahead does not: a state directory on a network share stamps with the
+    server's clock, and a server a second ahead would make every prompt due.
     """
     try:
         then = _stamp().stat().st_mtime
     except OSError:
         return True
     age = (time.time() if now is None else now) - then
-    return age < 0 or age >= STALE_SECONDS
+    return age >= STALE_SECONDS or age < -STALE_SECONDS
 
 
-def mark() -> None:
+def mark() -> bool:
     """Note that a catch-up was tried just now, whatever comes of it.
 
     Tried, not succeeded: a remote that cannot be reached is asked again a
-    minute later, not on every prompt in between.
+    minute later, not on every prompt in between. False when the note could
+    not be written, and then nothing should be started on the strength of it:
+    every prompt would find the catch-up due and start one.
     """
     try:
         stamp = _stamp()
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
     except OSError:
-        pass
+        return False
+    return True
+
+
+def claim(now: float | None = None) -> bool:
+    """Take the next catch-up for the caller, if one is due and nobody has it.
+
+    "Is it due" and "mark it" as one step. Two sessions prompting at the same
+    moment both found it due and both started one before this; the write lock
+    kept them apart, but the second fetch was waste.
+    """
+    try:
+        stamp = _stamp()
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        with open(stamp.parent / CLAIM_FILE, "a") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return False  # another prompt is claiming it this instant
+            return due(now) and mark()
+    except OSError:
+        return False
 
 
 def catch_up(
@@ -142,6 +172,10 @@ def catch_up(
         # The lock was busy, git could not be run, or the fetch ran out of
         # time. All of them leave the vault exactly as it was.
         return CatchUp(OFFLINE if "did not finish" in str(exc) else BLOCKED, str(exc))
+    except OSError as exc:
+        # The lock file itself could not be made: a vault on a full or
+        # read-only disk. Nothing was touched either.
+        return CatchUp(BLOCKED, f"the lock could not be taken: {exc.strerror or exc}")
 
 
 def _catch_up(root: Path, remote: str, branch: str, seconds: float) -> CatchUp:

@@ -138,6 +138,7 @@ def test_the_session_start_publishes_in_the_background_only_when_needed(tmp_path
     main(["--config", config, "hook", "session-start"])
     assert len(started) == 1
     assert started[0][-2:] == ["reports", "--sync"]
+    assert started[0][1:4] == ["-P", "-m", "mabolo"], "never a module from the working directory"
     assert config in started[0]
 
 

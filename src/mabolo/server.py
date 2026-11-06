@@ -185,12 +185,13 @@ def build(vault: Vault, settings: Settings) -> MCPServer:
         # commit as the entry that changed it. See `Vault.index_changes`.
         return write.apply(
             vault.root,
-            changes + vault.index_changes(changes),
+            changes,
             message,
             actor=settings.actor,
             kind=kind,
             remote=settings.remote,
             branch=settings.branch,
+            derive=vault.index_changes,
         )
 
     @server.tool()

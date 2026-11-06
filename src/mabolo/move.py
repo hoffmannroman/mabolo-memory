@@ -245,12 +245,13 @@ def carry_out(vault, made: Plan, *, actor: str, remote: str | None = None,
     """Write the move, in one commit, through the door everything else uses."""
     result = write.apply(
         vault.root,
-        made.changes + vault.index_changes(made.changes),
+        list(made.changes),
         f"rename {made.old} to {made.new}",
         actor=actor,
         kind=KIND,
         remote=remote,
         branch=branch,
+        derive=vault.index_changes,
     )
     if result.ok:
         # A folder is not part of a commit, so nothing above removes the one

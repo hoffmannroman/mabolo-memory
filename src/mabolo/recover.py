@@ -23,7 +23,7 @@ Nothing here resets, cleans or forces.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -170,18 +170,20 @@ def _blob_id(root: Path, revision: str, path: str) -> str | None:
 
 def carry_out(root: Path, plan: Plan, *, actor: str, kind: str,
               remote: str | None = None, branch: str | None = None,
-              derived: Sequence[write.Change] = ()) -> write.Result:
+              derive: Callable[[list[write.Change]], list[write.Change]] | None = None,
+              ) -> write.Result:
     """Run a plan through the same transaction every other change goes through.
 
-    `derived` is what the plan makes wrong elsewhere, an area index above all,
-    and it travels in the same commit. The caller works it out, because what an
-    index holds is the vault's question and this module only moves files.
+    `derive` is what the plan makes wrong elsewhere, an area index above all,
+    and it travels in the same commit. The caller names it, because what an
+    index holds is the vault's question and this module only moves files; the
+    transaction asks it under its lock, see `write.apply`.
     """
     if plan.empty:
         return write.Result(write.NOTHING, "nothing to do")
     return write.apply(
-        root, [*plan.changes, *derived], plan.action,
-        actor=actor, kind=kind, remote=remote, branch=branch,
+        root, list(plan.changes), plan.action,
+        actor=actor, kind=kind, remote=remote, branch=branch, derive=derive,
     )
 
 

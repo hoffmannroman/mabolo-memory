@@ -100,12 +100,16 @@ the remote, where Git has the primitive for it.
   take the lock              one mutation at a time on this machine
         |
   Git already busy? ---yes--> blocked, nothing is touched
+        |                    (a merge, a rebase, or index.lock: a git
+        |                     running, or one killed half way)
         |
   fetch, remember the remote commit           this is the lease
         |
   commit hand made changes   "edit outside mabolo by human:<id>"
         |
   line up with the remote    fast forward, or report a divergence
+        |
+  derive what it makes wrong the area indexes, from the vault as it is now
         |
   revision still yours? --no--> stale, read it again and decide
         |
@@ -115,6 +119,12 @@ the remote, where Git has the primitive for it.
         |
   move the branch, write the files, line the index up
 ```
+
+**The indexes are derived inside the lock, after the fast forward.** An index
+describes every entry beside it, so it has to be worked out from the vault the
+commit will sit on. Worked out before the lock, a catch-up that landed in
+between left it describing a vault that no longer existed, while carrying the
+revision of the one that did, and that passed every check.
 
 **Nothing is written where you can see it until the commit is safe.** The bytes
 go into Git's object store, the tree is assembled in an index of its own, and

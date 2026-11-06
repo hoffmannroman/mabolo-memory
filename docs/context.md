@@ -457,10 +457,28 @@ service, so that a phone can reach it, would otherwise read the vault of the
 morning it began while other machines went on writing. So the prompt hook
 starts a catch-up as well, by the same rules, but in a process of its own
 (`mabolo hook catch-up`): the prompt has two seconds and a person waiting, and
-a fetch fits into neither. It runs at most once a minute per machine, counted
-from the last attempt, the session start's included, so a burst of prompts
-costs one fetch and an unreachable remote is asked again a minute later rather
-than on every prompt. What it brings is there for the next read; the prompt
-that started it was answered from the vault as it was. It has nobody to tell,
-so a catch-up that could not move the vault says nothing, and the next session
-start says why.
+a fetch fits into neither. It runs about once a minute per machine, counted
+from the last attempt, the session start's included: the prompt claims the
+next one under a small lock of its own, so a burst of prompts, or two sessions
+prompting at once, cost one fetch, and an unreachable remote is asked again a
+minute later rather than on every prompt. A state directory that cannot be
+written starts nothing at all, rather than a process on every prompt. What it
+brings is there for the next read; the prompt that started it was answered
+from the vault as it was. It is started whatever the search found, a search
+that failed included, because a vault this session can no longer read is the
+one that most needs what another machine fixed.
+
+It holds the write lock while it fetches, as the session start does, so its
+fetch ends after five seconds: a write waits ten for the lock, and a slow
+remote may cost the catch-up but never a write. It is started as
+`python -P -m mabolo`, so a module in the session's project folder is never
+imported in place of the real one. It has nobody to tell: a catch-up that could
+not move the vault says nothing, and a later one or the next session start says
+why if it persists; a crash goes to `mabolo reports` like any other fault.
+`mabolo hook prompt --no-fetch` leaves it out.
+
+The fast forward itself holds back the signals that would end it half way, a
+hook's deadline, a stopped service, Ctrl-C, until the checkout is done. What
+cannot be held back, a SIGKILL or a power cut, leaves `.git/index.lock`, and
+every write and catch-up refuses until it is dealt with; see
+[recovery](recovery.md#the-procedures).

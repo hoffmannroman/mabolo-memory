@@ -208,12 +208,13 @@ def answer(
     # into the same commit. See `Vault.index_changes`.
     result = write.apply(
         vault.root,
-        changes + vault.index_changes(changes),
+        changes,
         f"{said} {proposal.id}: {proposal.action} {proposal.target}",
         actor=by,
         kind=said,
         remote=remote,
         branch=branch,
+        derive=vault.index_changes,
     )
     pending = ""
     if result.ok:

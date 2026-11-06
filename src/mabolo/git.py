@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from .errors import MaboloError
 
@@ -58,7 +61,55 @@ def _environment() -> dict[str, str]:
     # over a pipe and a hook runs before the person has typed anything. A
     # prompt would only hold the call until its timeout.
     environment["GIT_TERMINAL_PROMPT"] = "0"
+    # The same for ssh, which asks through a program of its own when there is a
+    # display and no terminal: a background catch-up once a minute would open a
+    # passphrase dialog once a minute. Without a terminal and without that
+    # program, ssh fails at once, which is the answer a hook can use.
+    environment["SSH_ASKPASS_REQUIRE"] = "never"
     return environment
+
+
+def _execute(
+    argv: list[str],
+    *,
+    env: dict[str, str],
+    timeout: float,
+    check: bool,
+    text: bool,
+    stdin: bytes | None = None,
+    index: Path | None = None,
+) -> subprocess.CompletedProcess:
+    """Run one git command in a process group of its own, and end the group.
+
+    `subprocess.run` kills git when the time is up and leaves what git started
+    running: the ssh that hangs on a dead connection, a remote helper. Those
+    then outlived every deadline here, and a catch-up that is retried every
+    minute collected them. In a group of their own they end with git, on a
+    timeout and on anything else that interrupts the wait.
+    """
+    if index is not None:
+        env = {**env, "GIT_INDEX_FILE": str(index)}
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE if stdin is not None else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        text=text,
+        process_group=0,
+    )
+    try:
+        out, err = process.communicate(stdin, timeout=timeout)
+    except BaseException:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        process.communicate()
+        raise
+    if check and process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, argv, out, err)
+    return subprocess.CompletedProcess(argv, process.returncode, out, err)
 
 
 def redact(text: str) -> str:
@@ -86,17 +137,14 @@ def run(
     `timeout` is for the one caller that has less time than a write does: the
     session start, which fetches inside a hook with a deadline of its own.
     """
-    environment = _environment()
-    if index is not None:
-        environment["GIT_INDEX_FILE"] = str(index)
     try:
-        return subprocess.run(
+        return _execute(
             ["git", "-C", str(root), *args],
-            capture_output=True,
-            text=True,
-            check=check,
+            env=_environment(),
             timeout=timeout,
-            env=environment,
+            check=check,
+            text=True,
+            index=index,
         )
     except subprocess.CalledProcessError as exc:
         message = (exc.stderr or exc.stdout or "").strip().splitlines()
@@ -206,6 +254,12 @@ def mutation_in_progress(root: Path) -> str | None:
         ("CHERRY_PICK_HEAD", "a cherry-pick"),
         ("REVERT_HEAD", "a revert"),
         ("BISECT_LOG", "a bisect"),
+        # Left behind by a git that was killed half way, a checkout above all:
+        # the tree then holds part of the newer state on top of the older
+        # commit, and a write would take that for a hand edit and commit it.
+        # Also there for a moment while any git writes the index, which costs
+        # a write a retry and nothing else.
+        ("index.lock", "a Git command, or one that was interrupted (.git/index.lock)"),
     ):
         if (git_dir / marker).exists():
             return what
@@ -281,13 +335,38 @@ def is_ancestor(root: Path, earlier: str, later: str) -> bool:
     return run(root, "merge-base", "--is-ancestor", earlier, later, check=False).returncode == 0
 
 
+#: What could end a fast forward half way through: a hook's own deadline,
+#: a service being stopped, a terminal closed, Ctrl-C.
+_SHIELDED = frozenset({signal.SIGALRM, signal.SIGTERM, signal.SIGHUP, signal.SIGINT})
+
+
+@contextmanager
+def _shielded() -> Iterator[None]:
+    """Hold the signals that end a process until the block is done.
+
+    Held, not lost: they arrive the moment it ends. git inherits the mask, so a
+    signal sent to the whole service waits for the checkout as well.
+    """
+    held = signal.pthread_sigmask(signal.SIG_BLOCK, _SHIELDED)
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, held)
+
+
 def fast_forward(root: Path, ref: str) -> bool:
     """Move the branch forward to `ref`, or leave everything as it was.
 
     `--ff-only` is the whole point: it refuses rather than merging, and it
     refuses rather than overwriting a file somebody is working on.
+
+    The checkout is not atomic. Killed half way, it leaves part of the newer
+    files on top of the older commit, and the next write commits them as a
+    hand edit. So nothing that can be held back interrupts it; what cannot,
+    a SIGKILL or a power cut, leaves `index.lock`, which stops the next write.
     """
-    return run(root, "merge", "--ff-only", "--quiet", ref, check=False).returncode == 0
+    with _shielded():
+        return run(root, "merge", "--ff-only", "--quiet", ref, check=False).returncode == 0
 
 
 def reachable(root: Path, remote: str, ref: str | None = None) -> bool:
@@ -337,13 +416,13 @@ def run_bytes(root: Path, *args: str, stdin: bytes | None = None, check: bool = 
     timeout and redaction, and one of them had already drifted.
     """
     try:
-        result = subprocess.run(
+        result = _execute(
             ["git", "-C", str(root), *args],
-            input=stdin,
-            capture_output=True,
-            check=check,
-            timeout=TIMEOUT_SECONDS,
             env=_environment(),
+            timeout=TIMEOUT_SECONDS,
+            check=check,
+            text=False,
+            stdin=stdin,
         )
     except subprocess.CalledProcessError as exc:
         message = (exc.stderr or exc.stdout or b"").decode("utf-8", "replace").strip().splitlines()

@@ -14,6 +14,10 @@ def isolated_environment(tmp_path, monkeypatch):
     monkeypatch.delenv("MABOLO_CONFIG", raising=False)
     monkeypatch.delenv("MABOLO_VAULT", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # The state lives under XDG_STATE_HOME when it is set, and it is on many
+    # desktops: prompt notes, the record of faults, the catch-up stamp. A test
+    # that only moved HOME wrote all three into the person's real state.
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     (tmp_path / "home").mkdir(exist_ok=True)
     # `init` takes a new vault's language from the locale, so a test must not
     # start English on one machine and German on the next.

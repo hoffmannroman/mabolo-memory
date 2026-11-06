@@ -720,7 +720,7 @@ def cmd_revert(args: argparse.Namespace) -> int:
         plan,
         actor=actor,
         kind="revert",
-        derived=vault.index_changes(list(plan.changes)),
+        derive=vault.index_changes,
         remote=remote,
         branch=branch,
     )
@@ -812,7 +812,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
         plan,
         actor=actor,
         kind="recover",
-        derived=vault.index_changes(list(plan.changes)),
+        derive=vault.index_changes,
         remote=remote,
         branch=branch,
     )
@@ -929,8 +929,27 @@ def _publish_reports_later(args: argparse.Namespace) -> None:
     """
     if not reports.needs_sync():
         return
+    _start_quietly(_myself(args, "reports", "--sync"))
+
+
+def _myself(args: argparse.Namespace, *rest: str) -> list[str]:
+    """How this program starts a copy of itself, with the same configuration.
+
+    `-P` keeps the working directory off the import path. `-m` puts it first
+    otherwise, and the working directory is the session's project: a
+    `mabolo.py`, a `yaml.py` or an innocent `types.py` there was imported in
+    place of the real one, silently and about once a minute.
+    """
     given = _config_path(args)
-    argv = [sys.executable, "-m", "mabolo", *(["--config", str(given)] if given else []), "reports", "--sync"]
+    return [sys.executable, "-P", "-m", "mabolo", *(["--config", str(given)] if given else []), *rest]
+
+
+def _start_quietly(argv: list[str]) -> None:
+    """Start a process that outlives this one, with nothing to talk back on.
+
+    A session of its own, so the client does not wait for it or end it with
+    the hook, and no pipes, so nothing holds the hook's output open.
+    """
     try:
         subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
@@ -1060,19 +1079,23 @@ def _prompt_payload(args: argparse.Namespace) -> str:
         # once when a session begins; said again on every prompt it would be
         # the tool nagging about its own setup.
         return ""
-    vault = _vault_from(args)
+    config = Config.load_if_present(config_path)
+    vault = _vault_from(args, config)
     if not vault.is_initialised():
         return ""
-    with Index.build(vault.entries(), language=vault.declared_language()) as index:
-        found = index.search(prompt, limit=recall.LIMIT)
-        text = recall.block(found.hits)
-    # After the search, not before: the catch-up moves files, and this hook
-    # should not read a vault that is halfway through being moved forward.
-    _catch_up_later(args, config_path)
-    return text
+    try:
+        with Index.build(vault.entries(), language=vault.declared_language()) as index:
+            found = index.search(prompt, limit=recall.LIMIT)
+            return recall.block(found.hits)
+    finally:
+        # After the search, not before: the catch-up moves files, and this hook
+        # should not read a vault halfway through being moved forward. And
+        # whatever came of the search: a vault this session can no longer read,
+        # or not in time, is the one that most needs what another machine fixed.
+        _catch_up_later(args, config)
 
 
-def _catch_up_later(args: argparse.Namespace, config_path: Path) -> None:
+def _catch_up_later(args: argparse.Namespace, config: Config | None) -> None:
     """Start a catch-up that outlives the prompt hook, when the last one is old.
 
     A session start catches up, and a session that never ends would otherwise
@@ -1080,23 +1103,19 @@ def _catch_up_later(args: argparse.Namespace, config_path: Path) -> None:
     seconds a prompt has, so it runs on its own, and what it brings is there for
     the next read. Only for the configured vault and only when it has a remote,
     as at the session start.
+
+    Nothing here may cost the prompt its answer, which is already worked out
+    when this runs, so nothing here raises.
     """
-    if args.path or not catchup.due():
-        return
-    config = Config.load_if_present(config_path)
-    if config is None:
-        return
-    _, remote, _ = config.target()
-    if not remote:
-        return
-    # Before the process starts, so a burst of prompts starts one and not ten.
-    catchup.mark()
-    given = _config_path(args)
-    argv = [sys.executable, "-m", "mabolo", *(["--config", str(given)] if given else []), "hook", "catch-up"]
     try:
-        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
-    except OSError:
+        if args.path or getattr(args, "no_fetch", False) or config is None:
+            return
+        _, remote, _ = config.target()
+        # Claimed before the process starts, so a burst of prompts, or two
+        # sessions prompting at once, start one and not several.
+        if remote and catchup.claim():
+            _start_quietly(_myself(args, "hook", "catch-up"))
+    except Exception:
         pass
 
 
@@ -1104,7 +1123,9 @@ def cmd_hook_catch_up(args: argparse.Namespace) -> int:
     """What the prompt hook leaves running: bring the vault forward, quietly.
 
     Nobody waits for it and nobody reads what it prints, so it says nothing and
-    never fails. What it could not do, the next session start says.
+    exits 0. A catch-up that could not move the vault is no fault, and a later
+    one, or the next session start, says why if it persists. A crash is a
+    fault, and goes where every other one goes, for the next session start.
     """
     try:
         config = Config.load_if_present(_config_path(args) or default_config_path())
@@ -1119,8 +1140,11 @@ def cmd_hook_catch_up(args: argparse.Namespace) -> int:
                     seconds=catchup.BACKGROUND_SECONDS,
                     lock_seconds=catchup.BACKGROUND_LOCK_SECONDS,
                 )
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            health.record("background catch-up", f"{type(exc).__name__}: {exc}")
+        except Exception:
+            pass
     return EXIT_OK
 
 
@@ -1557,6 +1581,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=PROMPT_SECONDS,
         help=f"give up after this long, default {PROMPT_SECONDS}",
+    )
+    prompt.add_argument(
+        "--no-fetch",
+        action="store_true",
+        help="do not start a catch-up with the remote in the background",
     )
     prompt.add_argument(
         "--no-record",

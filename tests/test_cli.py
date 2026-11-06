@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import entry_text
-from mabolo import cli, context, doctor, index, schema
+from mabolo import cli, consent, context, doctor, index, schema
 from mabolo.cli import main
 from mabolo.config import Config
 from mabolo.vault import Vault
@@ -818,6 +818,112 @@ def test_the_background_catch_up_says_nothing_and_never_fails(
     assert captured.out == "" and captured.err == ""
 
 
+def test_the_background_process_is_started_detached_and_from_the_installed_code(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    """`-P` keeps the session's project off the import path; a new session and
+    no pipes keep the client from waiting on the process or ending it."""
+    import subprocess
+    import sys
+
+    config = synced_setup(tmp_path, git_vault, remote)
+    calls = []
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda argv, **kw: calls.append((argv, kw)))
+    ask(monkeypatch, config)
+    (argv, kw), = calls
+    assert argv[:4] == [sys.executable, "-P", "-m", "mabolo"]
+    assert argv[-2:] == ["hook", "catch-up"]
+    assert kw["start_new_session"] is True
+    assert kw["stdin"] == kw["stdout"] == kw["stderr"] == subprocess.DEVNULL
+
+
+def test_a_module_in_the_project_folder_is_never_run_by_the_background_process(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    """The working directory is the session's project. `python -m` put it first
+    on the import path, so a `yaml.py` there ran in place of the real one."""
+    import subprocess
+
+    config = synced_setup(tmp_path, git_vault, remote)
+    project = tmp_path / "project"
+    project.mkdir()
+    planted = tmp_path / "planted-ran"
+    (project / "yaml.py").write_text(
+        f"open({str(planted)!r}, 'w').close()\nraise SystemExit(3)\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(cli, "_config_path", lambda args: config)
+    argv = cli._myself(cli.argparse.Namespace(), "hook", "catch-up")
+    done = subprocess.run(argv, cwd=project, capture_output=True, text=True, timeout=60)
+    assert not planted.exists(), "the project's yaml.py was imported"
+    assert done.returncode == 0, done.stderr
+    assert (git_vault.root / "infra" / "laptop.md").exists()
+
+
+def test_a_vault_that_cannot_be_read_still_catches_up(tmp_path, capsys, monkeypatch, git_vault, remote):
+    """A broken entry, or a search that runs out of time, used to stop the
+    catch-up as well, and with it the fix another machine had already pushed."""
+    from mabolo.errors import MaboloError
+
+    config = synced_setup(tmp_path, git_vault, remote)
+    started = spawned_catch_ups(monkeypatch)
+
+    def broken(*args, **kw):
+        raise MaboloError("an entry that cannot be read")
+
+    monkeypatch.setattr(cli.Index, "build", broken)
+    assert ask(monkeypatch, config) == 0
+    assert len(started) == 1
+
+
+def test_starting_the_catch_up_never_costs_the_prompt_its_answer(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    from mabolo import catchup
+
+    config = synced_setup(tmp_path, git_vault, remote)
+
+    def broken():
+        raise RuntimeError("the state directory is on fire")
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    main(["--config", config, "hook", "session-start"])  # brings the laptop entry here
+    monkeypatch.setattr(catchup, "claim", broken)
+    capsys.readouterr()
+    assert ask(monkeypatch, config, "what was written on the laptop machine") == 0
+    out = capsys.readouterr().out
+    assert "laptop" in json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_a_prompt_starts_no_catch_up_when_told_not_to_or_given_a_vault(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    config = synced_setup(tmp_path, git_vault, remote)
+    started = spawned_catch_ups(monkeypatch)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "what changed"})))
+    main(["--config", config, "hook", "prompt", "--no-fetch"])
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "what changed"})))
+    main(["--config", config, "hook", "prompt", str(git_vault.root)])
+    assert started == []
+    ask(monkeypatch, config)
+    assert len(started) == 1, "and without either it does"
+
+
+def test_a_crash_in_the_background_is_kept_for_the_next_session_start(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    from mabolo import catchup, health
+
+    config = synced_setup(tmp_path, git_vault, remote)
+
+    def crash(*args, **kw):
+        raise RuntimeError("a bug, not a network")
+
+    monkeypatch.setattr(catchup, "catch_up", crash)
+    assert main(["--config", config, "hook", "catch-up"]) == 0
+    assert capsys.readouterr().out == ""
+    assert any("a bug, not a network" in item["error"] for item in health.pending())
+
+
 def test_the_hook_reads_the_project_from_the_folder_the_session_is_in(tmp_path, capsys, monkeypatch):
     made = hook_vault(tmp_path)
     folder = made.area_dir("project/atlas")
@@ -1028,7 +1134,7 @@ def test_a_budget_may_be_lowered_from_the_command_line_but_not_raised(vault, cap
 
 
 def prompt_notes(tmp_path) -> str:
-    where = Path.home() / ".local" / "state" / "mabolo" / "prompts"
+    where = consent.state_home() / "mabolo" / "prompts"
     return "".join(p.read_text(encoding="utf-8") for p in sorted(where.glob("*.jsonl")))
 
 
@@ -1043,7 +1149,7 @@ def test_the_prompt_hook_writes_the_prompt_down(tmp_path, capsys, monkeypatch):
     from mabolo import consent
 
     assert (
-        Path.home() / ".local/state/mabolo/prompts" / f"{consent.session_id('abc-1')}.jsonl"
+        consent.state_home() / "mabolo" / "prompts" / f"{consent.session_id('abc-1')}.jsonl"
     ).exists()
 
 
@@ -1347,13 +1453,13 @@ def test_uninstall_unwires_the_clients_and_keeps_the_vault(tmp_path, capsys, git
     home = claude_home(tmp_path)
     config = tmp_path / "c.toml"
     main(["--config", str(config), "init", "--vault", str(tmp_path / "v"), "--yes"])
-    (Path.home() / ".local" / "state" / "mabolo" / "prompts").mkdir(parents=True, exist_ok=True)
+    (consent.state_home() / "mabolo" / "prompts").mkdir(parents=True, exist_ok=True)
     capsys.readouterr()
 
     assert main(["--config", str(config), "uninstall", "--yes"]) == 0
     assert json.loads((home / ".claude" / "settings.json").read_text())["hooks"] == {}
     assert "mabolo" not in json.loads((home / ".claude.json").read_text()).get("mcpServers", {})
-    assert not (Path.home() / ".local" / "state" / "mabolo").exists()
+    assert not (consent.state_home() / "mabolo").exists()
     assert config.exists(), "the configuration stays"
     assert (tmp_path / "v" / "index.md").exists(), "and so does every entry"
 

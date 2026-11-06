@@ -407,3 +407,88 @@ def test_a_remote_that_is_still_empty_is_pushed_to(git_vault, tmp_path):
     there = subprocess.run(["git", "-C", str(bare), "rev-parse", "main"],
                            capture_output=True, text=True, check=True).stdout.strip()
     assert there == head(git_vault)
+
+
+def test_the_index_is_derived_after_the_vault_moved_forward(git_vault, remote, tmp_path):
+    """What a write makes wrong elsewhere is worked out under the lock, after
+    the catch-up the write does itself. Worked out before, it described the
+    vault as it was: the index another machine had just extended was either
+    refused as stale or, when the move landed in between, committed without
+    that machine's entry."""
+    from mabolo.vault import Vault
+
+    other = clone(tmp_path, remote)
+    (other / "infra" / "elsewhere.md").write_bytes(ENTRY)
+    Vault(other).rebuild_indexes()
+    subprocess.run(["git", "-C", str(other), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(other), "commit", "-qm", "from another machine"], check=True)
+    subprocess.run(["git", "-C", str(other), "push", "-q"], check=True)
+
+    result = write.apply(git_vault.root, [change()], "write a thing", actor="human:alex",
+                         remote="origin", branch="main", derive=git_vault.index_changes)
+    assert result.outcome == write.WRITTEN, result.message
+    index = (git_vault.root / "infra" / "index.md").read_text(encoding="utf-8")
+    assert "elsewhere.md" in index and "thing.md" in index
+
+
+def test_an_interrupted_git_command_blocks_a_write(git_vault):
+    """index.lock left behind means a tree half way between two commits, and a
+    write would commit the newer half as a hand edit nobody made."""
+    (git.repository_dir(git_vault.root) / "index.lock").write_text("", encoding="utf-8")
+    result = write.apply(git_vault.root, [change()], "x", actor="human:alex")
+    assert result.outcome == write.BLOCKED
+    assert "index.lock" in result.message
+    assert not (git_vault.root / "infra" / "thing.md").exists()
+
+
+def test_a_timed_out_git_takes_what_it_started_with_it(tmp_path):
+    """The ssh under a hung fetch outlived git's timeout and collected, one per
+    retry, on a machine that retries every minute."""
+    import os
+    import time
+
+    marker = tmp_path / "child.pid"
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        git._execute(
+            ["sh", "-c", f"sleep 30 & echo $! > {marker}; wait"],
+            env=dict(os.environ), timeout=0.5, check=False, text=True,
+        )
+    # Killing git alone left the child holding the pipes, and the call waited
+    # for it to finish of its own accord: the timeout bounded nothing.
+    assert time.monotonic() - started < 5
+    child = int(marker.read_text().strip())
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.02)
+    else:
+        os.kill(child, 9)
+        pytest.fail("the child git started was still running after the timeout")
+
+
+def test_git_never_asks_for_a_passphrase_through_a_window():
+    assert git._environment()["SSH_ASKPASS_REQUIRE"] == "never"
+    assert git._environment()["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_a_fast_forward_holds_the_signals_that_would_cut_it_short(git_vault, monkeypatch):
+    """A checkout killed half way leaves the newer half of the files on top of
+    the older commit. The hook's own deadline, a stopped service, Ctrl-C: none
+    of them lands until it is done."""
+    import signal
+
+    seen = []
+    real = git.run
+
+    def run(root, *args, **kw):
+        if args[:1] == ("merge",):
+            seen.append(signal.pthread_sigmask(signal.SIG_BLOCK, []))
+        return real(root, *args, **kw)
+
+    monkeypatch.setattr(git, "run", run)
+    git.fast_forward(git_vault.root, "HEAD")
+    assert seen and {signal.SIGALRM, signal.SIGTERM, signal.SIGINT, signal.SIGHUP} <= seen[0]
+    assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK, [])

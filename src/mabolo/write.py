@@ -40,7 +40,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from . import __version__, frontmatter, git
 from .consent import state_home
@@ -271,18 +271,29 @@ def apply(
     kind: str = "write",
     remote: str | None = None,
     branch: str | None = None,
+    derive: Callable[[list[Change]], list[Change]] | None = None,
 ) -> Result:
-    """Run one mutation through every step above, and report what happened."""
+    """Run one mutation through every step above, and report what happened.
+
+    `derive` names what these changes make wrong elsewhere, an area index above
+    all. It is asked under the lock and after the vault has moved forward,
+    because its answer depends on every entry on disk: worked out before, a
+    catch-up landing in between left it describing a vault that no longer
+    existed, with the revision of the one that did, and that passed every check.
+    """
     message = signed(message, kind, actor)
     if not changes:
         return Result(NOTHING, "nothing to write")
     for change in changes:
         if Path(change.path).is_absolute() or ".." in Path(change.path).parts:
             raise MaboloError(f"{change.path} is not a path inside the vault")
+    changes = list(changes)
 
     if not git.is_repository_inside(root):
         # A vault without Git still works; it just has no history and no way
         # back. Saying so is better than refusing to remember anything.
+        if derive is not None:
+            changes = changes + derive(changes)
         problem = _stale(root, changes)
         if problem:
             return Result(STALE, problem)
@@ -365,6 +376,8 @@ def apply(
                     "nothing was written.",
                 )
 
+        if derive is not None:
+            changes = changes + derive(changes)
         problem = _stale(root, changes)
         if problem:
             return Result(STALE, problem)

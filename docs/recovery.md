@@ -1,6 +1,6 @@
 # When something has gone wrong
 
-Four commands, and four procedures that are printed rather than performed.
+Four commands, and five procedures that are printed rather than performed.
 The split is deliberate: a tool that repairs things on your behalf is a tool
 whose repairs you have to audit, and the whole point of this one is that you do
 not have to.
@@ -70,6 +70,16 @@ of them.
 them, then `git merge` or `git rebase` in the vault by hand. Mabolo refuses to
 write while a merge or rebase is in progress, so finish it before the next
 session starts.
+
+**A Git command that was cut short.** Writes and catch-ups refuse with
+"a Git command, or one that was interrupted (.git/index.lock)". If a git of
+yours is running in the vault, wait for it. If none is, a git was killed half
+way, most likely a fast forward: the tree may hold part of the newer state on
+top of the older commit, and committing that would turn it into a hand edit.
+Delete `.git/index.lock`, run `git status` in the vault, put whatever it lists
+aside with `git stash --include-untracked`, and let the next session start move
+the vault forward. Look at the stash with `git stash show -p` before you drop
+it: anything in it that you wrote yourself is yours to keep.
 
 **A secret that was committed.** Git keeps it, so removing the line is not
 enough. Rewrite the history with `git filter-repo`, force push every branch to

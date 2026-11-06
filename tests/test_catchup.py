@@ -168,3 +168,76 @@ def test_a_failed_catch_up_still_counts_as_tried(tmp_path, git_vault, remote):
     assert catchup.due()
     assert catchup.catch_up(git_vault.root, "origin", "main").state == catchup.OFFLINE
     assert not catchup.due()
+
+
+def test_a_stamp_a_little_ahead_is_not_due():
+    """A state directory on a network share stamps with the server's clock. A
+    server a second ahead must not make every prompt start a catch-up."""
+    catchup.mark()
+    ahead = time.time() + 5
+    os.utime(catchup._stamp(), (ahead, ahead))
+    assert not catchup.due()
+
+
+def test_a_claim_takes_the_catch_up_once():
+    assert catchup.claim()
+    assert not catchup.claim(), "claimed a moment ago, so not due"
+
+
+def test_a_claim_in_progress_elsewhere_is_left_to_it():
+    """Two sessions prompting at the same instant: the one holding the claim
+    lock decides, the other starts nothing."""
+    import fcntl
+
+    where = catchup._stamp().parent
+    where.mkdir(parents=True, exist_ok=True)
+    with open(where / catchup.CLAIM_FILE, "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert not catchup.claim()
+    assert catchup.claim()
+
+
+def test_a_stamp_that_cannot_be_written_claims_nothing(tmp_path):
+    """Otherwise every prompt found the catch-up due and started one."""
+    where = catchup._stamp().parent
+    where.mkdir(parents=True, exist_ok=True)
+    where.chmod(0o500)
+    try:
+        assert not catchup.mark()
+        assert not catchup.claim()
+    finally:
+        where.chmod(0o700)
+
+
+def test_the_background_fetch_ends_before_a_write_stops_waiting():
+    """The catch-up holds the write lock while it fetches. A slow remote may
+    cost the catch-up, never a write the person asked for."""
+    assert catchup.BACKGROUND_SECONDS + 2 <= write.LOCK_SECONDS
+
+
+def test_an_interrupted_git_command_stops_the_catch_up(tmp_path, git_vault, remote):
+    """A checkout killed half way leaves index.lock and part of the newer files.
+    Moving on from there would build on a tree nobody can vouch for."""
+    other = other_machine(tmp_path, remote)
+    commit(other)
+    (git.repository_dir(git_vault.root) / "index.lock").write_text("", encoding="utf-8")
+    before = head(git_vault.root)
+    done = catchup.catch_up(git_vault.root, "origin", "main")
+    assert done.state == catchup.BLOCKED
+    assert "index.lock" in done.note()
+    assert head(git_vault.root) == before
+
+
+def test_a_lock_that_cannot_be_made_is_a_sentence_not_a_crash(git_vault, remote, monkeypatch):
+    """The caller is a hook that must start the session whatever happens here."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def broken(root, seconds):
+        raise OSError(28, "No space left on device")
+        yield
+
+    monkeypatch.setattr(write, "lock", broken)
+    done = catchup.catch_up(git_vault.root, "origin", "main")
+    assert done.state == catchup.BLOCKED
+    assert "No space left" in done.note()
