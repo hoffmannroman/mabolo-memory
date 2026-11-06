@@ -143,7 +143,8 @@ is refused, nothing local changes, and you are told to read the entry again.
 Reading catches up as well: every session start fetches and moves the vault
 forward to the remote before it reads, so a machine that was off for two weeks
 starts on today's memory. Only by fast forward, never by merging; when that is
-not possible, the session is told why. See
+not possible, the session is told why. A session that runs for days catches
+up too: its prompts start a fetch in the background, at most once a minute. See
 [what a session starts with](docs/context.md#it-catches-up-first).
 
 ## What works today

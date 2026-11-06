@@ -451,3 +451,16 @@ Commits made here that never reached the remote are left alone and reported;
 the next write sends them. `mabolo context` does not fetch: it shows what a
 session would be handed from the vault as it is on disk.
 `mabolo hook session-start --no-fetch` skips the catch-up.
+
+A session that never ends needs more than its start. One kept alive by a
+service, so that a phone can reach it, would otherwise read the vault of the
+morning it began while other machines went on writing. So the prompt hook
+starts a catch-up as well, by the same rules, but in a process of its own
+(`mabolo hook catch-up`): the prompt has two seconds and a person waiting, and
+a fetch fits into neither. It runs at most once a minute per machine, counted
+from the last attempt, the session start's included, so a burst of prompts
+costs one fetch and an unreachable remote is asked again a minute later rather
+than on every prompt. What it brings is there for the next read; the prompt
+that started it was answered from the vault as it was. It has nobody to tell,
+so a catch-up that could not move the vault says nothing, and the next session
+start says why.

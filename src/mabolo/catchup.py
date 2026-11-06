@@ -6,6 +6,13 @@ two weeks started its first session on the vault as it was two weeks ago, and
 nothing said so. This closes that gap at the one moment every session passes
 through, its start.
 
+A start is not enough for a session that never ends. One that runs for days,
+a session kept alive by a service so a phone can reach it, read the vault of
+the morning it began, while other machines went on writing. So a prompt starts
+a catch-up as well, in the background and at most once a minute: the prompt
+hook has two seconds and the person is waiting, and a fetch belongs to neither.
+What arrives is there for the next read, the tools a moment later included.
+
 The rules are the write path's, applied to reading:
 
 1. **Fast forward or nothing.** A clone that has moved on by itself is never
@@ -25,10 +32,12 @@ that must start the session whatever the network does.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import git, write
+from .consent import state_home
 from .errors import MaboloError
 
 #: How long the fetch may take. The session start hook has five seconds in
@@ -37,6 +46,19 @@ FETCH_SECONDS = 2.5
 
 #: How long to wait for a write that is already running.
 LOCK_SECONDS = 0.5
+
+#: The catch-up a prompt leaves running has nobody waiting for it, so it may
+#: take longer over a slow network and wait longer for a write.
+BACKGROUND_SECONDS = 15.0
+BACKGROUND_LOCK_SECONDS = 3.0
+
+#: How old the last catch-up may be before a prompt starts another one. Short
+#: enough that what one machine wrote shows up on another within a minute or
+#: two, long enough that a burst of prompts costs one fetch and not ten.
+STALE_SECONDS = 60
+
+#: When this machine last tried, as the modification time of an empty file.
+STAMP_FILE = "caught-up"
 
 CURRENT = "current"
 MOVED = "moved"
@@ -67,6 +89,38 @@ class CatchUp:
         return f"Memory not synced with the other machines: {self.message}"
 
 
+def _stamp() -> Path:
+    return state_home() / "mabolo" / STAMP_FILE
+
+
+def due(now: float | None = None) -> bool:
+    """Whether the last catch-up on this machine is old enough to try again.
+
+    A stamp from the future, after the clock was set back, counts as due:
+    otherwise the vault would stand still until the clock caught up.
+    """
+    try:
+        then = _stamp().stat().st_mtime
+    except OSError:
+        return True
+    age = (time.time() if now is None else now) - then
+    return age < 0 or age >= STALE_SECONDS
+
+
+def mark() -> None:
+    """Note that a catch-up was tried just now, whatever comes of it.
+
+    Tried, not succeeded: a remote that cannot be reached is asked again a
+    minute later, not on every prompt in between.
+    """
+    try:
+        stamp = _stamp()
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+    except OSError:
+        pass
+
+
 def catch_up(
     root: Path,
     remote: str | None,
@@ -78,6 +132,7 @@ def catch_up(
     """Bring the vault forward to the remote, if that can be done safely."""
     if not remote:
         return CatchUp(NO_REMOTE, "this vault has no remote")
+    mark()
     try:
         if not git.is_repository_inside(root) or not git.has_remote(root, remote):
             return CatchUp(NO_REMOTE, f"this vault has no remote called {remote}")

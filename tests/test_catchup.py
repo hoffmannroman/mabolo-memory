@@ -1,6 +1,8 @@
 """Catching up before a session reads: forward when it is safe, a sentence when not."""
 
+import os
 import subprocess
+import time
 
 from mabolo import catchup, git, write
 
@@ -133,3 +135,36 @@ def test_a_vault_on_another_branch_is_not_moved(tmp_path, git_vault, remote):
     done = catchup.catch_up(git_vault.root, "origin", "main")
     assert done.state == catchup.BLOCKED
     assert "scratch" in done.message
+
+
+def test_a_machine_that_never_caught_up_is_due():
+    assert catchup.due()
+
+
+def test_a_catch_up_a_moment_ago_is_not_due_yet():
+    catchup.mark()
+    assert not catchup.due()
+
+
+def test_a_catch_up_older_than_a_minute_is_due_again():
+    catchup.mark()
+    old = time.time() - catchup.STALE_SECONDS - 1
+    os.utime(catchup._stamp(), (old, old))
+    assert catchup.due()
+
+
+def test_a_stamp_from_the_future_does_not_hold_the_vault_still():
+    """After the clock was set back, the stamp lies ahead: the vault must not
+    stand still until the clock catches up with it."""
+    catchup.mark()
+    ahead = time.time() + 3600
+    os.utime(catchup._stamp(), (ahead, ahead))
+    assert catchup.due()
+
+
+def test_a_failed_catch_up_still_counts_as_tried(tmp_path, git_vault, remote):
+    """An unreachable remote is asked again a minute later, not on every prompt."""
+    remote.rename(tmp_path / "gone.git")
+    assert catchup.due()
+    assert catchup.catch_up(git_vault.root, "origin", "main").state == catchup.OFFLINE
+    assert not catchup.due()

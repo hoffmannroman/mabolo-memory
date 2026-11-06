@@ -735,6 +735,89 @@ def test_the_hook_can_be_told_not_to_fetch(tmp_path, capsys, monkeypatch, git_va
     assert not (git_vault.root / "infra" / "laptop.md").exists()
 
 
+def spawned_catch_ups(monkeypatch):
+    """Record the background catch-ups the prompt hook starts, and start none."""
+    started = []
+    real = cli.subprocess.Popen
+
+    def popen(argv, **kw):
+        if argv[-2:] == ["hook", "catch-up"]:
+            started.append(argv)
+            return None
+        return real(argv, **kw)
+
+    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+    return started
+
+
+def ask(monkeypatch, config, prompt="what changed on the laptop"):
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": prompt})))
+    return main(["--config", config, "hook", "prompt"])
+
+
+def test_a_prompt_starts_a_catch_up_in_the_background_once_a_minute(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    """A session that never ends would otherwise read the vault of the day it began."""
+    from mabolo import catchup
+
+    config = synced_setup(tmp_path, git_vault, remote)
+    started = spawned_catch_ups(monkeypatch)
+    assert ask(monkeypatch, config) == 0
+    assert len(started) == 1
+    assert config in started[0]
+    assert not (git_vault.root / "infra" / "laptop.md").exists(), "the prompt itself never waits for the network"
+
+    ask(monkeypatch, config)
+    assert len(started) == 1, "a burst of prompts starts one fetch, not one each"
+
+    stamp = catchup._stamp()
+    old = time.time() - catchup.STALE_SECONDS - 1
+    os.utime(stamp, (old, old))
+    ask(monkeypatch, config)
+    assert len(started) == 2
+
+
+def test_a_session_start_counts_as_a_catch_up_for_the_prompts_after_it(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    config = synced_setup(tmp_path, git_vault, remote)
+    started = spawned_catch_ups(monkeypatch)
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    main(["--config", config, "hook", "session-start"])
+    ask(monkeypatch, config)
+    assert started == []
+
+
+def test_a_prompt_starts_no_catch_up_for_a_vault_without_a_remote(tmp_path, capsys, monkeypatch):
+    started = spawned_catch_ups(monkeypatch)
+    config = str(tmp_path / "c.toml")
+    main(["--config", config, "init", "--vault", str(tmp_path / "v"), "--yes", "--no-git", "--no-clients"])
+    capsys.readouterr()
+    ask(monkeypatch, config)
+    assert started == []
+
+
+def test_the_background_catch_up_brings_what_another_machine_wrote(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    config = synced_setup(tmp_path, git_vault, remote)
+    assert main(["--config", config, "hook", "catch-up"]) == 0
+    assert (git_vault.root / "infra" / "laptop.md").exists()
+    assert capsys.readouterr().out == ""
+
+
+def test_the_background_catch_up_says_nothing_and_never_fails(
+    tmp_path, capsys, monkeypatch, git_vault, remote
+):
+    config = synced_setup(tmp_path, git_vault, remote)
+    remote.rename(tmp_path / "gone.git")
+    assert main(["--config", config, "hook", "catch-up"]) == 0
+    assert main(["--config", str(tmp_path / "missing.toml"), "hook", "catch-up"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""
+
+
 def test_the_hook_reads_the_project_from_the_folder_the_session_is_in(tmp_path, capsys, monkeypatch):
     made = hook_vault(tmp_path)
     folder = made.area_dir("project/atlas")

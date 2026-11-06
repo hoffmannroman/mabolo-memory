@@ -1065,7 +1065,63 @@ def _prompt_payload(args: argparse.Namespace) -> str:
         return ""
     with Index.build(vault.entries(), language=vault.declared_language()) as index:
         found = index.search(prompt, limit=recall.LIMIT)
-        return recall.block(found.hits)
+        text = recall.block(found.hits)
+    # After the search, not before: the catch-up moves files, and this hook
+    # should not read a vault that is halfway through being moved forward.
+    _catch_up_later(args, config_path)
+    return text
+
+
+def _catch_up_later(args: argparse.Namespace, config_path: Path) -> None:
+    """Start a catch-up that outlives the prompt hook, when the last one is old.
+
+    A session start catches up, and a session that never ends would otherwise
+    read the vault of the day it began. The fetch does not fit into the two
+    seconds a prompt has, so it runs on its own, and what it brings is there for
+    the next read. Only for the configured vault and only when it has a remote,
+    as at the session start.
+    """
+    if args.path or not catchup.due():
+        return
+    config = Config.load_if_present(config_path)
+    if config is None:
+        return
+    _, remote, _ = config.target()
+    if not remote:
+        return
+    # Before the process starts, so a burst of prompts starts one and not ten.
+    catchup.mark()
+    given = _config_path(args)
+    argv = [sys.executable, "-m", "mabolo", *(["--config", str(given)] if given else []), "hook", "catch-up"]
+    try:
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass
+
+
+def cmd_hook_catch_up(args: argparse.Namespace) -> int:
+    """What the prompt hook leaves running: bring the vault forward, quietly.
+
+    Nobody waits for it and nobody reads what it prints, so it says nothing and
+    never fails. What it could not do, the next session start says.
+    """
+    try:
+        config = Config.load_if_present(_config_path(args) or default_config_path())
+        if config is not None:
+            vault = _vault_from(args, config)
+            if vault.is_initialised():
+                _, remote, branch = config.target()
+                catchup.catch_up(
+                    vault.root,
+                    remote,
+                    branch,
+                    seconds=catchup.BACKGROUND_SECONDS,
+                    lock_seconds=catchup.BACKGROUND_LOCK_SECONDS,
+                )
+    except Exception:
+        pass
+    return EXIT_OK
 
 
 def _tool_path(event: dict) -> str:
@@ -1508,6 +1564,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not write the prompt down, and give up verifying quotes against it",
     )
     prompt.set_defaults(func=cmd_hook_prompt)
+
+    later = events.add_parser(
+        "catch-up", help="bring the vault forward to the remote, quietly; the prompt hook starts it"
+    )
+    later.set_defaults(func=cmd_hook_catch_up, path=None)
 
     touched = events.add_parser("pretool", help="the rules about the file a tool is opening")
     touched.add_argument("path", nargs="?", help="the vault, default is the configured one")
